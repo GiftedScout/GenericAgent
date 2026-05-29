@@ -178,6 +178,7 @@ _I18N: dict[str, dict[str, str]] = {
         'cmd.rename.desc':      'Rename the current session',
         'cmd.clear.desc':       'Clear display (LLM history untouched)',
         'cmd.cost.desc':        'Token usage for the current session',
+        'cmd.todo.desc':        'Personal TODO list (add / ls / run / del)',
         'cmd.verbose.desc':     'Tool-call audit',
         'cmd.export.desc':      'Export the last reply (clip/file/all)',
         'cmd.stop.desc':        'Abort current task',
@@ -445,6 +446,7 @@ _I18N: dict[str, dict[str, str]] = {
         'cmd.rename.desc':      '重命名当前会话',
         'cmd.clear.desc':       '清空显示（不动 LLM 历史）',
         'cmd.cost.desc':        '显示当前会话 token 用量',
+        'cmd.todo.desc':        '个人 TODO 列表 (add / ls / run / del)',
         'cmd.verbose.desc':     '工具调用审计',
         'cmd.export.desc':      '导出最后回复（剪贴板/文件/日志路径）',
         'cmd.stop.desc':        '中止当前任务',
@@ -1900,6 +1902,7 @@ def _cmds() -> list[tuple[str, str, str]]:
         ('/conductor', _t('cmd.conductor.arg'),  _t('cmd.conductor.desc')),
         ('/scheduler', '',                       _t('cmd.scheduler.desc')),
         ('/rewind',   _t('cmd.rewind.arg'),     _t('cmd.rewind.desc')),
+        ('/todo',     'add|ls|run|del',         _t('cmd.todo.desc')),
         ('/continue', _t('cmd.continue.arg'),   _t('cmd.continue.desc')),
         ('/workspace', _t('cmd.workspace.arg', default='[path|off]'),
                        _t('cmd.workspace.desc', default='设定工作目录(绝对路径)并进入项目模式')),
@@ -4617,6 +4620,42 @@ class SB:
             self._show_menu(_t('continue.title'), options, _pick_session)
         elif name == 'workspace':
             self._cmd_workspace(arg)
+        elif name == 'todo':
+            from frontends import todo_cmd as _tc
+            sub = (arg.split(None, 1)[0] if arg else '').lower()
+            if sub == 'add':
+                rest = (arg[len('add'):] if arg.lower().startswith('add') else '').strip()
+                if not rest:
+                    self.commit([_t('err.todo_add_usage', fallback='Usage: /todo add <text>')]); return
+                n = _tc.add(rest)
+                self.commit([f'✓ TODO #{n} added'])
+            elif sub == 'ls':
+                items = _tc.list_all()
+                lines = _tc.format_list(items)
+                self.commit(lines)
+            elif sub == 'run':
+                items = _tc.list_all()
+                if not items:
+                    self.commit([_DIM + '(TODO list is empty)' + _RST]); return
+                opts = _tc.format_list(items)
+                def _run_todo(idx):
+                    text = items[idx]['text']
+                    _tc.remove(idx)
+                    # Submit as normal user message to execute immediately
+                    self._commit_user(text)
+                    self._submit(text, [])
+                self._show_menu('Select TODO to execute:', opts, _run_todo)
+            elif sub == 'del':
+                items = _tc.list_all()
+                if not items:
+                    self.commit([_DIM + '(TODO list is empty)' + _RST]); return
+                opts = _tc.format_list(items)
+                def _del_todo(idx):
+                    removed = _tc.remove(idx)
+                    self.commit([f'🗑 Deleted: {removed}'])
+                self._show_menu('Select TODO to delete:', opts, _del_todo)
+            else:
+                self.commit([_t('err.todo_usage', fallback='Usage: /todo add|ls|run|del')])
         elif name == 'clear':
             self._reset_session(ag)
             self.commit([_DIM + _t('msg.cleared') + _RST])
