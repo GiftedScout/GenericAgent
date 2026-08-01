@@ -105,6 +105,35 @@ def ask_user(question, candidates=None):
 
 import simphtml
 driver = None
+
+def _auto_firefox_bridge_enabled():
+    return os.environ.get('GA_AUTO_FIREFOX_BRIDGE', '1').lower() not in ('0', 'false', 'no', 'off')
+
+def _browser_unavailable_msg():
+    return ("没有可用的浏览器标签页，已尝试自动启动 Firefox Bridge 但未连接成功；"
+            "可手动执行 scripts/start_firefox_bridge.sh 查看日志，或设置 GA_AUTO_FIREFOX_BRIDGE=0 禁用自动启动。")
+
+def _run_firefox_bridge():
+    """运行 Firefox Bridge 启动脚本（start_firefox_bridge.sh），优先复用现有 bridge；必要时后台/headless 启动。"""
+    print("[WebScan] ⚠️ 浏览器未连接，正在运行 Firefox Bridge 恢复脚本（优先复用/后台启动）...")
+    script_path = os.path.join(script_dir, 'scripts/start_firefox_bridge.sh')
+    ret = subprocess.run(['bash', script_path], capture_output=True, text=True, timeout=120)
+    out = (ret.stdout or '')[:500] + ('...' if len(ret.stdout or '') > 500 else '')
+    err = (ret.stderr or '')[:200] + ('...' if len(ret.stderr or '') > 200 else '')
+    if out.strip(): print(f"[FirefoxBridge] {out}")
+    if err.strip(): print(f"[FirefoxBridge] stderr: {err}")
+    if ret.returncode != 0:
+        print(f"[WebScan] ❌ 恢复脚本返回错误码 {ret.returncode}")
+        return False
+    # 等待连接建立
+    for i in range(10):
+        time.sleep(1)
+        if len(driver.get_all_sessions()) > 0:
+            print(f"[WebScan] ✅ 浏览器已连接！现在可以用了")
+            return True
+    print("[WebScan] ❌ 脚本执行成功但浏览器仍未连接")
+    return False
+
 def first_init_driver():
     global driver
     from TMWebDriver import TMWebDriver
@@ -122,9 +151,18 @@ def web_scan(tabs_only=False, switch_tab_id=None, text_only=False, maxlen=35000)
     应当多用execute_js，少全量观察html"""
     global driver
     try:
-        if driver is None: first_init_driver()
-        if len(driver.get_all_sessions()) == 0:
-            return {"status": "error", "msg": "没有可用的浏览器标签页，查L3记忆分析原因。"}
+        if driver is None:
+            first_init_driver()
+            if driver is None or len(driver.get_all_sessions()) == 0:
+                return {"status": "error", "msg": _browser_unavailable_msg()}
+        else:
+            # driver 已存在但无会话：默认自动启动独立 Firefox Bridge 窗口恢复连接。
+            if len(driver.get_all_sessions()) == 0:
+                if _auto_firefox_bridge_enabled():
+                    if not _run_firefox_bridge():
+                        return {"status": "error", "msg": _browser_unavailable_msg()}
+                else:
+                    return {"status": "error", "msg": _browser_unavailable_msg()}
         tabs = []
         for sess in driver.get_all_sessions(): 
             sess.pop('connected_at', None)
@@ -169,8 +207,17 @@ def web_execute_js(script, switch_tab_id=None, no_monitor=False):
     """执行 JS 脚本来控制浏览器，并捕获结果和页面变化"""
     global driver
     try:
-        if driver is None: first_init_driver()
-        if len(driver.get_all_sessions()) == 0: return {"status": "error", "msg": "没有可用的浏览器标签页，查L3记忆分析原因。"}
+        if driver is None:
+            first_init_driver()
+            if driver is None or len(driver.get_all_sessions()) == 0:
+                return {"status": "error", "msg": _browser_unavailable_msg()}
+        else:
+            if len(driver.get_all_sessions()) == 0:
+                if _auto_firefox_bridge_enabled():
+                    if not _run_firefox_bridge():
+                        return {"status": "error", "msg": _browser_unavailable_msg()}
+                else:
+                    return {"status": "error", "msg": _browser_unavailable_msg()}
         if switch_tab_id: driver.default_session_id = switch_tab_id
         result = simphtml.execute_js_rich(script, driver, no_monitor=no_monitor)
         return result

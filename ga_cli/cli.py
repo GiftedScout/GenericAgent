@@ -3,7 +3,7 @@ ga_cli/cli.py - GenericAgent 命令行分发系统
 
 通过 python -m ga_cli <命令> 或 ga <命令> 调用
 """
-import os, re, sys, subprocess, argparse, textwrap
+import os, sys, subprocess, argparse, textwrap
 
 # Windows GBK 终端兼容
 if sys.platform == "win32" and sys.stdout.encoding and sys.stdout.encoding.lower() in ("gbk", "gb2312"):
@@ -156,118 +156,177 @@ def cmd_update():
         print(r2.stderr[-500:])
 
 
-def _auto_resolve_keep_both() -> int:
-    """自动解决所有未合并文件：保留冲突双方的完整内容（限文本文件）。
-    
-    策略：对每个冲突区域，依次保留 upstream 版本 + stash 版本，
-    最大限度保留双方代码，不丢弃任何改动。
-    """
-    import pathlib
-    # 1. 找出所有未合并的文件
-    sp = subprocess.run(
-        ["git", "diff", "--name-only", "--diff-filter=U"],
-        capture_output=True, text=True, cwd=PROJECT_DIR
-    )
-    files = [f.strip() for f in sp.stdout.splitlines() if f.strip()]
-    if not files:
-        return 0
+def _git(args, **kwargs):
+    """Run git in PROJECT_DIR and capture text output by default."""
+    kwargs.setdefault("cwd", PROJECT_DIR)
+    kwargs.setdefault("capture_output", True)
+    kwargs.setdefault("text", True)
+    return subprocess.run(["git", *args], **kwargs)
 
-    pattern = re.compile(
-        r"^<<<<<<< (?:Updated upstream|HEAD|ours?)[^\n]*\n"
-        r"(.*?)"
-        r"^=======\n"
-        r"(.*?)"
-        r"^>>>>>>> (?:Stashed changes|theirs?)[^\n]*\n?",
-        flags=re.MULTILINE | re.DOTALL
+
+def _has_tracked_changes() -> bool:
+    """Only tracked/staged changes; do not touch untracked secrets/files."""
+    return (
+        _git(["diff", "--quiet"]).returncode != 0 or
+        _git(["diff", "--cached", "--quiet"]).returncode != 0
     )
 
-    resolved = 0
-    for fpath in files:
-        fpath = os.path.join(PROJECT_DIR, fpath)
-        if not os.path.isfile(fpath):
-            continue
-        # 跳过二进制文件
-        try:
-            raw = pathlib.Path(fpath).read_bytes()
-            if b"\x00" in raw[:8192]:
-                print(f"   ⏭️  跳过二进制文件: {fpath}")
-                continue
-            text = raw.decode("utf-8")
-        except (UnicodeDecodeError, OSError):
-            print(f"   ⏭️  跳过不可解码文件: {fpath}")
-            continue
 
-        new_text, count = pattern.subn(_merge_conflict_block, text)
-        if count == 0:
-            continue
-
-        pathlib.Path(fpath).write_text(new_text, encoding="utf-8")
-        subprocess.run(["git", "add", fpath], capture_output=True, cwd=PROJECT_DIR)
-        print(f"   📄 {os.path.relpath(fpath, PROJECT_DIR)}: {count} 处冲突已合并")
-        resolved += 1
-
-    return resolved
+def _unmerged_files() -> list[str]:
+    sp = _git(["diff", "--name-only", "--diff-filter=U"])
+    return [f.strip() for f in sp.stdout.splitlines() if f.strip()]
 
 
-def _merge_conflict_block(m: re.Match) -> str:
-    """将单个冲突块合并为『upstream版 + stash版』。"""
-    ours = m.group(1).rstrip("\n")
-    theirs = m.group(2).rstrip("\n")
-    # 如果两边完全一样，只保留一份
-    if ours.strip() == theirs.strip():
-        return ours + "\n"
-    return ours + "\n\n" + theirs + "\n"
+def _merge_in_progress() -> bool:
+    return _git(["rev-parse", "-q", "--verify", "MERGE_HEAD"]).returncode == 0
+
+
+
+def _print_manual_conflict_help(backup_branch: str, patch_path: str) -> None:
+    """Print conservative recovery hints for conflicts; no automatic semantic merge."""
+    print("      git status")
+    print("      git diff")
+    print("      git stash list")
+    print(f"      # 保护点: {backup_branch}")
+    print(f"      # tracked diff 备份: {patch_path}")
+
+
+def _validate_sync_result() -> bool:
+    """Validate the final worktree before claiming sync succeeded."""
+    unmerged = _unmerged_files()
+    if unmerged:
+        print("❌ 仍有未解决冲突:")
+        for path in unmerged:
+            print(f"   {path}")
+        return False
+
+    markers = _git(["grep", "-n", "-E", r"^(<<<<<<<|>>>>>>>)", "--",
+                    "*.py", "*.json", "*.md"])
+    if markers.returncode == 0:
+        print("❌ 检测到残留冲突标记:")
+        print(markers.stdout)
+        return False
+    if markers.returncode not in (1,):
+        print(f"❌ 检查冲突标记失败: {markers.stderr.strip()}")
+        return False
+
+    checked = _git(["diff", "--check"])
+    if checked.returncode != 0:
+        print("❌ diff 检查失败:")
+        print(checked.stdout or checked.stderr)
+        return False
+
+    tracked = _git(["ls-files", "*.py"])
+    files = [x.strip() for x in tracked.stdout.splitlines() if x.strip()]
+    if files:
+        import tempfile
+        env = os.environ.copy()
+        with tempfile.TemporaryDirectory(prefix="ga-sync-pycache-") as cache:
+            env["PYTHONPYCACHEPREFIX"] = cache
+            compiled = subprocess.run(
+                [sys.executable, "-m", "py_compile", *files],
+                cwd=PROJECT_DIR, capture_output=True, text=True, env=env,
+            )
+        if compiled.returncode != 0:
+            print("❌ Python 语法检查失败:")
+            print(compiled.stderr or compiled.stdout)
+            return False
+    return True
 
 
 def cmd_sync():
-    """安全同步：stash→pull→stash pop→pip install，不怕本地未提交改动"""
+    """安全同步 origin/main；冲突不自动拼接，验证通过后才安装。"""
+    import time
+
     os.chdir(PROJECT_DIR)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    if _merge_in_progress():
+        print("❌ 当前已有未完成的 git merge，请先处理或 git merge --abort")
+        return 1
 
-    # 1. stash 本地改动
-    print("📦 暂存本地修改...")
-    sp_stash = subprocess.run(["git", "stash"], capture_output=True, text=True)
-    has_local = sp_stash.returncode == 0 and "No local changes" not in sp_stash.stderr
+    backup_branch = f"backup/ga-sync-{stamp}"
+    branch_result = _git(["branch", backup_branch, "HEAD"])
+    if branch_result.returncode != 0:
+        print("❌ 无法创建保护分支:", branch_result.stderr.strip())
+        return 1
+    patch_path = os.path.join("/tmp", f"ga-sync-tracked-{stamp}.patch")
+    patch = _git(["diff", "HEAD", "--binary"])
+    try:
+        with open(patch_path, "w", encoding="utf-8") as fp:
+            fp.write(patch.stdout)
+    except OSError as exc:
+        print(f"❌ 无法保存 tracked diff: {exc}")
+        return 1
+    print(f"🛟 保护点: {backup_branch}")
+    print(f"🛟 已保存 tracked diff: {patch_path}")
+
+    has_local = _has_tracked_changes()
     if has_local:
-        print("   已暂存")
+        print("📦 暂存已跟踪本地修改...")
+        stashed = _git(["stash", "push", "-m", f"ga sync tracked changes {stamp}"])
+        print(stashed.stdout or stashed.stderr)
+        if stashed.returncode != 0:
+            print("❌ stash 失败，已停止。")
+            return 1
     else:
-        print("   无本地修改")
+        print("📦 无已跟踪本地修改；未跟踪文件原样保留")
 
-    # 2. git pull
-    print("🔄 git pull...")
-    sp_pull = subprocess.run(["git", "pull"], capture_output=True, text=True)
-    print(sp_pull.stdout)
-    if sp_pull.returncode != 0:
-        print(sp_pull.stderr)
+    print("🔄 同步 origin/main...")
+    fetched = _git(["fetch", "origin", "main"])
+    if fetched.returncode != 0:
+        print(fetched.stderr)
         if has_local:
-            subprocess.run(["git", "stash", "pop"], capture_output=True)
-        return
+            restored = _git(["stash", "pop"])
+            if restored.returncode != 0:
+                print("⚠️ 网络更新失败且本地修改恢复产生冲突；stash 保留，请手动处理。")
+                _print_manual_conflict_help(backup_branch, patch_path)
+        return 1
 
-    # 3. pip install
-    print("📦 pip install...")
-    sp_pip = subprocess.run([sys.executable, "-m", "pip", "install", "-e", "."],
-                            capture_output=True, text=True)
-    print(sp_pip.stdout[-500:] if sp_pip.stdout else "")
-    if sp_pip.returncode != 0:
-        print(sp_pip.stderr[-500:])
+    merged = _git(["merge", "--no-edit", "origin/main"])
+    print(merged.stdout or merged.stderr)
+    if merged.returncode != 0:
+        if _merge_in_progress():
+            print("❌ origin/main 合并冲突；不自动改写代码，正在中止上游合并。")
+            aborted = _git(["merge", "--abort"])
+            if aborted.returncode != 0:
+                print("❌ 无法中止上游合并；未恢复 stash，避免进一步扩大冲突。")
+                _print_manual_conflict_help(backup_branch, patch_path)
+                return 1
+        if has_local:
+            restored = _git(["stash", "pop"])
+            print(restored.stdout or restored.stderr)
+            if restored.returncode != 0:
+                print("⚠️ 本地修改恢复产生冲突；stash 保留，请手动处理。")
+                _print_manual_conflict_help(backup_branch, patch_path)
+                return 1
+        print("❌ 上游合并失败；未报告成功。")
+        return 1
 
-    # 4. pop 恢复
     if has_local:
         print("📦 恢复本地修改...")
-        sp_pop = subprocess.run(["git", "stash", "pop"], capture_output=True, text=True)
-        if sp_pop.returncode == 0:
-            print("   恢复成功 ✅")
-        else:
-            print("⚙️  检测到冲突，自动合并中（最大限度保留本地+上游）...")
-            resolved = _auto_resolve_keep_both()
-            if resolved:
-                print(f"   ✅ 已自动解决 {resolved} 个文件冲突")
-                subprocess.run(["git", "stash", "drop"], capture_output=True)
-                print("   ✅ stash 已清理")
-                print("   恢复成功 ✅")
-            else:
-                print("   ❌ 自动合并失败，请手动处理：")
-                print("      git stash drop    # 放弃 stash")
-                print("      git diff          # 查看冲突")
+        restored = _git(["stash", "pop"])
+        print(restored.stdout or restored.stderr)
+        if restored.returncode != 0 or _unmerged_files():
+            print("❌ 恢复本地修改产生冲突；不自动拼接，stash 保留。")
+            _print_manual_conflict_help(backup_branch, patch_path)
+            return 1
+
+    print("🔍 验证合并后的最终代码...")
+    if not _validate_sync_result():
+        print("❌ 验证失败，未执行 pip install；保护点和未跟踪文件均保留。")
+        return 1
+
+    print("📦 pip install...")
+    installed = subprocess.run(
+        [sys.executable, "-m", "pip", "install", "-e", "."],
+        capture_output=True, text=True, cwd=PROJECT_DIR,
+    )
+    print(installed.stdout[-1000:] if installed.stdout else "")
+    if installed.returncode != 0:
+        print(installed.stderr[-2000:] if installed.stderr else "pip install failed")
+        return 1
+    print("✅ ga sync 完成：已安全合并 origin/main 并通过代码验证")
+    return 0
 
 
 def main():
@@ -320,7 +379,7 @@ def main():
         return
 
     if cmd == "sync":
-        cmd_sync()
+        raise SystemExit(cmd_sync())
         return
 
     if cmd not in COMMANDS:
