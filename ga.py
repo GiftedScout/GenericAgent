@@ -9,6 +9,39 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from agent_loop import BaseHandler, StepOutcome, json_default
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
+def resolve_memory_dir(repo_dir=None):
+    """Return the canonical personal-memory directory for this checkout.
+
+    Linked Git worktrees share the main worktree's ignored personal memory by
+    default. GA_MEMORY_DIR remains an explicit escape hatch for isolated runs.
+    """
+    override = os.environ.get('GA_MEMORY_DIR')
+    if override:
+        return str(Path(override).expanduser().resolve())
+
+    root = Path(repo_dir or script_dir).resolve()
+    dotgit = root / '.git'
+    if dotgit.is_file():
+        try:
+            marker = dotgit.read_text(encoding='utf-8', errors='replace').strip()
+            if marker.startswith('gitdir:'):
+                gitdir = Path(marker.split(':', 1)[1].strip()).expanduser()
+                if not gitdir.is_absolute():
+                    gitdir = dotgit.parent / gitdir
+                commondir_file = gitdir.resolve() / 'commondir'
+                if commondir_file.is_file():
+                    commondir = Path(commondir_file.read_text(encoding='utf-8').strip())
+                    if not commondir.is_absolute():
+                        commondir = commondir_file.parent / commondir
+                    commondir = commondir.resolve()
+                    if commondir.name == '.git':
+                        return str(commondir.parent / 'memory')
+        except (OSError, ValueError):
+            pass
+    return str(root / 'memory')
+
+memory_dir = resolve_memory_dir()
+
 def safe_print(*args, **kwargs):
     try: print(*args, **kwargs)
     except: pass
@@ -24,7 +57,9 @@ def code_run(code, code_type="python", timeout=60, cwd=None, code_cwd=None, stop
     if code_type in ["python", "py"]:
         tmp_file = tempfile.NamedTemporaryFile(suffix=".ai.py", delete=False, mode='w', encoding='utf-8', dir=code_cwd)
         cr_header = os.path.join(script_dir, 'assets', 'code_run_header.py')
-        if os.path.exists(cr_header): tmp_file.write(open(cr_header, encoding='utf-8').read())
+        if os.path.exists(cr_header):
+            with open(cr_header, encoding='utf-8') as f:
+                tmp_file.write(f.read())
         tmp_file.write(code)
         tmp_path = tmp_file.name
         tmp_file.close()
@@ -55,10 +90,12 @@ def code_run(code, code_type="python", timeout=60, cwd=None, code_cwd=None, stop
         except: pass
 
     try:
+        child_env = os.environ.copy()
+        child_env['GA_MEMORY_DIR'] = memory_dir
         process = subprocess.Popen(
             cmd, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            bufsize=0, cwd=cwd, startupinfo=startupinfo,
+            bufsize=0, cwd=cwd, startupinfo=startupinfo, env=child_env,
             creationflags=0x08000000 if os.name == 'nt' else 0
         )
         start_t = time.time()
@@ -195,7 +232,7 @@ def format_error(e):
 
 def log_memory_access(path):
     if 'memory' not in path: return
-    stats_file = os.path.join(script_dir, 'memory/file_access_stats.json')
+    stats_file = os.path.join(memory_dir, 'file_access_stats.json')
     try:
         with open(stats_file, 'r', encoding='utf-8') as f: stats = json.load(f)
     except: stats = {}
@@ -679,11 +716,12 @@ def get_global_memory():
     prompt = "\n"
     try:
         suffix = '_en' if os.environ.get('GA_LANG', '') == 'en' else ''
-        with open(os.path.join(script_dir, 'memory/global_mem_insight.txt'), 'r', encoding='utf-8', errors='replace') as f: insight = f.read()
+        with open(os.path.join(memory_dir, 'global_mem_insight.txt'), 'r', encoding='utf-8', errors='replace') as f: insight = f.read()
         with open(os.path.join(script_dir, f'assets/insight_fixed_structure{suffix}.txt'), 'r', encoding='utf-8') as f: structure = f.read()
         prompt += f'cwd = {os.path.join(script_dir, "temp")} (./)\n'
-        prompt += f"\n[Memory] (../memory)\n"
-        prompt += structure + '\n../memory/global_mem_insight.txt:\n'
-        prompt += insight + "\n"
+        prompt += f"\n[Memory] ({memory_dir})\n"
+        structure = structure.replace('../memory', memory_dir)
+        prompt += structure + f'\n{os.path.join(memory_dir, "global_mem_insight.txt")}:\n'
+        prompt += insight.replace('../memory', memory_dir) + "\n"
     except FileNotFoundError: pass
     return prompt

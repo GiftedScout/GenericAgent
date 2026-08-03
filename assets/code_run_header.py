@@ -1,5 +1,7 @@
 import sys, os, json, re, time, subprocess
-sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'memory'))
+_memory_dir = os.environ.get('GA_MEMORY_DIR')
+if _memory_dir: sys.path.insert(0, _memory_dir)
+else: sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'memory'))
 _r = subprocess.run
 def _d(b):
     if not b: return ''

@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -6,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from agent_loop import exhaust
-from ga import GenericAgentHandler
+from ga import GenericAgentHandler, code_run, get_global_memory, resolve_memory_dir
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -68,6 +69,52 @@ class MediaToolTests(unittest.TestCase):
         self.assertIn("prompt is required", image_outcome.data)
         ocr_mock.assert_not_called()
         image_mock.assert_not_called()
+
+    def test_memory_dir_defaults_to_checkout_memory(self):
+        with tempfile.TemporaryDirectory() as root, patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("GA_MEMORY_DIR", None)
+            self.assertEqual(resolve_memory_dir(root), str(Path(root).resolve() / "memory"))
+
+    def test_memory_dir_uses_main_worktree_for_linked_worktree(self):
+        with tempfile.TemporaryDirectory() as top, patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("GA_MEMORY_DIR", None)
+            top = Path(top)
+            main = top / "main"
+            linked = top / "linked"
+            gitdir = main / ".git" / "worktrees" / "linked"
+            main.mkdir()
+            linked.mkdir()
+            gitdir.mkdir(parents=True)
+            (linked / ".git").write_text(
+                "gitdir: ../main/.git/worktrees/linked\n", encoding="utf-8"
+            )
+            (gitdir / "commondir").write_text("../..\n", encoding="utf-8")
+            self.assertEqual(resolve_memory_dir(linked), str(main / "memory"))
+
+    def test_memory_dir_environment_override_wins(self):
+        with tempfile.TemporaryDirectory() as override:
+            with patch.dict(os.environ, {"GA_MEMORY_DIR": override}):
+                self.assertEqual(resolve_memory_dir("/unused"), str(Path(override).resolve()))
+
+    def test_global_memory_prompt_uses_resolved_accessible_path(self):
+        import ga
+        prompt = get_global_memory()
+        self.assertIn(f"[Memory] ({ga.memory_dir})", prompt)
+        self.assertIn(os.path.join(ga.memory_dir, "global_mem.txt"), prompt)
+        self.assertNotIn("../memory", prompt)
+
+    def test_code_run_python_imports_from_resolved_memory_dir(self):
+        module_dir = Path(self.tmp.name) / "canonical-memory"
+        module_dir.mkdir()
+        (module_dir / "ga_memory_probe.py").write_text("VALUE = 'shared-memory'\n", encoding="utf-8")
+        with patch("ga.memory_dir", str(module_dir)):
+            result = exhaust(code_run(
+                "import ga_memory_probe; print(ga_memory_probe.VALUE)",
+                cwd=self.tmp.name,
+                code_cwd=self.tmp.name,
+            ))
+        self.assertEqual(result["exit_code"], 0, result["stdout"])
+        self.assertIn("shared-memory", result["stdout"])
 
     def test_code_run_schema_distinguishes_python_type_from_shell_command(self):
         expectations = {
