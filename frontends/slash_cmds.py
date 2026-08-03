@@ -142,77 +142,89 @@ def _tail(args_text: str, label: str = "额外指示") -> str:
 
 
 def build_update_prompt(args_text: str = "") -> str:
-    """Prompt-only /update orchestration; actual git work stays in-agent.
+    """Build the in-session, LLM-driven two-remote update workflow.
 
-    The TUI owns zero git/LLM logic.  This prompt asks the normal agent loop to
-    do a user-friendly preflight (upstream commits + diff) before pulling.
-    Language follows `_current_lang()` so a /language switch in tui_v3 (or a
-    `GA_LANG=...` shell override) automatically flips this prompt too.
-
-    The prompt pins every git command to the repo root (`_ROOT`).  The agent's
-    default cwd is the `temp/` subdirectory, where a `-- <file>` pathspec is
-    resolved relative to cwd — so `git checkout upstream/main -- <file>`, fed the
-    root-relative paths that `git diff --name-only` prints, dies with "pathspec
-    did not match" (the "/update keeps looking in the wrong directory" bug).
-    Handing the agent the absolute root closes that gap.
+    Conflict resolution intentionally stays in the normal agent loop: a shell
+    helper cannot decide how an upstream API change and a fork feature should
+    coexist. The prompt pins git to this checkout because agent tools usually
+    start in ``temp/``, where root-relative pathspecs otherwise fail.
     """
     root = str(_ROOT)
     if _current_lang() == "en":
         return (
-            "Update this GenericAgent checkout from the official upstream "
-            "https://github.com/Lsdefine/GenericAgent .\n"
-            f"Run every git command from the repo root `{root}` (cd there first, or use "
-            f"`git -C \"{root}\"`): your cwd is a subdirectory, where `-- <file>` pathspecs "
-            "fail to match the root-relative paths `git diff --name-only` prints.\n"
-            "1. `git fetch upstream`; note the current branch and any local commits ahead.\n"
-            "2. Preview: upstream commits not yet local (short hash + subject + date) "
-            "plus a changed-files summary.\n"
-            "3. Align history, upstream first: with local commits ahead, `git merge upstream/main` "
-            "(conflicts favor upstream); otherwise `git reset --mixed upstream/main`. "
-            "Never create a commit.\n"
-            "4. Reconcile the WORKING TREE — step 3 moves only history and the index, so files "
-            "holding uncommitted local edits keep shadowing upstream. For each file in "
-            "`git diff --name-only upstream/main`, decide upstream-first:\n"
-            "   - Stale leftovers take upstream: back the file up, then "
-            "`git checkout upstream/main -- <file>`.\n"
-            "   - Genuine local enhancements upstream lacks (local config, key templates, "
-            "fork-only features) stay, re-applied on top of upstream's version.\n"
-            "   - Files with a `Fork-only local overlay` marker comment (e.g. `.gitignore`) are "
-            "always a MERGE: take upstream as the base, then re-append everything under the "
-            "marker verbatim — never drop that block.\n"
-            "   Never `git add -A`, never blanket-checkout the branch, never blindly keep everything.\n"
-            "5. Verify every overlay marker still exists (grep for it); re-append any that got lost.\n"
-            "6. Summarize: branch HEAD, distance vs upstream, per-file outcome, backup location.\n"
-            "\n"
-            "After a successful update, say: \"Congratulations! 🎉 You have successfully updated "
-            "GenericAgent!\" Then you may ask: \"If you found this helpful, would you like to star "
-            "the GenericAgent repository? It helps the project grow! ⭐\""
+            "Synchronize this GenericAgent checkout transactionally. First read "
+            "`memory/git_sync_sop.md`. The official source is `origin/main` "
+            "(https://github.com/Lsdefine/GenericAgent); `myfork/main` is the cloud mirror. "
+            f"Run every git command at repo root `{root}` (use `git -C \"{root}\" ...`). "
+            "Do not delegate to `ga sync`, use bare `git pull`, or blindly choose ours/theirs.\n\n"
+            "1. Preflight: require checked-out branch `main`; stop on an unfinished merge, "
+            "rebase, or cherry-pick. Inspect status and both remote URLs, then fetch `--prune` "
+            "from `origin` and `myfork`. Record old HEAD and remote tips, merge-base, left/right "
+            "counts, incoming/local commit titles, patch-equivalent commits, and changed files.\n"
+            "2. Recovery: before changing history, create a timestamped backup branch from HEAD, "
+            "save staged and unstaged tracked binary patches under `/tmp`, and inventory untracked "
+            "files. If dirty, make a clearly named stash including untracked files. Never mix "
+            "pre-existing edits into the upstream merge commit; report all recovery references.\n"
+            "3. Official update: explicitly integrate `origin/main` into local `main` (fast-forward "
+            "when possible, otherwise a merge commit). For every conflict inspect merge-base, ours, "
+            "theirs, callers, tests, and relevant history. Resolve semantically so upstream fixes "
+            "and every still-valid local feature coexist. Never bulk-checkout one side, concatenate "
+            "conflict bodies, use `git add -A`, or delete a capability merely to pass the merge. "
+            "Stage only reviewed paths.\n"
+            "4. Restore pre-existing dirty edits after official integration, resolving restoration "
+            "conflicts with the same three-way review. Keep the stash until verified and do not "
+            "commit those edits unless explicitly asked. If semantics remain uncertain, stop in a "
+            "recoverable state and ask one minimal question rather than guessing.\n"
+            "5. Validate before push: unmerged entries must be empty; `origin/main` must be an "
+            "ancestor of HEAD and its behind count zero. Review the full upstream/local feature diff; "
+            "run touched-area tests, the repository suite, tracked-Python `py_compile`, applicable "
+            "script syntax checks, and an affected command/frontend smoke test. Fix regressions, not tests.\n"
+            "6. Cloud sync: inspect commits and patches unique to `myfork/main`, distinguishing real "
+            "fork-only work from patch-equivalent duplicate history, and preserve any real work not "
+            "represented locally. Then mirror local `main` to `myfork/main`. Push normally if fast-forward. "
+            "If exact alignment is non-fast-forward, do not merge obsolete fork history into main and "
+            "never use plain `--force`: show what would be displaced, create and push a timestamped fork "
+            "backup ref when feasible, then ask for approval before using "
+            "`--force-with-lease=<expected-tip>`. Never push official `origin`. Fetch myfork again and "
+            "prove local `main` and `myfork/main` tips are identical.\n"
+            "7. Report an update ledger: old/new HEAD and remote tips; incoming upstream commits and "
+            "user-visible changes; retained local features; conflict decisions by file; dirty-edit "
+            "recovery; tests; backups/patches; push result; final ahead/behind counts; residual risk. "
+            "A process merely starting is not sufficient verification."
             f"{_tail(args_text, 'Extra instructions')}"
         )
     return (
-        "请更新当前 GenericAgent 仓库，官方上游为 https://github.com/Lsdefine/GenericAgent 。\n"
-        f"所有 git 命令一律在仓库根目录 `{root}` 下执行（先 cd 过去，或用 `git -C \"{root}\"`）："
-        "你的 cwd 是子目录，`-- <file>` 按 cwd 解析，匹配不上 `git diff --name-only` "
-        "输出的根相对路径。\n"
-        "1. `git fetch upstream`；确认当前分支及是否有领先上游的本地 commit。\n"
-        "2. 预览：本地尚未包含的上游提交（短 hash + 标题 + 日期）及变更文件摘要。\n"
-        "3. 对齐提交历史，上游优先：有本地 commit 则 `git merge upstream/main`（冲突取上游）；"
-        "否则 `git reset --mixed upstream/main`。全程不创建任何 commit。\n"
-        "4. 调和【工作区】——第 3 步只动历史与索引，带未提交改动的文件仍遮蔽上游最新版。对 "
-        "`git diff --name-only upstream/main` 列出的每个文件按上游优先裁决：\n"
-        "   - 过时残留取上游：先备份，再 `git checkout upstream/main -- <file>`。\n"
-        "   - 上游没有的真本地增强（本机配置、密钥模板、fork 专属功能）保留，并在上游最新版上重新适配。\n"
-        "   - 带 `Fork-only local overlay` 标记注释的文件（如 `.gitignore`）一律【合并】：以上游为底，"
-        "把标记之下的内容逐字追加回去——绝不丢弃该块。\n"
-        "   禁止 `git add -A`、禁止整分支 checkout 覆盖、禁止盲目全保留。\n"
-        "5. 校验每个 overlay 标记仍存在（grep 标记）；丢失即重新追加。\n"
-        "6. 小结：分支 HEAD、与上游差距、逐文件处理结果、备份位置。\n"
-        "\n"
-        "更新成功后，请说：\"Congratulations! 🎉 你已成功更新 GenericAgent！\"随后可邀请："
-        "\"如果觉得有帮助，要不要给 GenericAgent 仓库点个 Star？这会让项目成长更快！⭐\""
+        "请以事务式流程同步当前 GenericAgent 仓库。先读 `memory/git_sync_sop.md`。"
+        "官方源是 `origin/main`（https://github.com/Lsdefine/GenericAgent），"
+        "`myfork/main` 是云端镜像。所有 git 命令必须在仓库根目录 "
+        f"`{root}` 执行（使用 `git -C \"{root}\" ...`）。禁止委托给 `ga sync`、"
+        "裸 `git pull` 或盲选 ours/theirs。\n\n"
+        "1. 前检：当前分支必须是 `main`；若有未完成的 merge/rebase/cherry-pick 就停止。"
+        "检查工作区和两个 remote URL，再分别 `fetch --prune origin` 与 `fetch --prune myfork`。"
+        "记录旧 HEAD、两端 tip、merge-base、左右提交数、上游/本地提交标题、patch 等价关系及变更文件。\n"
+        "2. 可恢复保护：改历史前从 HEAD 创建带时间戳的 backup 分支，把 tracked 的 staged 与 "
+        "unstaged binary patch 保存到 `/tmp`，并盘点 untracked 文件。若工作区不干净，用名称明确且"
+        "包含 untracked 的 stash 保存；不得把原有编辑混入上游 merge commit。汇报全部恢复引用。\n"
+        "3. 官方更新：把 `origin/main` 显式整合进本地 `main`（可快进则快进，否则创建 merge commit）。"
+        "每个冲突都必须查看 merge-base、ours、theirs、附近调用/测试和相关历史，做语义合并："
+        "上游新增行为与修复必须保留，仍有效的本地功能也必须完整保留并适配新接口。禁止整批 checkout "
+        "某一侧、拼接冲突块、`git add -A` 或为通过合并删除能力；只 stage 已审文件。\n"
+        "4. 官方整合后恢复原有脏编辑；恢复冲突同样三方审查，验证前保留 stash。除非用户明确要求，"
+        "不得提交更新前已有的编辑。无法确信语义正确时保持仓库可恢复，只问一个最小问题，禁止猜。\n"
+        "5. 推送前验证：unmerged 为空，`origin/main` 是 HEAD 祖先且相对 origin behind=0；"
+        "复审完整上游差异与本地功能差异；运行触及区域定向测试、仓库测试套件、tracked Python "
+        "`py_compile`、适用脚本语法检查及受影响命令/前端 smoke test。修实现而非削弱测试。\n"
+        "6. 云同步：检查 `myfork/main` 独有提交与 patch，区分真实 fork 工作和 patch 等价的重复历史，"
+        "先保全尚未在本地表达的真实工作，再把本地 `main` 镜像到 `myfork/main`。可快进则正常 push。"
+        "若精确对齐必须非快进，禁止把陈旧 fork 历史反向合进 main，也禁止裸 `--force`：先展示会被"
+        "替换的内容，条件允许时创建并推送带时间戳的 fork 备份 ref，再向用户请示；获批后才可用绑定"
+        "预期 tip 的 `--force-with-lease=<expected-tip>`。绝不 push 官方 `origin`。完成后重新 fetch "
+        "myfork，并证明本地 main 与 `myfork/main` tip 完全一致。\n"
+        "7. 最终更新账单：旧/新 HEAD 与两端 tip；本次上游提交及用户可感知变化；保留的本地功能；"
+        "冲突和逐文件裁决；脏编辑恢复；测试；backup/patch；推送结果；最终 ahead/behind；"
+        "以及未经验证的残余风险。仅启动成功不算验证。"
         f"{_tail(args_text)}"
     )
-
 
 def build_autorun_prompt(args_text: str = "") -> str:
     return (
@@ -580,7 +592,7 @@ def start_reflect_task(name: str) -> tuple[bool, str]:
 # (cmd, arg_hint, desc)  — kept identical between v2 and v3 so the palette
 # stays consistent across frontends.
 PALETTE_ENTRIES: list[tuple[str, str, str]] = [
-    ("/update",    "[note]",    "git pull 更新 GA 仓库并报告影响面"),
+    ("/update",    "[note]",    "LLM 合并官方更新、同步 myfork 并生成更新账单"),
     ("/autorun",   "[seed]",    "进入 autonomous_operation 自主模式"),
     ("/morphling", "[target]",  "启用 Morphling 蒸馏 / 吞噬外部技能"),
     ("/goal",      "[goal]",    "进入 Goal 模式（需 condition 约束）"),
