@@ -234,9 +234,12 @@ def add_chat(msg: str, role: str = "conductor", files: list = None, images: list
     files = list(files or [])
     known = {x.get("path") for x in files}
     for ref in re.findall(r"`([^`\n]+)`", msg):
-        try: path = file_path(ref)
-        except ValueError: continue
-        if os.path.isfile(path) and path not in known: files.append({"ref": ref, "path": path, "name": os.path.basename(path)})
+        for candidate in ([ref] if os.path.isabs(ref) else [os.path.join(FILE_HOME, ref), ref]):
+            try: path = file_path(candidate)
+            except ValueError: continue
+            if os.path.isfile(path):
+                if path not in known: files.append({"ref": ref, "path": path, "name": os.path.basename(path)})
+                break
     item = {"id": short_id(), "role": role, "msg": msg, "ts": now_ms(), "read": role != "user", "files": files, "images": images or []}
     chat_messages.append(item)
     if len(chat_messages) > 200: del chat_messages[:-200]

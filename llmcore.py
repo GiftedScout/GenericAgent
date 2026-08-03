@@ -454,6 +454,7 @@ def _stream_with_retry(sess, url, headers, payload, parse_fn):
                     return e.value or []
         except (requests.Timeout, requests.ConnectionError, requests.exceptions.ChunkedEncodingError) as e:
             err = f"!!!Error: {type(e).__name__}: {e}" if str(e) else f"!!!Error: {type(e).__name__}"
+            if getattr(sess, 'should_stop', None) and sess.should_stop(): return []
             if attempt < sess.max_retries:
                 d = _delay(None, attempt)
                 print(f"[LLM Retry] {type(e).__name__}, retry in {d:.1f}s ({attempt+1}/{sess.max_retries+1})")

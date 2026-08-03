@@ -49,6 +49,7 @@ I18N = {
         'auto_on_cap': '🟢 已允许：约1分钟后启动，之后空闲30分钟再触发',
         'auto_off_cap': '🔴 自主行动已停止',
         'auto_prompt': '[AUTO]🤖 用户已经离开超过30分钟，作为自主智能体，请阅读自动化sop，执行自动任务。',
+        'detached_running': '⏳ 后台任务运行中…（本页已刷新，实时流不再接入；完成后自动刷新）',
         'get_token': '🔑 获取 Token',
         'get_token_toast': '已打开浏览器',
         'need_mykey': '⚠️ 请配置 mykey.py',
@@ -66,6 +67,7 @@ I18N = {
         'auto_on_cap': '🟢 On: first run ~1min, then every 30min idle',
         'auto_off_cap': '🔴 Auto-action disabled',
         'auto_prompt': '[AUTO]🤖 User has been idle for over 30 minutes. As an autonomous agent, read the automation SOP and execute automatic tasks.',
+        'detached_running': '⏳ A task is running in the background… (this page was refreshed, live stream not attached; will refresh when done)',
         'get_token': '🔑 Get Token',
         'get_token_toast': 'Opened in browser',
         'need_mykey': '⚠️ Please set mykey.py',
@@ -83,6 +85,8 @@ def init():
     return agent
 
 agent = init()
+# NOTE: never abort merely because a new session appeared (F5 / 2nd tab / external probe).
+# Aborting is an *intent*, triggered only by a new prompt or the Stop button.
 _sp = getattr(agentmain, "start_subscription_portal", None)
 
 @st.fragment(run_every=timedelta(seconds=2))
@@ -300,8 +304,8 @@ def _poll_main_task(max_items=256):
     return done
 
 
-def _render_stat_badge(is_running, target=None):
-    """Render task usage/time into one stable element, without clearing its container."""
+def _render_stat_badge(is_running):
+    """Render task usage/time in the current app or fragment context."""
     if 'task_start_ts' not in st.session_state or not hasattr(llmcore, 'STATS'):
         return
     end_ts = time.time() if is_running else st.session_state.get('task_end_ts', time.time())
@@ -312,13 +316,12 @@ def _render_stat_badge(is_running, target=None):
              f"{short(stats['ctx'])} chars·{stats['msgs']}msgs │ "
              f"in {short(stats.get('inp', 0))} toks·cached{short(stats.get('cached', 0))}·out{short(stats.get('out', 0))} │ "
              if 'ctx' in stats else '')
-    renderer = target.markdown if target is not None else st.markdown
-    renderer(f'<div class="ga-stat-badge">{usage}{secs // 60}:{secs % 60:02d}</div>',
-             unsafe_allow_html=True)
+    st.markdown(f'<div class="ga-stat-badge">{usage}{secs // 60}:{secs % 60:02d}</div>',
+                unsafe_allow_html=True)
 
 
 @st.fragment(run_every=timedelta(seconds=1))
-def render_main_stream(frozen_host, live_slot, stats_slot, render_state):
+def render_main_stream(frozen_host, live_slot, render_state):
     """Append completed turns outside the fragment; redraw only the active turn."""
     done = _poll_main_task()
     if done is not None:
@@ -344,21 +347,25 @@ def render_main_stream(frozen_host, live_slot, stats_slot, render_state):
     # These external slots keep stable delta paths; only their contents change.
     with live_slot.container():
         render_segments([segments[-1]], suffix=" ▌")
-    _render_stat_badge(is_running=True, target=stats_slot)
+    _render_stat_badge(is_running=True)
 
 
-def mount_main_stream(stats_slot):
-    """Create persistent targets captured by the fragment until the next full rerun."""
+def mount_main_stream():
+    """Create persistent response targets captured by the fragment until the next full rerun."""
     with st.chat_message("assistant"):
         frozen_host = st.container()
         live_slot = st.empty()
-        render_main_stream(frozen_host, live_slot, stats_slot, {'frozen': 0})
+        render_main_stream(frozen_host, live_slot, {'frozen': 0})
 
 if not hasattr(agent, "_ui_messages"): agent._ui_messages = st.session_state.get("messages", [])
 if "messages" not in st.session_state: st.session_state.messages = agent._ui_messages
+if not hasattr(agent, "_hub"):
+    try:
+        import hub; agent._hub = hub.connect(agent, 'stapp')
+    except Exception: agent._hub = None
 # Lazy history: long sessions (esp. after loop) render thousands of elements on every
 # full-app rerun → seconds of gray/RUNNING. Only render the tail unless expanded.
-_HIST_TAIL = 6
+_HIST_TAIL = 10
 _msgs = st.session_state.messages
 if len(_msgs) > _HIST_TAIL:
     if not st.session_state.get("show_full_history"):
@@ -398,10 +405,6 @@ _js_ime_fix = ("" if os.name == 'nt' else
     "f();new MutationObserver(f).observe(d.body,{childList:1,subtree:1})}()")
 _embed_html(f'<script>{_js_ime_fix}</script>', height=0)
 
-# Fixed target shared by full-app rendering and the one-second stream fragment.
-# The badge is position:fixed, so this placeholder does not affect its visual position.
-stats_slot = st.empty()
-
 _injected = st.session_state.pop('_inject_prompt', None)
 prompt = st.chat_input("any task?") or _injected
 if prompt:
@@ -415,7 +418,7 @@ if prompt:
         st.session_state.last_reply_time = int(time.time())
         st.rerun()
     if cmd == "/new":
-        st.session_state.messages = [{"role": "assistant", "content": reset_conversation(agent), "time": ts}]
+        st.session_state.messages[:] = [{"role": "assistant", "content": reset_conversation(agent), "time": ts}]
         _reset_and_rerun()
     if cmd.startswith("/continue"):
         m = re.match(r'/continue\s+(\d+)\s*$', cmd.strip())
@@ -426,15 +429,15 @@ if prompt:
         result = handle_frontend_command(agent, cmd)
         history = extract_ui_messages(target) if target and result.startswith('✅') else None
         tail = [{"role": "assistant", "content": result, "time": ts}]
-        if history: st.session_state.messages = history + tail
-        else: st.session_state.messages = list(st.session_state.messages)+[{"role": "user", "content": cmd, "time": ts}]+tail
+        if history: st.session_state.messages[:] = history + tail
+        else: st.session_state.messages.extend([{"role": "user", "content": cmd, "time": ts}] + tail)
         _reset_and_rerun()
     if cmd.startswith("/btw"):
         answer = btw_handle_frontend(agent, cmd)  # sync; bypasses put_task → main agent.run() untouched
-        st.session_state.messages = list(st.session_state.messages) + [
+        st.session_state.messages.extend([
             {"role": "user", "content": prompt, "time": ts},
             {"role": "assistant", "content": answer, "time": ts},
-        ]
+        ])
         st.rerun()  # preserve display_queue/partial_response so resume path drains the running main task
     if cmd.startswith("/export"):
         parts = cmd.split(maxsplit=1)
@@ -463,29 +466,73 @@ if prompt:
                     result = f"✅ 已导出:\n\n`{path}`"
                 except Exception as e:
                     result = f"❌ 导出失败: {e}"
-        st.session_state.messages = list(st.session_state.messages) + [
+        st.session_state.messages.extend([
             {"role": "user", "content": cmd, "time": ts},
             {"role": "assistant", "content": result, "time": ts},
-        ]
+        ])
         _reset_and_rerun()
     # Regular prompt starts a new main task. Explicitly detach any prior task first;
     # sidebar-only reruns never pass through this branch, so they keep the queue.
-    if st.session_state.get("display_queue") is not None:
+    if agent.is_running or st.session_state.get("display_queue") is not None:
         _cancel_main_task()
     st.session_state.messages.append({"role": "user", "content": prompt})
     if hasattr(agent, '_pet_req') and not prompt.startswith('/'): agent._pet_req('state=walk')
     with st.chat_message("user"): st.markdown(prompt)
     _start_main_task(prompt)
-    mount_main_stream(stats_slot)
+    mount_main_stream()
 elif st.session_state.get('display_queue') is not None:
     # No new prompt but a task is mid-flight (typically a /btw rerun) — resume drain.
-    mount_main_stream(stats_slot)
+    mount_main_stream()
+elif getattr(agent, '_hub_inbox', None):
+    # A task pushed in over the hub: adopt it as if typed here, so it gets a user bubble and a
+    # live stream instead of the anonymous "something is running" notice. pop() -> the first tab
+    # to rerun claims it; later tabs fall through to the detached view below.
+    _hm = agent._hub_inbox.pop(0)
+    st.session_state.messages.append({"role": "user", "content": _hm['text']})
+    with st.chat_message("user"): st.markdown(_hm['text'])
+    st.session_state.display_queue = _hm['q']
+    st.session_state.partial_response = ""
+    st.session_state.task_start_ts = time.time()
+    mount_main_stream()
+elif agent.is_running or (getattr(agent, '_current_queue', None) is not None
+                          and not agent._current_queue.empty()):
+    # A task is running but this session owns no queue (page was refreshed / opened in a
+    # 2nd tab). The stream is per-session and intentionally gone; only show liveness so the
+    # page is never blank-and-silent, and refresh once the backend goes idle.
+    @st.fragment(run_every=timedelta(seconds=1))
+    def _watch_detached_task():
+        # Re-attach to the live task's queue only to salvage its final ``done`` so the
+        # answer still lands in history. The ``next`` stream is per-session and is
+        # deliberately dropped rather than resumed.
+        dq = getattr(agent, "_current_queue", None)
+        if dq is not None:
+            while True:
+                try: item = dq.get_nowait()
+                except Exception: break
+                if isinstance(item, dict) and "done" in item:
+                    if item["done"]:
+                        st.session_state.messages.append({"role": "assistant", "content": item["done"]})
+                    st.rerun(scope="app"); return
+        if not agent.is_running:
+            st.rerun(scope="app"); return
+        st.chat_message("assistant").markdown(T("detached_running"))
+
+    _watch_detached_task()
+
+@st.fragment(run_every=timedelta(seconds=2))
+def _watch_hub_inbox():
+    # An idle page has no heartbeat, so a task arriving from the hub would sit unnoticed until the
+    # next click. Poll cheaply and hand it to the claim branch above via a full rerun.
+    if getattr(agent, '_hub_inbox', None) and st.session_state.get('display_queue') is None:
+        st.rerun(scope="app")
+
+_watch_hub_inbox()
 
 # Usage/time label remains after completion. During a task render_main_stream refreshes it.
 _has_task_stats = 'task_start_ts' in st.session_state
 _is_running = st.session_state.get('display_queue') is not None
 if _has_task_stats and not _is_running:
-    _render_stat_badge(is_running=False, target=stats_slot)
+    _render_stat_badge(is_running=False)
 
 if _has_task_stats or _is_running:
     st.markdown(
