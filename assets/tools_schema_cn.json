@@ -1,7 +1,7 @@
 [
   {"type": "function", "function": {
     "name": "code_run",
-    "description": "代码执行器。优先使用python。支持Multi-call，并行时用script参数。无script参数时正文代码块会被执行，单次调用优先使用以免转义。禁硬编码大量数据",
+    "description": "代码执行器。Python代码优先用type=python；bash脚本内必须调用python3，不要调用python。支持Multi-call，并行时用script参数。无script参数时正文代码块会被执行，单次调用优先使用以免转义。禁硬编码大量数据",
     "parameters": {"type": "object", "properties": {
       "script": {"type": "string", "description": "[Optional] 要执行的代码。为免转义建议留空，改用正文代码块（与此参数互斥）"},
       "type": {"type": "string", "enum": ["python", "powershell"], "description": "代码类型", "default": "python"},
