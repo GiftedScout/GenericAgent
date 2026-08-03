@@ -566,7 +566,7 @@ class GenericAgentHandler(BaseHandler):
         if self._in_plan_mode() and any(kw in content for kw in ['任务完成', '全部完成', '已完成所有', '🏁']):
             if 'VERDICT' not in content and '[VERIFY]' not in content and '验证subagent' not in content:
                 yield "[Warn] Plan模式完成声明拦截。\n"
-                return StepOutcome({}, next_prompt="⛔ [验证拦截] 检测到你在plan模式下声称完成，但未执行[VERIFY]验证步骤。请先按plan_sop §四启动验证subagent，获得VERDICT后才能声称完成。")
+                return StepOutcome({}, next_prompt="⛔ [验证拦截] 检测到你在plan模式下声称完成，但尚无验证证据。请先执行与任务风险匹配的独立验证并附上[VERIFY]结果，再声称完成。")
             
         # 2. 检测"包含较大代码块但未调用工具"的情况
         # 关键特征：恰好1个大代码块 + 代码块直接结尾（后面只有空白）

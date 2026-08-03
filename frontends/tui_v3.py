@@ -1704,8 +1704,8 @@ class ToolRecord:
 
 def _tool_status(result: str, trailing: str) -> str:
     """Infer status from GA's emitted markers ONLY. Read-tool results can
-    contain ❌ or the word 'error' as ordinary content (a doc on coding rules,
-    plan_sop with ⛔/❌ markers, etc.) — those MUST NOT flag the chip red."""
+    contain ❌ or the word 'error' as ordinary content (for example, docs
+    containing ⛔/❌ markers) — those MUST NOT flag the chip red."""
     s = result + trailing
     if re.search(r'^\[(?:Status|Error)\][^\n]*(?:fail|error|❌)', s, re.I | re.M):
         return 'error'

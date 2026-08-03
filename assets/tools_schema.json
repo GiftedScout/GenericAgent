@@ -68,5 +68,24 @@
     "name": "start_long_term_update",
     "description": "After a long task completes, distill long-term memory. Call when discovering info worth remembering (env facts/user prefs/lessons learned). Skip if memory already updated or in autonomous flow. Must call when a task that took 15+ turns is completed.",
     "parameters": {"type": "object", "properties": {}}}
-  }
+  },
+  {"type": "function", "function": {
+    "name": "ocr",
+    "description": "Extract text from a local image with the configured vision model. Pass only the image path, never credentials.",
+    "parameters": {"type": "object", "properties": {
+      "image_path": {"type": "string", "description": "Image path; relative paths resolve from the agent working directory"},
+      "prompt": {"type": "string", "description": "Optional extraction instructions"},
+      "timeout": {"type": "integer", "default": 120}},
+      "required": ["image_path"]}
+  }},
+  {"type": "function", "function": {
+    "name": "generate_image",
+    "description": "Generate an image with the configured image model and save it under image/ in the agent working directory. size and quality are passed through to the upstream API.",
+    "parameters": {"type": "object", "properties": {
+      "prompt": {"type": "string"},
+      "size": {"type": "string", "default": "1K", "description": "Upstream size parameter; defaults to 1K"},
+      "quality": {"type": "string", "default": "auto", "description": "Upstream quality parameter; defaults to auto"},
+      "timeout": {"type": "integer", "default": 180}},
+      "required": ["prompt"]}
+  }}
 ]

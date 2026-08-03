@@ -667,12 +667,12 @@ _PLAN_ENTRY_RE = re.compile(r'enter_plan_mode\(\s*[\'"]([^\'"]+plan\.md)[\'"]')
 def find_plan_entry(path):
     """Last `enter_plan_mode("…plan.md")` call in a model_responses log.
 
-    Plan mode has exactly one entry point (plan_sop.md): a `code_run` tool call
-    whose inline_eval script invokes `handler.enter_plan_mode(...)`. That call
-    survives in the log as a structured `tool_use` block — unlike a plan path
-    merely *mentioned* in chat text, it cannot be produced by the user typing
-    a filename. Scanning these blocks is therefore the restore criterion for
-    the plan card; the last match wins so re-entered plans track the newest.
+    Plan mode is recorded by a `code_run` tool call whose inline_eval script
+    invokes `handler.enter_plan_mode(...)`. That call survives in the log as a
+    structured `tool_use` block — unlike a plan path merely *mentioned* in chat
+    text, it cannot be produced by the user typing a filename. Scanning these
+    blocks is therefore the restore criterion for the plan card; the last match
+    wins so re-entered plans track the newest.
 
     Returns the plan.md path string as written in the script, or None.
     """
