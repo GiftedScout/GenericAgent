@@ -6333,6 +6333,13 @@ class GenericAgentTUI(App[None]):
         if not head.startswith("/"):
             self._system("❌ /slash 命令解析失败"); return
         tail = text[len(head):].strip()
+        if head == "/update":
+            sess = self.current
+            if sess.status == "running":
+                self._system(f"#{sess.agent_id} 正在跑，/stop 后再发。")
+                return
+            self.submit_user_message(text)
+            return
         prompt = slash_cmds.prompt_for(head, tail)
         if prompt is None:
             self._system(f"❌ 未知命令 {head}"); return

@@ -201,6 +201,10 @@ class GenericAgent:
 
 GeneraticAgent = GenericAgent
 
+# `/update` is deterministic until an ambiguous Git state needs LLM judgment.
+from frontends.update_cmd import install as _install_update_cmd
+_install_update_cmd(GenericAgent)
+
 if __name__ == '__main__':
     import argparse
     from datetime import datetime

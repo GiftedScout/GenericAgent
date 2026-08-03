@@ -4720,7 +4720,10 @@ class SB:
             # with a session-recovery prompt before the LLM sees it.  We
             # just forward the literal string — the agent expands it.
             self._submit('/resume', [])
-        elif name in ('update', 'autorun', 'morphling', 'goal', 'hive', 'conductor'):
+        elif name == 'update':
+            # Keep it literal: agentmain installs the deterministic backend.
+            self._submit('/update' + ((' ' + arg) if arg else ''), [])
+        elif name in ('autorun', 'morphling', 'goal', 'hive', 'conductor'):
             # slash_cmds bundle — build a long prompt and feed it back through
             # _submit so the agent sees an ordinary user turn.  Keeps the
             # frontend ignorant of SOP details; see frontends/slash_cmds.py.
