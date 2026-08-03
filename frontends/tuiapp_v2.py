@@ -27,6 +27,7 @@ import shutil
 # Local: cross-platform shortcut-label formatter (Win/Linux "Ctrl+B" vs mac "⌃B").
 # Imported early because _TIPS at module load time uses fmt_key().
 from keysym import fmt_key, fmt_keys  # noqa: E402
+from terminal_math import adapt_math_markdown  # noqa: E402
 from dataclasses import dataclass, field
 from itertools import count
 from typing import Any, Callable, Optional
@@ -925,7 +926,7 @@ def render_folded_text(text: str) -> str:
 class HardBreakMarkdown(Markdown):
     # softbreak → hardbreak so multi-line agent logs aren't collapsed into one line.
     def __init__(self, markup, **kwargs):
-        super().__init__(markup, **kwargs)
+        super().__init__(adapt_math_markdown(markup), **kwargs)
         self._soft_to_hard(self.parsed)
 
     @staticmethod
