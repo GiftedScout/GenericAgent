@@ -178,8 +178,16 @@ def first_init_driver():
     for i in range(7):
         time.sleep(2)
         sess = driver.get_all_sessions()
-        if len(sess) > 0: break
-        if i == 4: webbrowser.open("https://example.com")
+        if len(sess) > 0:
+            break
+        if i == 4:
+            # 无已有后台标签时，静默启动独立 Firefox Bridge；不要调用
+            # webbrowser.open，否则会唤起用户当前的可见浏览器窗口。
+            if _auto_firefox_bridge_enabled():
+                if _run_firefox_bridge():
+                    break
+                return
+            return
 
 def web_scan(tabs_only=False, switch_tab_id=None, text_only=False, maxlen=35000):
     """获取当前页面的简化HTML内容和标签页列表。注意：简化过程会过滤边栏、浮动元素等非主体内容。

@@ -22,7 +22,7 @@ if [ -z "$GECKODRIVER_BIN" ]; then
     echo "ERROR: geckodriver not found; set GECKODRIVER_BIN or install geckodriver" >&2
     exit 1
 fi
-DEFAULT_URL="${GA_FIREFOX_BRIDGE_URL:-http://example.com/}"
+DEFAULT_URL="${GA_FIREFOX_BRIDGE_URL:-https://www.bing.com/}"
 
 # 1. 先检查 TMWebDriver 是否已经有可用标签；已有则不再弹窗/不再开新示例页
 echo "[1/5] Checking existing TMWebDriver tabs..."
@@ -93,7 +93,7 @@ from pathlib import Path
 base_url = "http://127.0.0.1:9222"
 ext_path = str(Path(os.environ["GA_ROOT"]) / "assets" / "tmwd_cdp_bridge")
 session_file = Path("/tmp/ga_firefox_session.json")
-default_url = os.environ.get("GA_FIREFOX_BRIDGE_URL", "http://example.com/")
+default_url = os.environ.get("GA_FIREFOX_BRIDGE_URL", "https://www.bing.com/")
 headless = os.environ.get("GA_FIREFOX_BRIDGE_HEADLESS", "1").lower() not in ("0", "false", "no", "off")
 started_new_gecko = os.environ.get("STARTED_NEW_GECKO") == "1"
 
