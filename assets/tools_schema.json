@@ -42,7 +42,8 @@
       "max_results": {"type": "integer", "description": "Maximum results to return (1-20, default 5)"},
       "search_depth": {"type": "string", "enum": ["basic", "advanced"], "description": "Tavily search depth; ignored by providers that do not support it"},
       "topic": {"type": "string", "enum": ["general", "news"], "description": "Tavily search topic; ignored by providers that do not support it"},
-      "time_range": {"type": "string", "enum": ["day", "week", "month", "year"], "description": "Restrict results to this recent period when supported"}},
+      "time_range": {"type": "string", "enum": ["day", "week", "month", "year"], "description": "Restrict results to this recent period when supported"},
+      "provider": {"type": "string", "enum": ["tavily", "brave", "exa"], "description": "Optional explicit provider. Default is Tavily; use Exa only for specialised/obscure research."}},
       "required": ["query"]}
   }},
   {"type": "function", "function": {

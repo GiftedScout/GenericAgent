@@ -5,6 +5,9 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import requests
+import ga
+
 from agent_loop import exhaust
 from ga import GenericAgentHandler, web_scan
 
@@ -117,11 +120,58 @@ class WebSearchTests(unittest.TestCase):
         result = {"status": "success", "provider": "brave", "query": "test", "results": []}
         with patch("ga.web_scan", return_value=result) as search:
             outcome = exhaust(self.handler.dispatch("web_scan", {
-                "query": "test", "max_results": "4", "search_depth": "advanced", "topic": "news", "time_range": "day",
+                "query": "test", "max_results": "4", "search_depth": "advanced", "topic": "news", "time_range": "day", "provider": "exa",
             }, self.response))
 
         self.assertEqual(json.loads(outcome.data), result)
-        search.assert_called_once_with(query="test", max_results=4, search_depth="advanced", topic="news", time_range="day")
+        search.assert_called_once_with(query="test", max_results=4, search_depth="advanced", topic="news", time_range="day", provider="exa")
+
+    def test_provider_configs_are_discovered_by_value_not_variable_name(self):
+        keys = {
+            "anything": {"provider": "exa", "api_key": "exa-key"},
+            "a_different_name": {"provider": "tavily", "api_key": "tavily-key"},
+            "not_a_search_config": {"api_key": "ignored"},
+        }
+        with patch("llmcore._load_mykeys", return_value=keys), \
+             patch.dict("os.environ", {}, clear=True):
+            configs = ga._web_search_configs()
+            provider, api_key, _ = ga._web_search_config()
+
+        self.assertEqual(set(configs), {"tavily", "exa"})
+        self.assertEqual((provider, api_key), ("tavily", "tavily-key"))
+
+    def test_explicit_exa_never_calls_tavily(self):
+        response = _Response({"results": []})
+        with patch("ga._web_search_config", return_value=("exa", "exa-key", {})), \
+             patch("ga.requests.post", return_value=response) as post:
+            result = web_scan("obscure physics", provider="exa")
+
+        self.assertEqual(result["provider"], "exa")
+        post.assert_called_once()
+        self.assertEqual(post.call_args.args[0], "https://api.exa.ai/search")
+
+    def test_tavily_connection_failure_falls_back_once_to_exa(self):
+        exa_response = _Response({"results": []})
+        with patch("ga._web_search_config", side_effect=[
+            ("tavily", "tavily-key", {}), ("exa", "exa-key", {}),
+        ]), patch("ga.requests.post", side_effect=[requests.ConnectionError("offline"), exa_response]) as post:
+            result = web_scan("query")
+
+        self.assertEqual(result["provider"], "exa")
+        self.assertEqual(result["fallback_from"], "tavily")
+        self.assertEqual(post.call_count, 2)
+
+    def test_tavily_http_error_and_empty_result_do_not_fall_back_to_exa(self):
+        http_error = _Response({"error": "rate limited"}, ok=False, status_code=429)
+        empty_result = _Response({"results": []})
+        with patch("ga._web_search_config", return_value=("tavily", "tavily-key", {})), \
+             patch("ga.requests.post", side_effect=[http_error, empty_result]) as post:
+            rate_limited = web_scan("query")
+            empty = web_scan("query")
+
+        self.assertEqual(rate_limited["status"], "error")
+        self.assertEqual(empty["provider"], "tavily")
+        self.assertEqual(post.call_count, 2)
 
     def test_browser_scan_remains_available_via_web_execute_js(self):
         browser_result = {"status": "success", "tabs": [], "content": "page"}

@@ -67,17 +67,23 @@ native_oai_config = {
 
 
 # ── 4. Web search API (optional) ──────────────────────────────────────────────
-# `web_scan` searches through this API. For browser page inspection or interaction,
-# use `web_execute_js(scan=true)` or pass JavaScript. Choose one provider:
-# web_search_config = {
-#     'provider': 'tavily',                  # 'tavily', 'brave', or 'exa'
+# `web_scan` searches through these APIs. Any top-level dict whose `provider` is
+# `tavily`, `brave`, or `exa` is discovered (the variable name is arbitrary).
+# By default it uses Tavily; Exa is only used when explicitly requested or if
+# default Tavily has a timeout/connection failure. For browser page inspection or
+# interaction, use `web_execute_js(scan=true)` or pass JavaScript.
+# web_search_config_tavily = {
+#     'provider': 'tavily',                  # Default provider
 #     'api_key': 'tvly-your-api-key',        # Or use the provider environment variable below
 #     # 'timeout': 20,                       # Request timeout in seconds (1-120; default 20)
 #     # 'base_url': 'https://...',           # Optional compatible endpoint / proxy
 # }
-# Environment variables: GA_WEB_SEARCH_PROVIDER=tavily + TAVILY_API_KEY=tvly-...
-#                        GA_WEB_SEARCH_PROVIDER=brave  + BRAVE_SEARCH_API_KEY=...
-#                        GA_WEB_SEARCH_PROVIDER=exa    + EXA_API_KEY=...
+# web_search_config_exa = {
+#     'provider': 'exa',
+#     'api_key': 'your-exa-api-key',
+# }
+# Environment variables: TAVILY_API_KEY=tvly-...; EXA_API_KEY=...; BRAVE_SEARCH_API_KEY=...
+# Optional GA_WEB_SEARCH_PROVIDER selects a configured default if you do not want Tavily.
 
 
 # ── 5. Global HTTP proxy (optional) ──────────────────────────────────────────

@@ -42,7 +42,8 @@
       "max_results": {"type": "integer", "description": "最多返回结果数（1-20，默认 5）"},
       "search_depth": {"type": "string", "enum": ["basic", "advanced"], "description": "Tavily 搜索深度；其他不支持的供应商会忽略"},
       "topic": {"type": "string", "enum": ["general", "news"], "description": "Tavily 搜索主题；其他不支持的供应商会忽略"},
-      "time_range": {"type": "string", "enum": ["day", "week", "month", "year"], "description": "供应商支持时，限制为该近期时段内的结果"}},
+      "time_range": {"type": "string", "enum": ["day", "week", "month", "year"], "description": "供应商支持时，限制为该近期时段内的结果"},
+      "provider": {"type": "string", "enum": ["tavily", "brave", "exa"], "description": "可选，显式指定供应商。默认 Tavily；仅在专业/冷门研究时使用 Exa。"}},
       "required": ["query"]}
   }},
   {"type": "function", "function": {

@@ -189,26 +189,70 @@ def first_init_driver():
                 return
             return
 
-def _web_search_config():
-    """Load an explicitly configured search provider without exposing its key."""
+_WEB_SEARCH_PROVIDERS = ('tavily', 'brave', 'exa')
+_WEB_SEARCH_ENV_KEYS = {
+    'tavily': 'TAVILY_API_KEY', 'brave': 'BRAVE_SEARCH_API_KEY', 'exa': 'EXA_API_KEY',
+}
+
+
+def _web_search_configs():
+    """Discover configured providers by each dictionary's ``provider`` field.
+
+    Variable names are intentionally ignored: any top-level mykey.py dictionary
+    using a supported provider is a search configuration. API keys are returned
+    separately so settings dictionaries do not carry credentials through search
+    execution.
+    """
     try:
         from llmcore import _load_mykeys
-        configured = _load_mykeys().get('web_search_config', {})
+        configured = _load_mykeys()
     except Exception:
         configured = {}
-    configured = dict(configured) if isinstance(configured, dict) else {}
-    provider = str(configured.get('provider') or os.environ.get('GA_WEB_SEARCH_PROVIDER') or '').strip().lower()
-    key_names = {
-        'tavily': 'TAVILY_API_KEY', 'brave': 'BRAVE_SEARCH_API_KEY', 'exa': 'EXA_API_KEY',
-    }
-    api_key = configured.get('api_key') or os.environ.get(key_names.get(provider, ''))
-    return provider, api_key, configured
+    configured = configured if isinstance(configured, dict) else {}
+    configs = {}
+    for value in configured.values():
+        if not isinstance(value, dict):
+            continue
+        candidate = dict(value)
+        provider = str(candidate.get('provider') or '').strip().lower()
+        if provider not in _WEB_SEARCH_PROVIDERS:
+            continue
+        api_key = candidate.pop('api_key', None) or os.environ.get(_WEB_SEARCH_ENV_KEYS[provider])
+        # Keep a deterministic first definition, unless a later one supplies a
+        # missing key for the same provider.
+        if provider not in configs or (not configs[provider][0] and api_key):
+            configs[provider] = (api_key, candidate)
+
+    # Retain environment-only usage and GA_WEB_SEARCH_PROVIDER as an explicit
+    # default override, without making configuration variable names significant.
+    env_provider = str(os.environ.get('GA_WEB_SEARCH_PROVIDER') or '').strip().lower()
+    if env_provider in _WEB_SEARCH_PROVIDERS:
+        old_key, old_config = configs.get(env_provider, (None, {'provider': env_provider}))
+        configs[env_provider] = (os.environ.get(_WEB_SEARCH_ENV_KEYS[env_provider]) or old_key, old_config)
+    return configs
+
+
+def _web_search_config(requested_provider=None):
+    """Select one configured provider without exposing its key in output."""
+    configs = _web_search_configs()
+    requested_provider = str(requested_provider or '').strip().lower()
+    if requested_provider:
+        api_key, config = configs.get(requested_provider, (None, {}))
+        return requested_provider, api_key, config
+
+    env_provider = str(os.environ.get('GA_WEB_SEARCH_PROVIDER') or '').strip().lower()
+    preferences = ((env_provider,) if env_provider in _WEB_SEARCH_PROVIDERS else ()) + _WEB_SEARCH_PROVIDERS
+    for provider in preferences:
+        if provider in configs:
+            api_key, config = configs[provider]
+            return provider, api_key, config
+    return '', None, {}
 
 
 def _web_search_setup_msg():
-    return ("Web search is not configured. Add `web_search_config = "
-            "{'provider': 'tavily', 'api_key': 'tvly-...'}` to mykey.py, or set "
-            "GA_WEB_SEARCH_PROVIDER plus TAVILY_API_KEY, BRAVE_SEARCH_API_KEY, or EXA_API_KEY.")
+    return ("Web search is not configured. Add any top-level dictionary with "
+            "`provider` ('tavily', 'brave', or 'exa') and `api_key` to mykey.py, "
+            "or set GA_WEB_SEARCH_PROVIDER plus its provider API-key environment variable.")
 
 
 def _search_error(response):
@@ -221,21 +265,8 @@ def _search_error(response):
     return {"status": "error", "msg": f"Search API returned HTTP {response.status_code}: {detail}"}
 
 
-def web_scan(query, max_results=5, search_depth='basic', topic='general', time_range=None):
-    """Search the web through the configured Tavily, Brave, or Exa API.
-
-    Browser interaction intentionally lives in ``web_execute_js(scan=True)`` so
-    routine research does not need to launch or drive a browser.
-    """
-    query = str(query or '').strip()
-    if not query:
-        return {"status": "error", "msg": "query is required"}
-    max_results = max(1, min(_arg({'value': max_results}, 'value', 5, int), 20))
-    provider, api_key, config = _web_search_config()
-    if provider not in ('tavily', 'brave', 'exa'):
-        return {"status": "error", "msg": _web_search_setup_msg()}
-    if not api_key:
-        return {"status": "error", "msg": f"{provider} search API key is missing. " + _web_search_setup_msg()}
+def _web_search_request(provider, api_key, config, query, max_results, search_depth, topic, time_range):
+    """Make one provider request and return ``(result, retryable_outage)``."""
     timeout = max(1, min(_arg(config, 'timeout', 20, int), 120))
     try:
         if provider == 'tavily':
@@ -247,7 +278,7 @@ def web_scan(query, max_results=5, search_depth='basic', topic='general', time_r
             }
             if time_range in ('day', 'week', 'month', 'year'): payload['time_range'] = time_range
             response = requests.post(config.get('base_url', 'https://api.tavily.com/search'), json=payload, timeout=timeout)
-            if not response.ok: return _search_error(response)
+            if not response.ok: return _search_error(response), False
             data = response.json()
             results = [{k: item[k] for k in ('title', 'url', 'content', 'score', 'published_date') if item.get(k) is not None}
                        for item in data.get('results', [])]
@@ -258,7 +289,7 @@ def web_scan(query, max_results=5, search_depth='basic', topic='general', time_r
             if time_range in freshness: params['freshness'] = freshness[time_range]
             response = requests.get(config.get('base_url', 'https://api.search.brave.com/res/v1/web/search'),
                                     params=params, headers={'Accept': 'application/json', 'X-Subscription-Token': api_key}, timeout=timeout)
-            if not response.ok: return _search_error(response)
+            if not response.ok: return _search_error(response), False
             data = response.json()
             results = [dict((key, value) for key, value in (
                 ('title', item.get('title')), ('url', item.get('url')),
@@ -273,7 +304,7 @@ def web_scan(query, max_results=5, search_depth='basic', topic='general', time_r
                 payload['startPublishedDate'] = (datetime.now().astimezone() - timedelta(days=days[time_range])).isoformat()
             response = requests.post(config.get('base_url', 'https://api.exa.ai/search'), json=payload,
                                      headers={'x-api-key': api_key, 'Content-Type': 'application/json'}, timeout=timeout)
-            if not response.ok: return _search_error(response)
+            if not response.ok: return _search_error(response), False
             data = response.json()
             results = [dict((key, value) for key, value in (
                 ('title', item.get('title')), ('url', item.get('url')), ('content', item.get('text')),
@@ -282,13 +313,45 @@ def web_scan(query, max_results=5, search_depth='basic', topic='general', time_r
             answer = None
         output = {'status': 'success', 'provider': provider, 'query': query, 'results': results}
         if answer: output['answer'] = answer
-        return output
-    except requests.Timeout:
-        return {'status': 'error', 'msg': f'{provider} search timed out after {timeout}s'}
+        return output, False
+    except (requests.Timeout, requests.ConnectionError) as e:
+        return {'status': 'error', 'msg': f'{provider} search connection failed: {smart_format(str(e), max_str_len=500)}'}, True
     except requests.RequestException as e:
-        return {'status': 'error', 'msg': f'{provider} search request failed: {smart_format(str(e), max_str_len=500)}'}
+        return {'status': 'error', 'msg': f'{provider} search request failed: {smart_format(str(e), max_str_len=500)}'}, False
     except (TypeError, ValueError, KeyError) as e:
-        return {'status': 'error', 'msg': f'{provider} search returned an invalid response: {smart_format(str(e), max_str_len=500)}'}
+        return {'status': 'error', 'msg': f'{provider} search returned an invalid response: {smart_format(str(e), max_str_len=500)}'}, False
+
+
+def web_scan(query, max_results=5, search_depth='basic', topic='general', time_range=None, provider=None):
+    """Search via Tavily by default, or explicitly select a configured provider.
+
+    Set ``provider='exa'`` only for specialised or unusually obscure scientific
+    research.  In automatic mode Exa is used only after Tavily times out or its
+    connection fails; API errors and empty results never consume Exa quota.
+    Browser interaction lives in ``web_execute_js(scan=True)``.
+    """
+    query = str(query or '').strip()
+    if not query:
+        return {'status': 'error', 'msg': 'query is required'}
+    max_results = max(1, min(_arg({'value': max_results}, 'value', 5, int), 20))
+    requested_provider = str(provider or '').strip().lower()
+    if requested_provider and requested_provider not in _WEB_SEARCH_PROVIDERS:
+        return {'status': 'error', 'msg': f'Unsupported search provider: {requested_provider}'}
+    selected_provider, api_key, config = _web_search_config(requested_provider)
+    if selected_provider not in _WEB_SEARCH_PROVIDERS:
+        return {'status': 'error', 'msg': _web_search_setup_msg()}
+    if not api_key:
+        return {'status': 'error', 'msg': f'{selected_provider} search API key is missing. ' + _web_search_setup_msg()}
+
+    result, retryable_outage = _web_search_request(
+        selected_provider, api_key, config, query, max_results, search_depth, topic, time_range)
+    if not requested_provider and selected_provider == 'tavily' and retryable_outage:
+        fallback_provider, fallback_key, fallback_config = _web_search_config('exa')
+        if fallback_provider == 'exa' and fallback_key:
+            result, _ = _web_search_request(
+                fallback_provider, fallback_key, fallback_config, query, max_results, search_depth, topic, time_range)
+            result['fallback_from'] = 'tavily'
+    return result
 
 
 def web_browser_scan(tabs_only=False, switch_tab_id=None, text_only=False, maxlen=35000):
@@ -560,8 +623,9 @@ class GenericAgentHandler(BaseHandler):
         search_depth = args.get("search_depth", "basic")
         topic = args.get("topic", "general")
         time_range = args.get("time_range")
+        provider = args.get("provider")
         result = web_scan(query=query, max_results=max_results, search_depth=search_depth,
-                          topic=topic, time_range=time_range)
+                          topic=topic, time_range=time_range, provider=provider)
         show = smart_format(json.dumps(result, ensure_ascii=False, indent=2, default=json_default), max_str_len=300)
         self.print("Web Search Result:", show)
         yield f"Web search result:\n{show}\n"
