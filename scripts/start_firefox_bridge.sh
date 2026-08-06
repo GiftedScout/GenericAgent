@@ -1,7 +1,7 @@
 #!/bin/bash
 # Firefox tmwd_cdp_bridge 启动脚本
 # 用途：启动geckodriver+Firefox+安装扩展+连接TMWebDriver master
-# 配合 TMWebDriver master 使用，web_scan/web_execute_js 通过 Firefox 工作
+# 配合 TMWebDriver master 使用，web_execute_js 通过 Firefox 工作；web_scan 使用外部搜索 API
 # 用法：bash start_firefox_bridge.sh
 
 set -e

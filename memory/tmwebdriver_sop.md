@@ -1,12 +1,12 @@
 # TMWebDriver SOP
 
-- 直接用web_scan/web_execute_js工具。本文件只记录特性和坑。
+- 直接用 `web_scan`（API 搜索）/`web_execute_js`（浏览器交互与 `scan=true` 页面读取）工具。本文件只记录特性和坑。
 - 底层：`../TMWebDriver.py`通过Chrome扩展接管用户浏览器（保留登录态/Cookie）
 - 非Selenium/Playwright，保留用户浏览器登录态
 
 ## 通用特性
 - ⚠web_execute_js里使用`await`时需**显式`return`**才能拿到返回值（底层async包裹，不写return则返回null）
-- ✅web_scan自动穿透同源iframe；跨域iframe需CDP或postMessage（见下方章节）
+- ✅`web_execute_js(scan=true)`自动穿透同源iframe；跨域iframe需CDP或postMessage（见下方章节）
 
 ## 限制(isTrusted)
 - JS事件`isTrusted=false`，敏感操作（如文件上传/部分按钮）可能被拦截；这类场景首选**CDP桥**
@@ -16,12 +16,12 @@
 - 需转物理坐标时：`physX = (screenX + rect中心x) * dpr`，`physY = (screenY + chromeH + rect中心y) * dpr`；其中 `chromeH = outerHeight - innerHeight`
 
 ## 导航
-- `web_scan` 仅读当前页不导航，切换网站用 `web_execute_js` + `location.href='url'`
+- `web_execute_js(scan=true)` 仅读当前页不导航，切换网站用 `web_execute_js` + `location.href='url'`
 - ⚠导航与后续操作**必须拆成两次调用**：同一段JS内 `location.href` 后继续操作→报错`Inspected target navigated or closed`（页面已换执行上下文销毁）。先导航→等加载→再单独执行操作
 
 ## Google图搜
 - class名混淆禁硬编码，点击结果用 `[role=button]` div
-- web_scan过滤边栏，弹出后用JS：文本`document.body.innerText`，大图遍历img按`naturalWidth`最大取src
+- `web_execute_js(scan=true)`过滤边栏，弹出后用JS：文本`document.body.innerText`，大图遍历img按`naturalWidth`最大取src
 - "访问"链接：遍历a找`textContent.includes('访问')`的href
 - 缩略图：`img[src^="data:image"]`直接提取；大图src可能截断用`return img.src`
 

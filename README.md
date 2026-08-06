@@ -268,8 +268,8 @@ The entire core loop is just **~100 lines of code** ([`agent_loop.py`](agent_loo
 | `file_read` | Read files |
 | `file_write` | Write / create / overwrite files |
 | `file_patch` | Patch / modify files |
-| `web_scan` | Perceive web content |
-| `web_execute_js` | Control browser behavior |
+| `web_scan` | Search the web through a configured Tavily, Brave, or Exa API |
+| `web_execute_js` | Inspect (`scan=true`) or control browser behavior |
 | `ask_user` | Human-in-the-loop confirmation |
 | `update_working_checkpoint` | *(memory)* Short-term working notepad |
 | `start_long_term_update` | *(memory)* Distill long-term memory |
@@ -642,8 +642,8 @@ GenericAgent 通过 **分层记忆 × 最小工具集 × 自主执行循环** �
 | `file_read` | 读取文件 |
 | `file_write` | 写入 / 创建 / 覆盖文件 |
 | `file_patch` | 修改文件 |
-| `web_scan` | 感知网页内容 |
-| `web_execute_js` | 控制浏览器行为 |
+| `web_scan` | 通过已配置的 Tavily、Brave 或 Exa API 搜索网页 |
+| `web_execute_js` | 读取（`scan=true`）或控制浏览器行为 |
 | `ask_user` | 人机协作确认 |
 | `update_working_checkpoint` | *（记忆）* 短期工作记事板 |
 | `start_long_term_update` | *（记忆）* 提炼长期记忆 |

@@ -36,20 +36,26 @@
   }},
   {"type": "function", "function": {
     "name": "web_scan",
-    "description": "Get simplified HTML and tab list. Removes hidden/floating/covered elements. Call after switching pages",
+    "description": "Search the web through the configured Tavily, Brave, or Exa API. Use this for research; use web_execute_js for browser interaction or page inspection.",
     "parameters": {"type": "object", "properties": {
-      "tabs_only": {"type": "boolean", "description": "Show tab list only, no HTML"},
-      "switch_tab_id": {"type": "string", "description": "[Optional] Tab ID to switch to"},
-      "text_only": {"type": "boolean", "description": "Plain text only, no HTML"}}}
+      "query": {"type": "string", "description": "Search query"},
+      "max_results": {"type": "integer", "description": "Maximum results to return (1-20, default 5)"},
+      "search_depth": {"type": "string", "enum": ["basic", "advanced"], "description": "Tavily search depth; ignored by providers that do not support it"},
+      "topic": {"type": "string", "enum": ["general", "news"], "description": "Tavily search topic; ignored by providers that do not support it"},
+      "time_range": {"type": "string", "enum": ["day", "week", "month", "year"], "description": "Restrict results to this recent period when supported"}},
+      "required": ["query"]}
   }},
   {"type": "function", "function": {
     "name": "web_execute_js",
-    "description": "Execute JS. Multi-call OK with different switch_tab_id. No guessing. Act accurately to reduce web_scan calls. Execute JS in ```javascript blocks if no script arg, prefer to avoid escaping",
+    "description": "Execute JS in the browser. Use scan=true to inspect tabs or simplified page content; otherwise provide JS. Multi-call OK with different switch_tab_id. No guessing; verify before actions.",
     "parameters": {"type": "object", "properties": {
-      "script": {"type": "string", "description": "[Mutually exclusive] JS code or script path. NEVER use this param when use reply code block"},
-      "save_to_file": {"type": "string", "description": "file path; **only** for long result"},
+      "script": {"type": "string", "description": "[Mutually exclusive with scan] JS code or script path. NEVER use this param when use reply code block"},
+      "scan": {"type": "boolean", "description": "Inspect browser tabs/current simplified page instead of executing JS"},
+      "tabs_only": {"type": "boolean", "description": "With scan=true, show tab list only, no page content"},
+      "text_only": {"type": "boolean", "description": "With scan=true, return plain text instead of HTML"},
+      "save_to_file": {"type": "string", "description": "File path; only for long result"},
       "no_monitor": {"type": "boolean", "description": "Skip page change monitoring, saves 2-3s. Only for reads, not for page actions"},
-      "switch_tab_id": {"type": "string", "description": "[Optional] Tab ID to switch to before executing"}}}
+      "switch_tab_id": {"type": "string", "description": "[Optional] Tab ID to switch to before executing or scanning"}}}
   }},
   {"type": "function", "function": {
     "name": "update_working_checkpoint",

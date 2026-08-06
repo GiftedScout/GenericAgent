@@ -281,6 +281,22 @@ mixin_config = {
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Web 搜索 API（可选）
+# ══════════════════════════════════════════════════════════════════════════════
+# `web_scan` 通过此处配置的 API 搜索网页；浏览器页面读取和交互改用
+# `web_execute_js(scan=true)` 或传入 JavaScript。三家任选其一：
+# web_search_config = {
+#     'provider': 'tavily',                 # 'tavily'、'brave' 或 'exa'
+#     'api_key': 'tvly-your-api-key',       # 也可改用相应环境变量，避免写入本文件
+#     # 'timeout': 20,                      # 请求超时秒数（1-120，默认 20）
+#     # 'base_url': 'https://...',          # 可选：兼容端点或自托管代理
+# }
+# 环境变量方式：GA_WEB_SEARCH_PROVIDER=tavily + TAVILY_API_KEY=tvly-...
+#               GA_WEB_SEARCH_PROVIDER=brave  + BRAVE_SEARCH_API_KEY=...
+#               GA_WEB_SEARCH_PROVIDER=exa    + EXA_API_KEY=...
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  全局 HTTP 代理（所有没有单独指定 proxy 的 session 共用）
 # ══════════════════════════════════════════════════════════════════════════════
 # proxy = 'http://127.0.0.1:2082'

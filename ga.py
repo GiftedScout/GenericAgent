@@ -1,5 +1,5 @@
-import sys, os, re, json, time, threading, importlib, webbrowser
-from datetime import datetime
+import sys, os, re, json, time, threading, importlib, webbrowser, requests
+from datetime import datetime, timedelta
 from pathlib import Path
 import tempfile, traceback, subprocess, itertools, collections, difflib, shutil
 if sys.stdout is None: sys.stdout = open(os.devnull, "w")
@@ -189,11 +189,110 @@ def first_init_driver():
                 return
             return
 
-def web_scan(tabs_only=False, switch_tab_id=None, text_only=False, maxlen=35000):
-    """获取当前页面的简化HTML内容和标签页列表。注意：简化过程会过滤边栏、浮动元素等非主体内容。
-    tabs_only: 仅返回标签页列表，不获取HTML内容（节省token）。
-    switch_tab_id: 可选参数，如果提供，则在扫描前切换到该标签页。
-    应当多用execute_js，少全量观察html"""
+def _web_search_config():
+    """Load an explicitly configured search provider without exposing its key."""
+    try:
+        from llmcore import _load_mykeys
+        configured = _load_mykeys().get('web_search_config', {})
+    except Exception:
+        configured = {}
+    configured = dict(configured) if isinstance(configured, dict) else {}
+    provider = str(configured.get('provider') or os.environ.get('GA_WEB_SEARCH_PROVIDER') or '').strip().lower()
+    key_names = {
+        'tavily': 'TAVILY_API_KEY', 'brave': 'BRAVE_SEARCH_API_KEY', 'exa': 'EXA_API_KEY',
+    }
+    api_key = configured.get('api_key') or os.environ.get(key_names.get(provider, ''))
+    return provider, api_key, configured
+
+
+def _web_search_setup_msg():
+    return ("Web search is not configured. Add `web_search_config = "
+            "{'provider': 'tavily', 'api_key': 'tvly-...'}` to mykey.py, or set "
+            "GA_WEB_SEARCH_PROVIDER plus TAVILY_API_KEY, BRAVE_SEARCH_API_KEY, or EXA_API_KEY.")
+
+
+def _search_error(response):
+    try:
+        detail = response.json().get('error', response.text)
+        if isinstance(detail, dict): detail = detail.get('message') or detail.get('detail') or json.dumps(detail)
+    except Exception:
+        detail = response.text
+    detail = smart_format(str(detail).replace('\n', ' '), max_str_len=500)
+    return {"status": "error", "msg": f"Search API returned HTTP {response.status_code}: {detail}"}
+
+
+def web_scan(query, max_results=5, search_depth='basic', topic='general', time_range=None):
+    """Search the web through the configured Tavily, Brave, or Exa API.
+
+    Browser interaction intentionally lives in ``web_execute_js(scan=True)`` so
+    routine research does not need to launch or drive a browser.
+    """
+    query = str(query or '').strip()
+    if not query:
+        return {"status": "error", "msg": "query is required"}
+    max_results = max(1, min(_arg({'value': max_results}, 'value', 5, int), 20))
+    provider, api_key, config = _web_search_config()
+    if provider not in ('tavily', 'brave', 'exa'):
+        return {"status": "error", "msg": _web_search_setup_msg()}
+    if not api_key:
+        return {"status": "error", "msg": f"{provider} search API key is missing. " + _web_search_setup_msg()}
+    timeout = max(1, min(_arg(config, 'timeout', 20, int), 120))
+    try:
+        if provider == 'tavily':
+            payload = {
+                'api_key': api_key, 'query': query, 'max_results': max_results,
+                'search_depth': search_depth if search_depth in ('basic', 'advanced') else 'basic',
+                'topic': topic if topic in ('general', 'news', 'finance') else 'general',
+                'include_answer': True,
+            }
+            if time_range in ('day', 'week', 'month', 'year'): payload['time_range'] = time_range
+            response = requests.post(config.get('base_url', 'https://api.tavily.com/search'), json=payload, timeout=timeout)
+            if not response.ok: return _search_error(response)
+            data = response.json()
+            results = [{k: item[k] for k in ('title', 'url', 'content', 'score', 'published_date') if item.get(k) is not None}
+                       for item in data.get('results', [])]
+            answer = data.get('answer')
+        elif provider == 'brave':
+            params = {'q': query, 'count': max_results}
+            freshness = {'day': 'pd', 'week': 'pw', 'month': 'pm', 'year': 'py'}
+            if time_range in freshness: params['freshness'] = freshness[time_range]
+            response = requests.get(config.get('base_url', 'https://api.search.brave.com/res/v1/web/search'),
+                                    params=params, headers={'Accept': 'application/json', 'X-Subscription-Token': api_key}, timeout=timeout)
+            if not response.ok: return _search_error(response)
+            data = response.json()
+            results = [dict((key, value) for key, value in (
+                ('title', item.get('title')), ('url', item.get('url')),
+                ('content', item.get('description')), ('published_date', item.get('age')),
+            ) if value is not None) for item in data.get('web', {}).get('results', [])]
+            answer = None
+        else:  # exa
+            payload = {'query': query, 'type': 'auto', 'num_results': max_results,
+                       'contents': {'text': {'max_characters': 3000}}}
+            days = {'day': 1, 'week': 7, 'month': 31, 'year': 365}
+            if time_range in days:
+                payload['startPublishedDate'] = (datetime.now().astimezone() - timedelta(days=days[time_range])).isoformat()
+            response = requests.post(config.get('base_url', 'https://api.exa.ai/search'), json=payload,
+                                     headers={'x-api-key': api_key, 'Content-Type': 'application/json'}, timeout=timeout)
+            if not response.ok: return _search_error(response)
+            data = response.json()
+            results = [dict((key, value) for key, value in (
+                ('title', item.get('title')), ('url', item.get('url')), ('content', item.get('text')),
+                ('score', item.get('score')), ('published_date', item.get('publishedDate')),
+            ) if value is not None) for item in data.get('results', [])]
+            answer = None
+        output = {'status': 'success', 'provider': provider, 'query': query, 'results': results}
+        if answer: output['answer'] = answer
+        return output
+    except requests.Timeout:
+        return {'status': 'error', 'msg': f'{provider} search timed out after {timeout}s'}
+    except requests.RequestException as e:
+        return {'status': 'error', 'msg': f'{provider} search request failed: {smart_format(str(e), max_str_len=500)}'}
+    except (TypeError, ValueError, KeyError) as e:
+        return {'status': 'error', 'msg': f'{provider} search returned an invalid response: {smart_format(str(e), max_str_len=500)}'}
+
+
+def web_browser_scan(tabs_only=False, switch_tab_id=None, text_only=False, maxlen=35000):
+    """Get simplified browser HTML and tab metadata for ``web_execute_js(scan=True)``."""
     global driver
     try:
         if driver is None:
@@ -455,42 +554,55 @@ class GenericAgentHandler(BaseHandler):
         return StepOutcome(result, next_prompt="", should_exit=True)
     
     def do_web_scan(self, args, response):
-        '''获取当前页面内容和标签页列表。也可用于切换标签页。
-        注意：HTML经过简化，边栏/浮动元素等可能被过滤。如需查看被过滤的内容请用execute_js。
-        tabs_only=true时仅返回标签页列表，不获取HTML（省token）'''
-        tabs_only = _arg(args, "tabs_only", False, bool)
-        switch_tab_id = args.get("switch_tab_id", None)
-        text_only = _arg(args, "text_only", False, bool)
-        maxlen = self._get_tool_maxlen(35000, args, growth_rate=0.5)
-        result = web_scan(tabs_only=tabs_only, switch_tab_id=switch_tab_id, text_only=text_only, maxlen=maxlen)
-        content = result.pop("content", None)
-        yield f'[Info] {str(result)}\n'
-        if content: result = json.dumps(result, ensure_ascii=False, default=json_default) + f"\n```html\n{content}\n```"
-        next_prompt = "\n"
-        return StepOutcome(result, next_prompt=next_prompt)
+        '''Search the web through the configured external search API.'''
+        query = args.get("query", "")
+        max_results = _arg(args, "max_results", 5, int)
+        search_depth = args.get("search_depth", "basic")
+        topic = args.get("topic", "general")
+        time_range = args.get("time_range")
+        result = web_scan(query=query, max_results=max_results, search_depth=search_depth,
+                          topic=topic, time_range=time_range)
+        show = smart_format(json.dumps(result, ensure_ascii=False, indent=2, default=json_default), max_str_len=300)
+        self.print("Web Search Result:", show)
+        yield f"Web search result:\n{show}\n"
+        maxlen = self._get_tool_maxlen(8000, args)
+        return StepOutcome(smart_format(json.dumps(result, ensure_ascii=False, default=json_default), max_str_len=maxlen), next_prompt="\n")
     
     def do_web_execute_js(self, args, response):
-        '''web情况下的优先使用工具，执行任何js达成对浏览器的*完全*控制。支持将结果保存到文件供后续读取分析。'''
-        script = args.get("script", "") or self._extract_code_block(response, "javascript")
-        if not script: return StepOutcome("[Error] Script missing. Use ```javascript block or 'script' arg.", next_prompt="\n")
-        abs_path = self._get_abs_path(script.strip())
-        if os.path.isfile(abs_path):
-            with open(abs_path, 'r', encoding='utf-8') as f: script = f.read()
+        '''Control the browser with JavaScript, or inspect its active page with scan=true.'''
+        scan = _arg(args, "scan", False, bool)
         save_to_file = args.get("save_to_file", "")
         switch_tab_id = args.get("switch_tab_id") or args.get("tab_id")
-        no_monitor = _arg(args, "no_monitor", False, bool)
-        result = web_execute_js(script, switch_tab_id=switch_tab_id, no_monitor=no_monitor)
-        if save_to_file and "js_return" in result:
-            content = str(result["js_return"] or '')
+        if scan:
+            maxlen = self._get_tool_maxlen(35000, args, growth_rate=0.5)
+            result = web_browser_scan(tabs_only=_arg(args, "tabs_only", False, bool),
+                                      switch_tab_id=switch_tab_id,
+                                      text_only=_arg(args, "text_only", False, bool), maxlen=maxlen)
+            content = result.pop("content", None)
+            if content is not None:
+                result["scan_content"] = content
+            result_key = "scan_content"
+        else:
+            script = args.get("script", "") or self._extract_code_block(response, "javascript")
+            if not script: return StepOutcome("[Error] Script missing. Use `scan=true`, a ```javascript block, or the 'script' arg.", next_prompt="\n")
+            abs_path = self._get_abs_path(script.strip())
+            if os.path.isfile(abs_path):
+                with open(abs_path, 'r', encoding='utf-8') as f: script = f.read()
+            no_monitor = _arg(args, "no_monitor", False, bool)
+            result = web_execute_js(script, switch_tab_id=switch_tab_id, no_monitor=no_monitor)
+            result_key = "js_return"
+        if save_to_file and result_key in result:
+            content = str(result[result_key] or '')
             abs_path = self._get_abs_path(save_to_file)
-            result["js_return"] = smart_format(content, max_str_len=170)
+            result[result_key] = smart_format(content, max_str_len=170)
             try:
-                with open(abs_path, 'w', encoding='utf-8') as f: f.write(str(content))
-                result["js_return"] += f"\n\n[已保存完整内容到 {abs_path}]"
-            except: result['js_return'] += f"\n\n[保存失败，无法写入文件 {abs_path}]"
+                with open(abs_path, 'w', encoding='utf-8') as f: f.write(content)
+                result[result_key] += f"\n\n[Saved complete content to {abs_path}]"
+            except Exception:
+                result[result_key] += f"\n\n[Could not save complete content to {abs_path}]"
         show = smart_format(json.dumps(result, ensure_ascii=False, indent=2, default=json_default), max_str_len=300)
-        self.print("Web Execute JS Result:", show)
-        yield f"JS 执行结果:\n{show}\n"
+        self.print("Web Browser Result:", show)
+        yield f"Web browser result:\n{show}\n"
         next_prompt = self._get_anchor_prompt(skip=args.get('_index', 0) > 0)
         result = json.dumps(result, ensure_ascii=False, default=json_default)
         maxlen = self._get_tool_maxlen(8000, args)

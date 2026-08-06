@@ -36,20 +36,26 @@
   }},
   {"type": "function", "function": {
     "name": "web_scan",
-    "description": "获取当前页面的简化HTML内容和标签页列表。会移除隐藏/浮动/被遮盖的元素。切换页面后一般应先调用查看",
+    "description": "通过已配置的 Tavily、Brave 或 Exa API 搜索网页。研究检索优先用此工具；浏览器交互或读取页面请使用 web_execute_js。",
     "parameters": {"type": "object", "properties": {
-      "tabs_only": {"type": "boolean", "description": "仅返回标签页列表和当前标签信息，不获取HTML内容"},
-      "switch_tab_id": {"type": "string", "description": "可选的标签页 ID。如果提供，系统将在扫描前切换到该标签页"},
-      "text_only": {"type": "boolean", "description": "只要纯文本不要HTML"}}}
+      "query": {"type": "string", "description": "搜索查询"},
+      "max_results": {"type": "integer", "description": "最多返回结果数（1-20，默认 5）"},
+      "search_depth": {"type": "string", "enum": ["basic", "advanced"], "description": "Tavily 搜索深度；其他不支持的供应商会忽略"},
+      "topic": {"type": "string", "enum": ["general", "news"], "description": "Tavily 搜索主题；其他不支持的供应商会忽略"},
+      "time_range": {"type": "string", "enum": ["day", "week", "month", "year"], "description": "供应商支持时，限制为该近期时段内的结果"}},
+      "required": ["query"]}
   }},
   {"type": "function", "function": {
     "name": "web_execute_js",
-    "description": "执行JS。支持Multi-call，用不同switch_tab_id并行操作多标签页。禁止猜测，准确操作以减少 web_scan 调用。无script参数时执行正文 ```javascript 块，以免转义",
+    "description": "在浏览器执行 JS。传 scan=true 可读取标签页或当前页面的简化内容；否则提供 JS。支持 Multi-call，用不同 switch_tab_id 操作多标签。禁止猜测；操作前先验证。",
     "parameters": {"type": "object", "properties": {
-      "script": {"type": "string", "description": "[Optional] JS代码或路径。为免转义建议留空，改用正文代码块（与此参数互斥）"},
-      "save_to_file": {"type": "string", "description": "结果存文件，适合返回值较长时"},
+      "script": {"type": "string", "description": "[与 scan 互斥] JS代码或脚本路径。为免转义，正文使用代码块时不要传此参数"},
+      "scan": {"type": "boolean", "description": "读取浏览器标签页/当前简化页面，不执行 JS"},
+      "tabs_only": {"type": "boolean", "description": "scan=true 时仅返回标签页列表，不读取页面内容"},
+      "text_only": {"type": "boolean", "description": "scan=true 时仅返回纯文本，不返回 HTML"},
+      "save_to_file": {"type": "string", "description": "结果存文件，仅用于较长结果"},
       "no_monitor": {"type": "boolean", "description": "跳过页面变更监控，省2-3秒。仅在纯读取信息时设置，页面操作时不要设置"},
-      "switch_tab_id": {"type": "string", "description": "可选的标签页 ID，切换到该标签页执行"}}}
+      "switch_tab_id": {"type": "string", "description": "可选的标签页 ID，切换到该标签页执行或读取"}}}
   }},
   {"type": "function", "function": {
     "name": "update_working_checkpoint",

@@ -66,7 +66,21 @@ native_oai_config = {
 # }
 
 
-# ── 4. Global HTTP proxy (optional) ──────────────────────────────────────────
+# ── 4. Web search API (optional) ──────────────────────────────────────────────
+# `web_scan` searches through this API. For browser page inspection or interaction,
+# use `web_execute_js(scan=true)` or pass JavaScript. Choose one provider:
+# web_search_config = {
+#     'provider': 'tavily',                  # 'tavily', 'brave', or 'exa'
+#     'api_key': 'tvly-your-api-key',        # Or use the provider environment variable below
+#     # 'timeout': 20,                       # Request timeout in seconds (1-120; default 20)
+#     # 'base_url': 'https://...',           # Optional compatible endpoint / proxy
+# }
+# Environment variables: GA_WEB_SEARCH_PROVIDER=tavily + TAVILY_API_KEY=tvly-...
+#                        GA_WEB_SEARCH_PROVIDER=brave  + BRAVE_SEARCH_API_KEY=...
+#                        GA_WEB_SEARCH_PROVIDER=exa    + EXA_API_KEY=...
+
+
+# ── 5. Global HTTP proxy (optional) ──────────────────────────────────────────
 #  Applies to every session that doesn't set its own 'proxy' field.
 # proxy = 'http://127.0.0.1:7890'
 
