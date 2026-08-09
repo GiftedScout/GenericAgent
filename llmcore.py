@@ -349,18 +349,24 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions"):
 
 def _record_usage(usage, api_mode):
     if not usage: return
+    # 上游常显式给 null；dict.get(k, 0) 遇 null 仍返回 None，后续加法会 TypeError
+    def _i(v, default=0):
+        try:
+            return default if v is None else int(v)
+        except (TypeError, ValueError):
+            return default
     if api_mode == 'responses':
-        cached = (usage.get("input_tokens_details") or {}).get("cached_tokens", 0)
-        inp = usage.get("input_tokens", 0); out = usage.get("output_tokens", 0)
+        cached = _i((usage.get("input_tokens_details") or {}).get("cached_tokens"))
+        inp = _i(usage.get("input_tokens")); out = _i(usage.get("output_tokens"))
         print(f"[Cache] input={inp} cached={cached}")
         if out: print(f"[Output] tokens={out}")
     elif api_mode == 'chat_completions':
-        cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
-        inp = usage.get("prompt_tokens", 0); out = usage.get("completion_tokens", 0)
+        cached = _i((usage.get("prompt_tokens_details") or {}).get("cached_tokens"))
+        inp = _i(usage.get("prompt_tokens")); out = _i(usage.get("completion_tokens"))
         print(f"[Cache] input={inp} cached={cached}")
         if out: print(f"[Output] tokens={out}")
     elif api_mode == 'messages':
-        ci, cr, raw_inp = usage.get("cache_creation_input_tokens", 0), usage.get("cache_read_input_tokens", 0), usage.get("input_tokens", 0)
+        ci, cr, raw_inp = _i(usage.get("cache_creation_input_tokens")), _i(usage.get("cache_read_input_tokens")), _i(usage.get("input_tokens"))
         inp, cached, out = raw_inp + ci + cr, cr, 0
         print(f"[Cache] input={raw_inp} creation={ci} read={cr}")
     else: return
@@ -593,9 +599,9 @@ class BaseSession:
         self.api_key = cfg['apikey']
         self.api_base = cfg['apibase'].rstrip('/')
         self.model = cfg.get('model', '')
-        default_context_win = 30000; default_cut_msg_interval = 5
+        default_context_win = 35000; default_cut_msg_interval = 5
         if 'deepseek' in self.model.lower():
-            default_context_win = 70000; default_cut_msg_interval = 25; self.trim_keep_rate = 0.3
+            default_context_win = 80000; default_cut_msg_interval = 25; self.trim_keep_rate = 0.3
         self.context_win = cfg.get('context_win', default_context_win)
         self.maxlen_multiplier = min(max(self.context_win / default_context_win * 0.75, 1.0), 3.0)
         self.cut_msg_interval = int(default_cut_msg_interval * self.maxlen_multiplier)

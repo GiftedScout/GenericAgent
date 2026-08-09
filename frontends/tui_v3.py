@@ -1491,6 +1491,14 @@ class AgentBridge:
     def abort(self):
         self.agent.abort()
 
+    def shutdown(self) -> None:
+        self.agent.abort()
+        self.agent.task_queue.put("__shutdown__")
+        self._runner.join(timeout=5.0)
+        from frontends.continue_cmd import release_current
+        release_current(self.agent)
+        _rmdir_if_empty(getattr(self.agent, 'task_dir', None))
+
     @property
     def is_running(self) -> bool:
         return self.agent.is_running
@@ -6050,6 +6058,8 @@ class SB:
         except KeyboardInterrupt:
             pass
         finally:
+            if self._bridge:
+                self._bridge.shutdown()
             _set_term_title('GenericAgent')
 
 
