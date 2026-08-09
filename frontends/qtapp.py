@@ -2074,7 +2074,14 @@ class ChatPanel(QWidget):
         try:
             while True:
                 item = self._display_queue.get_nowait()
-                if not isinstance(item, dict) or ("next" not in item and "done" not in item):
+                if not isinstance(item, dict):
+                    print(f"[Queue] 跳过异常项: {item}")
+                    continue
+                if "update_notice" in item:
+                    notice = item.get("diff") or item.get("update_notice")
+                    self._add_system_notice(str(notice))
+                    continue
+                if "next" not in item and "done" not in item:
                     print(f"[Queue] 跳过异常项: {item}")
                     continue
                 if "next" in item:

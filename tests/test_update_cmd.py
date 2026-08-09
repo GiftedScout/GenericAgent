@@ -1,3 +1,4 @@
+import queue
 import subprocess
 import tempfile
 import unittest

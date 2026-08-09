@@ -270,6 +270,21 @@ class GenericAgentAcpBridge:
             item = dq.get()
             if not isinstance(item, dict):
                 continue
+            if "update_notice" in item:
+                notice = item.get("diff") or item.get("update_notice")
+                try:
+                    self.write_message(
+                        make_session_update(
+                            session.session_id,
+                            {
+                                "sessionUpdate": "agent_message_chunk",
+                                "content": make_text_block(str(notice)),
+                            },
+                        )
+                    )
+                except Exception as e:
+                    eprint(f"[ACP-BRIDGE] ERROR writing update notice: {e}")
+                continue
             # With inc_out=True, "next" items are already incremental deltas.
             if "next" in item and "done" not in item:
                 delta = item["next"]

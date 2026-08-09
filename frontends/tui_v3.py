@@ -1333,11 +1333,15 @@ class SystemEvent:
     text: str
 
 @dataclass(frozen=True)
+class UpdateNoticeEvent:
+    text: str
+
+@dataclass(frozen=True)
 class ErrorEvent:
     message: str
     exception: Exception | None = None
 
-AgentEvent = StreamEvent | DoneEvent | AskUserEvent | SystemEvent | ErrorEvent
+AgentEvent = StreamEvent | DoneEvent | AskUserEvent | SystemEvent | UpdateNoticeEvent | ErrorEvent
 
 _HOOK_KEY = '_tui_v3_ask_user'
 
@@ -1534,6 +1538,10 @@ class AgentBridge:
                 yield None
                 continue
             if not isinstance(item, dict):
+                continue
+            if 'update_notice' in item:
+                notice = item.get('diff') or item.get('update_notice')
+                yield UpdateNoticeEvent(str(notice))
                 continue
             if 'done' in item:
                 yield DoneEvent(
@@ -5274,6 +5282,10 @@ class SB:
                     with self._lk:
                         self._enter_ask(ae)
                     return
+                continue
+            if isinstance(ev, UpdateNoticeEvent):
+                with self._lk:
+                    self.commit(Block('plain', ev.text))
                 continue
             if isinstance(ev, DoneEvent):
                 # ga.ask_user() emits its "Waiting for your answer …" marker

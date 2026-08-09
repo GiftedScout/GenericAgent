@@ -1,9 +1,11 @@
 """Deterministic backend for the ``/update`` slash command.
 
-The normal update path has no need for an LLM: it fetches, explicitly merges
+The Git transition is deterministic: it fetches, explicitly merges
 ``origin/main``, validates the checkout, and fast-forwards the ``myfork``
-mirror.  Ambiguous states deliberately return a short prompt to the main agent
-instead of guessing a conflict resolution or force-pushing a fork.
+mirror.  A successful transition is handed to the normal agent once more so
+that the same LLM can produce the concise user-facing update summary.
+Ambiguous states deliberately return a prompt instead of guessing a conflict
+resolution or force-pushing a fork.
 """
 from __future__ import annotations
 
@@ -24,6 +26,8 @@ class UpdateOutcome:
 
     report: str | None = None
     prompt: str | None = None
+    system: str | None = None
+    diff: str | None = None
 
 
 def _run(argv: Sequence[str], cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -57,6 +61,86 @@ def _attention_prompt(reason: str, root: Path, note: str = "") -> UpdateOutcome:
         "and concise user-visible update summary."
         f"{extra}"
     ))
+
+
+_MAX_CONFLICT_DIFF = 24000
+
+
+def _clip_multiline(text: str, limit: int = _MAX_CONFLICT_DIFF) -> str:
+    """Keep a conflict prompt bounded without collapsing its diff into one line."""
+    if len(text) <= limit:
+        return text
+    clipped = text[:limit].rsplit("\n", 1)[0]
+    return clipped + "\n... [diff truncated by /update backend] ..."
+
+
+def _conflict_prompt(
+    reason: str,
+    root: Path,
+    runner: _Run,
+    note: str = "",
+    conflict_files: str = "",
+) -> UpdateOutcome:
+    """Return a reviewable conflict snapshot and a mandatory human handoff."""
+    if not conflict_files:
+        files_result = _git(runner, root, "diff", "--name-only", "--diff-filter=U")
+        conflict_files = _text(files_result)
+
+    diff_result = _git(runner, root, "diff", "--cc", "--unified=3")
+    diff = _text(diff_result)
+    if not diff:
+        # Some Git versions/configurations do not emit combined hunks for all
+        # unmerged index states.  The ordinary diff is still a direct backend
+        # snapshot and is preferable to asking the LLM to invent one.
+        fallback = _git(runner, root, "diff", "--no-ext-diff", "--unified=3")
+        diff = _text(fallback)
+    if not diff:
+        diff = "(Git returned no diff hunks; inspect the conflict markers in the files above.)"
+
+    files_block = "\n".join(f"- {line}" for line in conflict_files.splitlines() if line)
+    if not files_block:
+        files_block = "- (Git did not return conflict filenames; inspect `git status`.)"
+    extra = f"\n用户附注：{note}" if note else ""
+    system = (
+        "⚠️ /update 检测到需要人工决策的 Git 合并冲突\n"
+        f"原因：{reason}\n"
+        "冲突文件（后端直接读取）：\n"
+        f"{files_block}\n"
+        "以下为后端直接采集的多行 combined diff：\n"
+        f"```diff\n{_clip_multiline(diff)}\n```"
+    )
+    return UpdateOutcome(
+        system=system,
+        diff=_clip_multiline(diff),
+        prompt=(
+            "[/update 检测到 Git 合并冲突，冲突快照已由 UI 直接展示]\n"
+            f"原因：{reason}\n"
+            f"冲突文件：\n{files_block}\n"
+            "请用简洁中文说明冲突位于哪些文件/逻辑，不要复述或重写 UI 已展示的 diff，"
+            "然后必须调用 `ask_user`，询问用户应如何取舍或融合。建议 question 为："
+            "‘请确认上述冲突的处理策略；是否按语义融合并继续更新？’，"
+            "candidates 可为：‘按语义融合并继续更新’、‘我先处理冲突，暂不继续’、"
+            "‘放弃本次更新’。\n"
+            "收到用户回答后，按用户明确策略和实际代码语义修复冲突，完成验证与更新；"
+            "最终只向用户简洁汇报冲突处理结果及本次上游新增的修复、优化或功能。"
+            f"{extra}"
+        ),
+    )
+
+
+def _success_prompt(report: str) -> str:
+    """Give only upstream facts to the LLM that writes the final report."""
+    marker = "上游更新："
+    changes = report.split(marker, 1)[1] if marker in report else "无上游新提交"
+    changes = changes.split("\n验证：", 1)[0].strip() or "无上游新提交"
+    return (
+        "[/update 后端已完成确定性同步]\n"
+        "下面是后端从 origin/main 采集的本次上游变更事实，仅供归纳：\n"
+        f"{changes}\n\n"
+        "请用当前这个 LLM 向用户做最终的简洁中文汇报。只概括本次上游新增的修复、优化或功能；"
+        "不要复述本地已有提交，不要逐字照抄内部 Git 状态、哈希、命令或测试过程，也不要长篇解释。"
+        "如果没有上游新提交，明确说本次没有上游更新。不要再调用工具。"
+    )
 
 
 def _validate(runner: _Run, root: Path) -> str | None:
@@ -94,11 +178,16 @@ def run_update(note: str = "", *, root: Path = _ROOT, runner: _Run = _run) -> Up
     dirty = _git(runner, root, "status", "--porcelain")
     if dirty.returncode:
         return _fail("could not read worktree status", dirty)
-    if _text(dirty):
-        return _attention_prompt("the worktree has uncommitted changes", root, note)
     in_progress = _git(runner, root, "rev-parse", "-q", "--verify", "MERGE_HEAD")
     if in_progress.returncode == 0:
+        unmerged = _git(runner, root, "diff", "--name-only", "--diff-filter=U")
+        if _text(unmerged):
+            return _conflict_prompt(
+                "a merge is already in progress", root, runner, note, _text(unmerged)
+            )
         return _attention_prompt("a merge is already in progress", root, note)
+    if _text(dirty):
+        return _attention_prompt("the worktree has uncommitted changes", root, note)
 
     old = _git(runner, root, "rev-parse", "HEAD")
     if old.returncode:
@@ -133,7 +222,9 @@ def run_update(note: str = "", *, root: Path = _ROOT, runner: _Run = _run) -> Up
     if merged.returncode:
         unmerged = _git(runner, root, "diff", "--name-only", "--diff-filter=U")
         if _text(unmerged):
-            return _attention_prompt("origin/main merge has conflicts", root, note)
+            return _conflict_prompt(
+                "origin/main merge has conflicts", root, runner, note, _text(unmerged)
+            )
         return _fail("merge origin/main", merged)
 
     validation_error = _validate(runner, root)
@@ -159,11 +250,15 @@ def run_update(note: str = "", *, root: Path = _ROOT, runner: _Run = _run) -> Up
         return UpdateOutcome(report="❌ /update stopped: myfork/main did not verify at local main.")
 
     subjects = [line for line in _text(incoming).splitlines() if line]
-    changes = "；".join(subjects) if subjects else "无上游新提交"
-    suffix = "；更多更新已省略" if len(subjects) == 6 else ""
+    if subjects:
+        changes = "\n".join(f"- {subject}" for subject in subjects)
+        if len(subjects) == 6:
+            changes += "\n- 更多上游提交已省略"
+    else:
+        changes = "- 无上游新提交"
     return UpdateOutcome(
         report=(f"✅ 更新完成 · {mode} · main/myfork {head_id[:10]}\n"
-                f"上游更新：{changes}{suffix}\n"
+                f"上游更新：\n{changes}\n"
                 "验证：已通过 Python 编译与单元测试。")
     )
 
@@ -171,8 +266,23 @@ def run_update(note: str = "", *, root: Path = _ROOT, runner: _Run = _run) -> Up
 def handle(agent, body: str, display_queue) -> str | None:
     outcome = run_update(body)
     if outcome.prompt:
+        # Conflict snapshots are UI-owned and must not terminate the ordinary
+        # agent turn.  Enqueue them first, then return the prompt so the same
+        # agent/LLM can explain the conflict and call ask_user.
+        if outcome.system is not None:
+            display_queue.put({
+                "update_notice": outcome.system,
+                "diff": outcome.diff or "",
+                "source": "system",
+            })
         return outcome.prompt
-    display_queue.put({"done": outcome.report or "❌ /update produced no result", "source": "system"})
+    report = outcome.report or "❌ /update produced no result"
+    if report.startswith("✅ 更新完成"):
+        # Do not put a completed update directly into the UI.  Returning this
+        # string re-enters the ordinary agent loop and keeps the final summary
+        # on the same LLM/context as the slash command.
+        return _success_prompt(report)
+    display_queue.put({"done": report, "source": "system"})
     return None
 
 

@@ -370,6 +370,10 @@ class GenericAgentTUI(App[None]):
                 item = display_queue.get(timeout=0.25)
             except queue.Empty:
                 continue
+            if "update_notice" in item:
+                notice = item.get("diff") or item.get("update_notice")
+                self.call_from_thread(self._system, str(notice))
+                continue
             if "next" in item:
                 buffer += str(item.get("next") or "")
                 self.call_from_thread(self._on_stream_update, agent_id, task_id, buffer, False)
