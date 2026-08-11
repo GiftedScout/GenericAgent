@@ -5802,8 +5802,10 @@ class GenericAgentTUI(App[None]):
         if m:
             token = m.group(1)
             if token.isdigit():
-                sessions = continue_list(exclude_log=os.path.basename(getattr(sess.agent, "log_path", "") or ""),
-                                 rewind_root=self._rw_rewind_root())
+                sessions = continue_list(
+                    exclude_path=getattr(sess.agent, "log_path", "") or None,
+                    store=getattr(sess.agent, "session_store", None),
+                    rewind_root=self._rw_rewind_root())
                 idx = int(token) - 1
                 if not (0 <= idx < len(sessions)):
                     self._system(f"❌ 索引越界（有效范围 1-{len(sessions)}）"); return
@@ -5822,8 +5824,10 @@ class GenericAgentTUI(App[None]):
                 self._system(f"❌ 找不到名为 {token!r} 的会话"); return
             self._do_continue_restore(path)
             return
-        sessions = continue_list(exclude_log=os.path.basename(getattr(sess.agent, "log_path", "") or ""),
-                                 rewind_root=self._rw_rewind_root())
+        sessions = continue_list(
+            exclude_path=getattr(sess.agent, "log_path", "") or None,
+            store=getattr(sess.agent, "session_store", None),
+            rewind_root=self._rw_rewind_root())
         if not sessions:
             self._system("❌ 没有可恢复的历史会话"); return
         choices = []

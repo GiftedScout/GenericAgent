@@ -353,18 +353,49 @@ def _rounds_for_file(path, st):
     return n, key
 
 
-def list_sessions(exclude_pid=None, exclude_log=None, rewind_root=None):
-    """Newest-first list of (path, mtime, preview_text, n_rounds). Preview uses head/tail window only.
+_ARCHIVE_REF_PREFIX = "ga-archive://"
 
-    `exclude_log` (basename, e.g. 'model_responses_123456.txt') drops the caller's
-    OWN current session — preferred over `exclude_pid`, which assumed the log file
-    was named by PID (it isn't: agentmain mints a random 6-digit logid), so the
-    pid tag never matched and the current session leaked into its own list."""
+
+def _archive_ref(session_id):
+    return _ARCHIVE_REF_PREFIX + str(session_id)
+
+
+def _archive_id(path):
+    """Return the UUID carried by an internal archive reference, if valid."""
+    if not isinstance(path, str) or not path.startswith(_ARCHIVE_REF_PREFIX):
+        return None
+    from frontends.session_storage import SessionStore
+    try:
+        return SessionStore._validate_id(path[len(_ARCHIVE_REF_PREFIX):])
+    except ValueError:
+        return None
+
+
+def is_archive_reference(path):
+    return _archive_id(path) is not None
+
+
+def list_sessions(exclude_pid=None, exclude_log=None, rewind_root=None, *,
+                  store=None, exclude_path=None):
+    """Newest-first list of legacy, durable-hot, and immutable archive sessions.
+
+    Candidates retain the historical ``(path, mtime, preview, rounds)`` shape.
+    Archive candidates use an internal UUID reference, and are only unpacked and
+    verified after selection.  ``exclude_path`` is exact-path exclusion for UUID
+    transcripts (whose shared ``transcript.txt`` basename is not unique);
+    ``exclude_log`` remains for compatibility with legacy callers.
+    """
     files = glob.glob(_LOG_GLOB)
     if exclude_pid is not None:
         tag = f'model_responses_{exclude_pid}.txt'
         files = [f for f in files if not f.endswith(tag)]
-    if exclude_log:
+    if exclude_path:
+        try:
+            excluded = os.path.normcase(os.path.abspath(exclude_path))
+            files = [f for f in files if os.path.normcase(os.path.abspath(f)) != excluded]
+        except (TypeError, OSError):
+            pass
+    elif exclude_log:
         files = [f for f in files if os.path.basename(f) != exclude_log]
     out = []
     valid_keys = []
@@ -420,6 +451,47 @@ def list_sessions(exclude_pid=None, exclude_log=None, rewind_root=None):
             head = d.get('head')
             title = (nodes.get(head, {}).get('title') if head else '') or '（已回退至会话起点）'
             out.append((log_path, mtime, f'[世界线] {title}', len(real)))
+
+    # Durable rows are indexed independently from legacy temp logs.  Archives
+    # deliberately expose only registry metadata here: listing must never unpack
+    # an immutable archive or turn a browsing action into a write.
+    if store is None:
+        try:
+            from frontends.session_storage import default_store
+            store = default_store()
+        except Exception:
+            store = None
+    if store is not None:
+        try:
+            durable_rows = store.list()
+        except Exception:
+            durable_rows = []
+        for row in durable_rows:
+            session_id = row.get('session_id', '')
+            state = row.get('state')
+            try:
+                if state == 'hot':
+                    path = str(store.transcript_path(session_id))
+                    if exclude_path and os.path.normcase(os.path.abspath(path)) == os.path.normcase(os.path.abspath(exclude_path)):
+                        continue
+                    st = os.stat(path)
+                    if st.st_size < 32:
+                        continue
+                    preview = _preview_from_file(path)
+                    if not preview:
+                        continue
+                    rounds, key = _rounds_for_file(path, st)
+                    valid_keys.append(key)
+                    out.append((path, st.st_mtime, preview, rounds))
+                elif state == 'archived':
+                    preview = (row.get('title') or row.get('summary') or '（已归档会话）').replace('\n', ' ')
+                    out.append((_archive_ref(session_id),
+                                row.get('last_activity_at') or row.get('archive_created_at') or 0,
+                                '[归档] ' + preview,
+                                int(row.get('turn_count') or 0)))
+            except (OSError, TypeError, ValueError):
+                continue
+    _save_rounds_cache(valid_keys)
     out.sort(key=lambda x: x[1], reverse=True)
     return out
 _MD_ESCAPE_RE = re.compile(r'([\\`*_\[\]])')
@@ -1061,9 +1133,8 @@ def _bind_durable_identity(agent, path):
 
 
 def is_snapshot(path):
-    """遗留快照存档(model_responses_snapshot_*.txt)。这类只能拷贝续,不参与原地
-    (provisional,待 worktree 复审)。"""
-    return os.path.basename(path).startswith('model_responses_snapshot_')
+    """Return whether a source is copy-only (legacy snapshot or durable archive)."""
+    return bool(_archive_id(path)) or os.path.basename(path).startswith('model_responses_snapshot_')
 
 
 def _clear_conversation_state(agent):
@@ -1162,12 +1233,18 @@ def continue_inplace(agent, path, agent_id=None, allow_empty=False, restore_wm=F
     `allow_empty`(仅 worldline UI 传):日志为空时不报错,按【空会话】恢复(清空对话,
     由调用方按 `.ga_rewind` 树重连),用于"回退至会话起点"的会话。
     `restore_wm`(opt-in):续接后从日志派生 history_info 恢复工作记忆。返回 (msg, ok)。"""
+    if _archive_id(path):
+        return '❌ 归档会话不可原地续接；请使用拷贝续接', False
     try: agent.abort()
     except Exception: pass
     if not acquire_lock(path, agent_id):       # 先抢到目标锁;失败则保持现状,不丢自己的锁
         return '❌ 会话已被占用，无法原地接管', False
     cur = getattr(agent, 'log_path', '') or ''
-    if cur and os.path.basename(cur) != os.path.basename(path):
+    try:
+        changed_target = os.path.normcase(os.path.abspath(cur)) != os.path.normcase(os.path.abspath(path))
+    except (TypeError, OSError):
+        changed_target = cur != path
+    if cur and changed_target:
         release_lock(cur)                       # 目标到手,旧会话释放为空闲(同一文件则不放)
     _retarget_log(agent, path)
     _bind_durable_identity(agent, path)
@@ -1179,9 +1256,26 @@ def continue_inplace(agent, path, agent_id=None, allow_empty=False, restore_wm=F
 
 
 def continue_copy(agent, path, agent_id=None, allow_empty=False, restore_wm=False):
-    """拷贝续:铸新 logid、把 `path` 内容拷进去,在副本上续;`path` 原件不动。
-    用于"被占用→用户选拷贝"以及快照源。`restore_wm`(opt-in)同 continue_inplace。
-    返回 (msg, ok)。"""
+    """Copy-continue a legacy/hot session, or a verified immutable archive.
+
+    An archive reference is resolved *before* aborting or releasing the current
+    session.  ``SessionStore.restore`` validates the archive digest, manifest,
+    and every extracted member; only its restored transcript is copied into a
+    fresh hot UUID.  The archive itself is never an inplace continuation target.
+    """
+    archive_id = _archive_id(path)
+    if archive_id:
+        store = getattr(agent, "session_store", None)
+        if store is None:
+            return "❌ 当前前端没有可用的会话存储，无法恢复归档", False
+        try:
+            extracted = store.restore(archive_id)
+            source = extracted / "transcript.txt"
+            if not source.is_file():
+                raise ValueError("restored archive has no transcript.txt")
+            path = str(source)
+        except Exception as exc:
+            return f"❌ 归档校验或恢复失败: {exc}", False
     try: agent.abort()
     except Exception: pass
     release_current(agent)

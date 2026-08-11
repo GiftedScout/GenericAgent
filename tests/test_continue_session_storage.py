@@ -75,6 +75,59 @@ class ContinueSessionStorageTests(unittest.TestCase):
         self.assertEqual(Path(self.agent.log_path).read_text(encoding="utf-8"), body)
         self.assertEqual(source_path.read_text(encoding="utf-8"), body)
 
+    def test_list_merges_legacy_hot_and_archive_without_restoring_archive(self):
+        body = "<summary>listed durable session for lifecycle regression</summary>\n"
+        hot = self.store.create_session()["session_id"]
+        self.store.transcript_path(hot).write_text(body, encoding="utf-8")
+        archived = self.store.create_session(title="saved")["session_id"]
+        self.store.transcript_path(archived).write_text(body, encoding="utf-8")
+        self.store.archive(archived)
+        legacy = Path(self.tmp.name) / "model_responses_123456.txt"
+        legacy.write_text(body, encoding="utf-8")
+        with patch("frontends.continue_cmd._LOG_GLOB", str(legacy)), \
+             patch.object(self.store, "restore", wraps=self.store.restore) as restore:
+            candidates = continue_cmd.list_sessions(store=self.store)
+        paths = {entry[0] for entry in candidates}
+        self.assertIn(str(legacy), paths)
+        self.assertIn(str(self.store.transcript_path(hot)), paths)
+        self.assertIn("ga-archive://" + archived, paths)
+        restore.assert_not_called()
+
+    def test_archive_copy_restores_verified_content_into_fresh_hot_session(self):
+        body = "<summary>listed durable session for lifecycle regression</summary>\n"
+        source = self.store.create_session()["session_id"]
+        self.store.transcript_path(source).write_text(body, encoding="utf-8")
+        self.store.archive(source)
+        old_id = self.agent.session_id
+        with patch("frontends.continue_cmd.release_current"), \
+             patch("frontends.continue_cmd.acquire_lock", return_value=True), \
+             patch("frontends.continue_cmd._load_history_into", return_value=("ok", True)):
+            message, ok = continue_cmd.continue_copy(self.agent, "ga-archive://" + source)
+        self.assertTrue(ok)
+        self.assertEqual(message, "ok")
+        self.assertNotEqual(self.agent.session_id, old_id)
+        self.assertNotEqual(self.agent.session_id, source)
+        self.assertEqual(Path(self.agent.log_path).read_text(encoding="utf-8"), body)
+        self.assertEqual(self.store.get(source)["state"], "archived")
+
+    def test_tampered_archive_does_not_change_current_session(self):
+        source = self.store.create_session()["session_id"]
+        self.store.transcript_path(source).write_text("=== Prompt === p\nhello\n\n=== Response === r\nworld\n", encoding="utf-8")
+        archived = self.store.archive(source)
+        (self.store.root / archived["archive_path"]).write_bytes(b"tampered")
+        old_id, old_path, old_history = self.agent.session_id, self.agent.log_path, list(self.agent.history)
+        message, ok = continue_cmd.continue_copy(self.agent, "ga-archive://" + source)
+        self.assertFalse(ok)
+        self.assertIn("归档校验或恢复失败", message)
+        self.assertEqual((self.agent.session_id, self.agent.log_path, self.agent.history),
+                         (old_id, old_path, old_history))
+
+    def test_archive_cannot_be_continued_inplace(self):
+        source = self.store.create_session()["session_id"]
+        message, ok = continue_cmd.continue_inplace(self.agent, "ga-archive://" + source)
+        self.assertFalse(ok)
+        self.assertIn("不可原地续接", message)
+
 
 if __name__ == "__main__":
     unittest.main()

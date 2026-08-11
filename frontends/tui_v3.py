@@ -4543,7 +4543,9 @@ class SB:
         #     self.commit([_t('err.multi_session', name=name)])
         elif name == 'continue':
             from frontends import continue_cmd
-            sess = continue_cmd.list_sessions(exclude_log=os.path.basename(getattr(ag, "log_path", "") or ""))
+            sess = continue_cmd.list_sessions(
+                exclude_path=getattr(ag, "log_path", "") or None,
+                store=getattr(ag, "session_store", None))
             if not sess:
                 self.commit([_DIM + _t('msg.no_history') + _RST]); return
 
