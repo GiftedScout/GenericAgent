@@ -87,6 +87,10 @@ class UpdateCommandTests(unittest.TestCase):
         }))
         outcome = update_cmd.run_update(root=self.root, runner=runner)
         self.assertIn("merge has conflicts", outcome.prompt)
+        self.assertIn("```diff", outcome.system)
+        self.assertIn("module.py", outcome.system)
+        self.assertIn("然后必须调用 `ask_user`", outcome.prompt)
+        self.assertIn("收到用户回答后", outcome.prompt)
         self.assertFalse(runner.used("push", "myfork", "HEAD:main"))
 
     def test_validation_failure_never_pushes_mirror(self):
@@ -112,17 +116,49 @@ class UpdateCommandTests(unittest.TestCase):
         self.assertFalse(runner.used("push", "myfork", "HEAD:main"))
         self.assertFalse(any("--force" in part for call in runner.calls for part in call))
 
+    def test_handle_success_enters_one_toolless_summary_turn(self):
+        class Agent:
+            pass
+
+        agent = Agent()
+        display = queue.Queue()
+        report = "✅ 更新完成 · fast-forward\n上游更新：\n- 修复同步逻辑\n验证：通过"
+        with patch("frontends.update_cmd.run_update", return_value=update_cmd.UpdateOutcome(report=report)):
+            prompt = update_cmd.handle(agent, "", display)
+        self.assertIn("最终的简洁中文汇报", prompt)
+        self.assertTrue(agent._update_single_turn)
+        self.assertIsNone(agent.__dict__.get("_pending_update_prompt"))
+        self.assertTrue(display.empty())
+
+    def test_handle_conflict_shows_notice_and_defers_prompt_consumption(self):
+        class Agent:
+            pass
+
+        agent = Agent()
+        display = queue.Queue()
+        outcome = update_cmd.UpdateOutcome(
+            system="冲突快照", diff="<<<<<<< ours", prompt="请解释冲突并询问我"
+        )
+        with patch("frontends.update_cmd.run_update", return_value=outcome):
+            prompt = update_cmd.handle(agent, "保留语义", display)
+        self.assertEqual(prompt, "请解释冲突并询问我")
+        self.assertEqual(agent._pending_update_prompt, prompt)
+        self.assertTrue(agent._update_conflict_just_shown)
+        notice = display.get_nowait()
+        self.assertEqual(notice["update_notice"], "冲突快照")
+        self.assertEqual(notice["diff"], "<<<<<<< ours")
+
     def test_install_intercepts_only_literal_update(self):
         class App:
             def _handle_slash_cmd(self, raw_query, display_queue):
                 return "original:" + raw_query
 
+        app_queue = object()
         update_cmd.install(App)
-        queue = object()
         with patch("frontends.update_cmd.handle", return_value="repair prompt") as handle:
-            self.assertEqual(App()._handle_slash_cmd("/update preserve", queue), "repair prompt")
+            self.assertEqual(App()._handle_slash_cmd("/update preserve", app_queue), "repair prompt")
         handle.assert_called_once()
-        self.assertEqual(App()._handle_slash_cmd("/updates", queue), "original:/updates")
+        self.assertEqual(App()._handle_slash_cmd("/updates", app_queue), "original:/updates")
 
 
 if __name__ == "__main__":

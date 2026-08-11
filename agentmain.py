@@ -148,6 +148,14 @@ class GenericAgent:
             raw_query = self._handle_slash_cmd(raw_query, display_queue)
             if raw_query is None:
                 self.task_queue.task_done(); continue
+            pending_update = getattr(self, '_pending_update_prompt', None)
+            conflict_just_shown = bool(getattr(self, '_update_conflict_just_shown', False))
+            self._update_conflict_just_shown = False
+            if pending_update and not conflict_just_shown:
+                raw_query = pending_update + '\n\n用户对上述 /update 冲突的回复：\n' + raw_query
+                self._pending_update_prompt = None
+            single_update_turn = bool(getattr(self, '_update_single_turn', False))
+            self._update_single_turn = False
             self.is_running = True; self._current_queue = display_queue
             if len(raw_query) > 2000:
                 task_file = os.path.join(script_dir, 'temp', f'user_prompt_{os.getpid()}_{time.time_ns()}.md')
@@ -171,8 +179,10 @@ class GenericAgent:
             if self.force_non_stream:
                 self.llmclient.backend.stream = False
                 self.llmclient.backend.read_timeout = max(self.llmclient.backend.read_timeout, 1200)
-            gen = agent_runner_loop(self.llmclient, sys_prompt, raw_query, handler, TOOLS_SCHEMA, 
-                                    max_turns=180, verbose=self.verbose, yield_info=True)
+            gen = agent_runner_loop(self.llmclient, sys_prompt, raw_query,
+                                    handler, [] if single_update_turn else TOOLS_SCHEMA,
+                                    max_turns=1 if single_update_turn else 180,
+                                    verbose=self.verbose, yield_info=True)
             try:
                 full_resp = ""; last_pos = 0; curr_turn = 0; turn_resps = self.all_outputs[-1]["outputs"]
                 for chunk in gen:

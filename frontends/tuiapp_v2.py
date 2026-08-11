@@ -156,7 +156,7 @@ _TIPS = (
     "Tip: /branch [name] 从当前历史分裂出新会话，互不污染。",
     "Tip: ask_user 题目里写 [多选] 自动切到 SelectionList；任何 picker 都有 \"Type something\" 走自由输入。",
     "Tip: plan 模式下的 todo 会渲染在消息区与输入框之间的 📋 Plan 卡片，完成后自动消失。",
-    "Tip: /update 让主 agent 语义合并官方更新、同步 myfork 并生成更新账单；/autorun 进入 autonomous 自主模式。",
+    "Tip: /update 同步上游和 myfork；冲突时展示 diff 并请求选择，完成后简要汇报；/autorun 进入 autonomous 自主模式。",
     "Tip: /morphling <目标> 启用蒸馏吞噬外部技能。",
     "Tip: /goal <目标> 进入 Goal 模式（缺 condition 时会回头问你预算 / worker 上限）。",
     "Tip: /hive <目标> 进入 Hive 多 worker 协作；/scheduler 调出 reflect 任务多选启动器。",
@@ -2143,7 +2143,7 @@ COMMANDS = [
     ("/review",   "[request]",         "in-session 代码审查（直接输出报告）"),
     # ── slash_cmds bundle (prompt-injection + /scheduler picker).  Kept in
     # the same table so /-completion + the palette pick them up for free.
-    ("/update",    "[note]",           "LLM 合并官方更新、同步 myfork 并生成更新账单"),
+    ("/update",    "[note]",           "同步上游和 myfork；冲突时展示 diff 并请求选择；完成后简要汇报"),
     ("/autorun",   "[seed]",           "进入 autonomous_operation 自主模式"),
     ("/morphling", "[target]",         "启用 Morphling 蒸馏 / 吞噬外部技能"),
     ("/goal",      "[goal]",           "进入 Goal 模式（需 condition 约束）"),

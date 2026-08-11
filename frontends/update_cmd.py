@@ -275,12 +275,16 @@ def handle(agent, body: str, display_queue) -> str | None:
                 "diff": outcome.diff or "",
                 "source": "system",
             })
+            # Keep the exact backend prompt for the user's next answer.  The
+            # current turn must not consume it; the run-loop skips it once.
+            agent._pending_update_prompt = outcome.prompt
+            agent._update_conflict_just_shown = True
         return outcome.prompt
     report = outcome.report or "❌ /update produced no result"
     if report.startswith("✅ 更新完成"):
-        # Do not put a completed update directly into the UI.  Returning this
-        # string re-enters the ordinary agent loop and keeps the final summary
-        # on the same LLM/context as the slash command.
+        # The deterministic Git work is done.  Ask the same LLM for one
+        # concise Chinese explanation, with no tools and no long tool loop.
+        agent._update_single_turn = True
         return _success_prompt(report)
     display_queue.put({"done": report, "source": "system"})
     return None
