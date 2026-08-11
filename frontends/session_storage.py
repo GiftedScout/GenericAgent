@@ -95,6 +95,19 @@ class SessionStore:
     def transcript_path(self, session_id: str) -> Path:
         return self.hot_dir(session_id) / "transcript.txt"
 
+    def session_id_for_transcript(self, path: str | Path) -> str | None:
+        """Return the UUID only when *path* is a registered hot transcript."""
+        try:
+            path = Path(path).resolve()
+            relative = path.relative_to(self.hot_root.resolve())
+            if len(relative.parts) != 2 or relative.parts[1] != "transcript.txt":
+                return None
+            session_id = self._validate_id(relative.parts[0])
+        except (OSError, ValueError):
+            return None
+        row = self.get(session_id)
+        return session_id if row and row["state"] == "hot" else None
+
     def create_session(self, *, legacy_log_basename: str = "", title: str = "") -> dict:
         session_id, stamp = str(uuid.uuid4()), _now()
         hot = self.hot_dir(session_id)

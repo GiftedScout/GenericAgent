@@ -1039,6 +1039,27 @@ def _retarget_log(agent, new_path):
         except Exception: pass
 
 
+def _bind_durable_identity(agent, path):
+    """Associate an agent with a hot UUID transcript, or clear it for legacy.
+
+    `continue` deliberately continues to accept legacy and restored files.  Such
+    files have no registry identity, so future activity must not update the
+    UUID created when the agent was originally constructed.
+    """
+    store = getattr(agent, "session_store", None)
+    if store is None:
+        return None
+    try:
+        session_id = store.session_id_for_transcript(path)
+    except Exception:
+        session_id = None
+    try:
+        agent.session_id = session_id or ""
+    except Exception:
+        pass
+    return session_id
+
+
 def is_snapshot(path):
     """遗留快照存档(model_responses_snapshot_*.txt)。这类只能拷贝续,不参与原地
     (provisional,待 worktree 复审)。"""
@@ -1075,13 +1096,22 @@ def release_current(agent):
 
 
 def begin_fresh_session(agent, agent_id=None):
-    """新对话 / clear:释放当前锁(旧日志留作空闲会话)→ 铸新 logid 重指 → 持新锁 →
-    清空对话状态。**替代 TUI 里的 reset_conversation**(不再存快照/清空旧日志)。"""
+    """New chat / clear: retain old transcript and create a UUID hot session.
+
+    Older agent-like objects without the durable factory keep the legacy path as
+    a compatibility fallback; production GenericAgent always takes the first
+    branch.
+    """
     try: agent.abort()
     except Exception: pass
     release_current(agent)
-    newp = _new_log_path()
-    _retarget_log(agent, newp)
+    factory = getattr(agent, "create_durable_session", None)
+    if callable(factory):
+        factory()
+        newp = getattr(agent, "log_path", "")
+    else:
+        newp = _new_log_path()
+        _retarget_log(agent, newp)
     acquire_lock(newp, agent_id)
     _clear_conversation_state(agent)
 
@@ -1140,6 +1170,7 @@ def continue_inplace(agent, path, agent_id=None, allow_empty=False, restore_wm=F
     if cur and os.path.basename(cur) != os.path.basename(path):
         release_lock(cur)                       # 目标到手,旧会话释放为空闲(同一文件则不放)
     _retarget_log(agent, path)
+    _bind_durable_identity(agent, path)
     msg, ok = _load_history_into(agent, path, restore_wm=restore_wm)
     if not ok and allow_empty and _is_empty_log(path):
         _replace_backend_history(agent, [])     # 空会话:清空对话(载入失败时它没被清)
@@ -1154,13 +1185,19 @@ def continue_copy(agent, path, agent_id=None, allow_empty=False, restore_wm=Fals
     try: agent.abort()
     except Exception: pass
     release_current(agent)
-    newp = _new_log_path()
+    factory = getattr(agent, "create_durable_session", None)
+    if callable(factory):
+        factory()
+        newp = getattr(agent, "log_path", "")
+    else:
+        newp = _new_log_path()
+        _retarget_log(agent, newp)
     try:
         shutil.copyfile(path, newp)
     except Exception:
         pass
     acquire_lock(newp, agent_id)
-    _retarget_log(agent, newp)
+    _bind_durable_identity(agent, newp)
     msg, ok = _load_history_into(agent, newp, restore_wm=restore_wm)
     if not ok and allow_empty and _is_empty_log(newp):
         _replace_backend_history(agent, [])
