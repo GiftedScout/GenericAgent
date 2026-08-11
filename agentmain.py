@@ -12,12 +12,14 @@ try:
     from plugins.hooks import discover_and_load; discover_and_load()
 except Exception: pass
 from ga import GenericAgentHandler, smart_format, get_global_memory, format_error, consume_file, memory_dir
+from frontends.session_storage import SessionStore
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 BANNED_TOOLS = (['ask_user', 'start_long_term_update'] if '--no-user-tools' in sys.argv else [])
 def load_tool_schema(suffix=''):
     global TOOLS_SCHEMA
-    TS = open(os.path.join(script_dir, f'assets/tools_schema{suffix}.json'), 'r', encoding='utf-8').read()
+    with open(os.path.join(script_dir, f'assets/tools_schema{suffix}.json'), 'r', encoding='utf-8') as f:
+        TS = f.read()
     TOOLS_SCHEMA = json.loads(TS if os.name == 'nt' else TS.replace('powershell', 'bash'))
     TOOLS_SCHEMA = [t for t in TOOLS_SCHEMA if t.get('function', {}).get('name') not in BANNED_TOOLS]
 load_tool_schema()
@@ -56,12 +58,28 @@ class GenericAgent:
         self.inc_out = False; self.verbose = True
         self.peer_hint = True
         self.force_non_stream = False
-        logid = f'{(time.time_ns() + random.randrange(1_000_000)) % 1_000_000:06d}'
-        self.log_path = os.path.join(script_dir, f'temp/model_responses/model_responses_{logid}.txt')
+        self.session_store = SessionStore(script_dir)
+        self.session_id = ""
+        self.create_durable_session()
         self.llmclient = None
         self.load_llm_sessions()
         self.extra_sys_prompts = []
         self.intervene = self.extrakeyinfo = None
+
+    def create_durable_session(self, *, title=""):
+        """Start a new UUID-backed hot session and make its transcript the LLM log."""
+        row = self.session_store.create_session(title=title)
+        self.session_id = row["session_id"]
+        self.log_path = str(self.session_store.transcript_path(self.session_id))
+        return row
+
+    def record_session_activity(self):
+        """Best-effort index update; a logging/index failure must not interrupt a chat."""
+        if self.session_id:
+            try:
+                self.session_store.record_activity(self.session_id)
+            except Exception:
+                pass
 
     def load_llm_sessions(self):
         mykeys, changed = reload_mykeys()
@@ -204,6 +222,7 @@ class GenericAgent:
                 print(f"Backend Error: {format_error(e)}")
                 display_queue.put({'done': full_resp + f'\n```\n{format_error(e)}\n```', 'source': source, 'turn': curr_turn, 'outputs': turn_resps.copy()})
             finally:
+                self.record_session_activity()
                 if self.stop_sig: print('User aborted the task.')
                 self.is_running = self.stop_sig = False  # keep _current_queue: its final 'done' may still be unclaimed (refreshed UI salvages it); next task overwrites it
                 self.task_queue.task_done()
