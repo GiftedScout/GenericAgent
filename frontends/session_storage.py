@@ -345,5 +345,25 @@ class SessionStore:
             raise
 
 
+def promote_agent_session(agent, reason: str, *, title: str | None = None,
+                          workspace: str | None = None) -> dict | None:
+    """Promote an agent's durable session when a user expresses lasting value.
+
+    Frontends may still operate legacy transcripts.  Those agents deliberately
+    lack the durable attributes, so this helper is a safe no-op rather than a
+    migration-by-accident boundary.
+    """
+    store = getattr(agent, "session_store", None)
+    session_id = getattr(agent, "session_id", "")
+    if not isinstance(store, SessionStore) or not session_id:
+        return None
+    try:
+        return store.promote(session_id, reason, title=title, workspace=workspace)
+    except (KeyError, ValueError, sqlite3.Error, OSError):
+        # A stale identity must not turn a successful UI rename/bind into a
+        # failure.  It can be repaired by a subsequent fresh/continue action.
+        return None
+
+
 def default_store() -> SessionStore:
     return SessionStore(Path(__file__).resolve().parents[1])

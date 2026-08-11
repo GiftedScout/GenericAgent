@@ -3,10 +3,11 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from frontends.session_storage import (
-    LONG_AGE_SECONDS, SHORT_AGE_SECONDS, SessionStore,
+    LONG_AGE_SECONDS, SHORT_AGE_SECONDS, SessionStore, promote_agent_session,
 )
 
 
@@ -32,6 +33,18 @@ class SessionStoreTests(unittest.TestCase):
         self.assertEqual(row["turn_count"], 1)
         sidecar = json.loads((self.store.hot_dir(sid) / "session.json").read_text())
         self.assertEqual(sidecar["summary"], "verified summary")
+
+    def test_promote_agent_session_records_user_value_signal(self):
+        sid = self.store.create_session(title="initial")["session_id"]
+        agent = SimpleNamespace(session_store=self.store, session_id=sid)
+        row = promote_agent_session(agent, "rename", title="important", workspace="/work/demo")
+        self.assertEqual(row["class"], "long")
+        self.assertEqual(row["promotion_reason"], "rename")
+        self.assertEqual(row["title"], "important")
+        self.assertEqual(row["workspace_history"], ["/work/demo"])
+
+    def test_promote_agent_session_ignores_legacy_agent(self):
+        self.assertIsNone(promote_agent_session(SimpleNamespace(log_path="legacy.log"), "rename", title="old"))
 
     def test_eligibility_honours_short_and_long_retention(self):
         short = self.store.create_session()["session_id"]

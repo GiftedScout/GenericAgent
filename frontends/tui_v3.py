@@ -33,6 +33,7 @@ from rich.text import Text
 from rich.theme import Theme
 from typing import Callable
 from frontends import at_complete, workspace_cmd   # @ 补全 + /workspace（与 v2 共用）
+from frontends.session_storage import promote_agent_session
 
 # ════════════════════════════════════════════════════════════════════════════
 # i18n — minimal dict-based zh/en translation layer (inlined; was tui_v3_i18n.py)
@@ -4399,6 +4400,8 @@ class SB:
             # 持久化绑定/off → /continue 即时恢复，不必先聊一轮留 PROJECT MODE 块。
             if persist:
                 workspace_cmd.session_ws_set(getattr(ag, "log_path", "") or "", pm_path or "")
+                if info and pm_path:
+                    promote_agent_session(ag, "workspace", workspace=pm_path)
         at_complete.get_index(self._at_root()).warm()   # 预热新根（或 CWD）
 
     def _do_workspace_activate(self, path: str) -> str:
@@ -4532,6 +4535,7 @@ class SB:
                 self.commit([_t('err.rename_usage')]); return
             self._session_name = arg
             self._set_session_name(ag, arg)
+            promote_agent_session(ag, "rename", title=arg)
             _set_term_title(self._term_title())
             self.commit([_DIM + _t('msg.renamed', name=arg) + _RST])
         # /switch /close /branch — 多会话后端尚未接入，命令未实现，先注释掉。

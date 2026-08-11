@@ -1453,6 +1453,7 @@ from btw_cmd import handle_frontend_command as btw_handle
 from review_cmd import handle as review_handle
 from continue_cmd import list_sessions as continue_list, extract_ui_messages as continue_extract
 import workspace_cmd
+from frontends.session_storage import promote_agent_session
 from export_cmd import last_assistant_text, export_to_temp, wrap_for_clipboard
 from worldline import (
     RewindStore, restore_plan,
@@ -4002,6 +4003,8 @@ class GenericAgentTUI(App[None]):
         # 持久化绑定/off → /continue 即时恢复，不必先聊一轮留 PROJECT MODE 块。
         if persist:
             workspace_cmd.session_ws_set(getattr(sess.agent, "log_path", "") or "", project_path or "")
+            if info and project_path:
+                promote_agent_session(sess.agent, "workspace", workspace=project_path)
         if project_path:
             get_index(project_path).warm()  # @ 候选跟随 workspace
 
@@ -5198,6 +5201,7 @@ class GenericAgentTUI(App[None]):
                 session_names.set_name(log_path, name)
             except Exception as e:
                 self._system(f"⚠️ 名称未持久化: {type(e).__name__}: {e}")
+        promote_agent_session(self.current.agent, "rename", title=name)
         self._refresh_topbar(); self._refresh_sidebar()
         _remember_session_preference(self.current)
         self._system(f"✅ 已重命名为 {name!r}")
