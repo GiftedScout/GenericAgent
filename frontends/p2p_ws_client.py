@@ -250,11 +250,13 @@ class P2PSocket:
     """
 
     def __init__(
-        self, signal_url, room, *, direct_timeout=15, retries=6, stun=True,
-        access_key=DEFAULT_ACCESS_KEY,
+        self, signal_url, room, *, direct_timeout=15, peer_timeout=120, retries=6,
+        stun=True, access_key=DEFAULT_ACCESS_KEY,
     ):
         self.signal = Signal(signal_url, room, retries, access_key)
         self.direct_timeout = direct_timeout
+        # 等对端进房的时长；须 >= 配对码有效期(120s)，否则码没过期本端已离房
+        self.peer_timeout = peer_timeout
         self.stun = stun
         self.mode = "connecting"
         self.closed = False
@@ -270,12 +272,13 @@ class P2PSocket:
 
     @classmethod
     async def connect(
-        cls, signal_url: str, room: str, *, direct_timeout=15, retries=6, stun=True,
-        access_key=DEFAULT_ACCESS_KEY,
+        cls, signal_url: str, room: str, *, direct_timeout=15, peer_timeout=120,
+        retries=6, stun=True, access_key=DEFAULT_ACCESS_KEY,
     ):
         """连接同一 UUID 的另一个客户端，直连失败自动回退中继。"""
         self = cls(
-            signal_url, room, direct_timeout=direct_timeout, retries=retries, stun=stun,
+            signal_url, room, direct_timeout=direct_timeout,
+            peer_timeout=peer_timeout, retries=retries, stun=stun,
             access_key=access_key,
         )
         try:
@@ -289,7 +292,7 @@ class P2PSocket:
 
     async def _connect(self):
         await self.signal.start()
-        peer = await self.signal.expect("peer")
+        peer = await self.signal.expect("peer", self.peer_timeout)
 
         # 一次性 ECDH：即使走中继，服务器也拿不到会话密钥。
         private, public = keypair()
