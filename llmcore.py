@@ -40,11 +40,8 @@ def __getattr__(name):  # once guard in PEP 562
     if name == 'mykeys': return reload_mykeys()[0]
     raise AttributeError(f"module 'llmcore' has no attribute {name}")
 
-def compress_history_tags(messages, keep_recent=10, max_len=800, force=False, interval=5):
-    """Compress <thinking>/<tool_use>/<tool_result> tags in older messages to save tokens."""
-    compress_history_tags._cd = getattr(compress_history_tags, '_cd', 0) + 1
-    if force: compress_history_tags._cd = 0
-    if compress_history_tags._cd % interval != 0: return messages
+def compress_history_tags(messages, keep_recent=10, max_len=800):
+    """Compress older verbose blocks only after context pressure requires trimming."""
     _before = sum(len(json.dumps(m, ensure_ascii=False)) for m in messages)
     _pats = {tag: re.compile(rf'(<{tag}>)([\s\S]*?)(</{tag}>)') for tag in ('thinking', 'think', 'tool_use', 'tool_result')}
     _hist_pat = re.compile(r'<(history|key_info|earlier_context)>[\s\S]*?</\1>')
@@ -104,10 +101,9 @@ def trim_messages_history(history, sess):
     target = int(cap * getattr(sess, 'trim_keep_rate', 0.6))
     kp = sess.trim_keep_prefix
     def cost(ms): return sum(len(json.dumps(m, ensure_ascii=False)) for m in ms)
-    compress_history_tags(history, interval=getattr(sess, 'cut_msg_interval', 7))
     STATS.update(ctx=(c := cost(history)), msgs=len(history)); print(f'[Debug] Current context: {c} chars, {len(history)} messages.')
     if c <= cap: return
-    compress_history_tags(history, keep_recent=4, force=True)
+    compress_history_tags(history, keep_recent=4)
     if cost(history) <= target: return
     pre, post = history[:kp], history[kp:]
     while len(post) > 9 and cost(pre) + cost(post) > target:
@@ -597,25 +593,66 @@ def _msgs_claude2oai(messages):
                     if src.get("type") == "base64" and src.get("data"):
                         text_parts.append({"type": "image_url", "image_url": {"url": f"data:{src.get('media_type', 'image/png')};base64,{src.get('data', '')}"}})
                 elif b.get("type") == "image_url": text_parts.append(b)
-                elif b.get("type") == "text" and b.get("text"): text_parts.append({"type": "text", "text": b.get("text", "")})
+                elif b.get("type") == "text" and b.get("text"):
+                    text = {"type": "text", "text": b.get("text", "")}
+                    if b.get("cache_control"): text["cache_control"] = b["cache_control"]
+                    text_parts.append(text)
             if text_parts: result.append({"role": "user", "content": text_parts})
         else: result.append(msg)
     return result
 
 
+_TASK_ANCHOR_REFERENCE = "[当前用户任务已作为上方稳定任务锚点提供；请执行该任务。]"
+
+def _replace_initial_task_with_anchor_reference(session, prompt):
+    """Keep the first rendered task prompt hot without persisting a second task copy."""
+    if not getattr(session, '_task_anchor_pending', False): return prompt
+    session._task_anchor_pending = False
+    anchor = getattr(session, 'task_anchor', None)
+    if not anchor: return prompt
+    if isinstance(prompt, str):
+        if anchor in prompt: return prompt.replace(anchor, _TASK_ANCHOR_REFERENCE, 1)
+        return _TASK_ANCHOR_REFERENCE if prompt == anchor else prompt
+    if not isinstance(prompt, dict): return prompt
+    copied = dict(prompt)
+    if isinstance(prompt.get('content'), str):
+        copied['content'] = prompt['content'].replace(anchor, _TASK_ANCHOR_REFERENCE, 1)
+        return copied
+    replaced = False; content = []
+    for block in prompt.get('content', []):
+        item = dict(block) if isinstance(block, dict) else block
+        if (not replaced and isinstance(item, dict) and item.get('type') == 'text'
+                and item.get('text') == anchor):
+            item['text'] = _TASK_ANCHOR_REFERENCE; replaced = True
+        content.append(item)
+    copied['content'] = content
+    return copied
+
+def _project_task_anchor(session, history):
+    anchor = getattr(session, 'task_anchor', None)
+    if not anchor: return history
+    block = {'type': 'text', 'text': anchor}
+    if getattr(session, 'supports_anthropic_cache_control', False):
+        block['cache_control'] = {'type': 'ephemeral'}
+    return [{'role': 'user', 'content': [block]}] + history
+
 class BaseSession:
+    supports_anthropic_cache_control = False
+
     def __init__(self, cfg):
         self.api_key = cfg['apikey']
         self.api_base = cfg['apibase'].rstrip('/')
         self.model = cfg.get('model', '')
-        default_context_win = 35000; default_cut_msg_interval = 7
+        default_context_win = 35000
         if 'deepseek' in self.model.lower():
-            default_context_win = 80000; default_cut_msg_interval = 25; self.trim_keep_rate = 0.3
+            default_context_win = 80000; self.trim_keep_rate = 0.3
         self.context_win = cfg.get('context_win', default_context_win)
-        self.maxlen_multiplier = min(max(self.context_win / default_context_win * 0.75, 1.0), 3.0)
-        self.cut_msg_interval = int(default_cut_msg_interval * self.maxlen_multiplier)
         self.trim_keep_prefix = max(0, int(cfg.get('trim_keep_prefix', 0) or 0))
         self.history = []; self.lock = threading.Lock(); self.system = ""
+        # The external task is kept outside rolling transport history.  It is
+        # projected into each request so working-memory/tool prompts stay hot.
+        self.task_anchor = None
+        self._task_anchor_pending = False
         self.name = cfg.get('name', self.model)
         self.extra_sys_prompt = cfg.get('extra_sys_prompt', '')
         if cfg.get('extra_sys_prompt_file'):
@@ -655,12 +692,18 @@ class BaseSession:
             effort = {'low': 'low', 'medium': 'medium', 'high': 'high', 'xhigh': 'max', 'max': 'max'}.get(self.reasoning_effort)
             if effort: payload["output_config"] = {"effort": effort}
             else: print(f"[WARN] reasoning_effort {self.reasoning_effort!r} is unsupported for Claude output_config.effort, ignored.")
+    def begin_task(self, task_anchor):
+        """Start an external task without storing its stable text in rolling history."""
+        self.task_anchor = task_anchor
+        self._task_anchor_pending = True
+
     def ask(self, prompt):
         def _ask_gen():
             with self.lock:
+                prompt = _replace_initial_task_with_anchor_reference(self, prompt)
                 self.history.append({"role": "user", "content": [{"type": "text", "text": prompt}]})
                 trim_messages_history(self.history, self)
-                messages = self.make_messages(self.history)
+                messages = _project_task_anchor(self, self.make_messages(self.history))
             content_blocks = None; content = ''
             gen = self.raw_ask(messages)
             try:
@@ -693,6 +736,8 @@ def _ensure_thinking_blocks(messages, model):
     return messages
 
 class ClaudeSession(BaseSession):
+    supports_anthropic_cache_control = True
+
     def raw_ask(self, messages):
         messages = _fix_messages(messages)
         if self.max_tokens is None: self.max_tokens = 8192
@@ -753,6 +798,7 @@ def _fix_messages(messages):
     return merged
 
 class NativeClaudeSession(BaseSession):
+    supports_anthropic_cache_control = True
     native_ua = "claude-cli/2.1.152 (native, cli)"
     def __init__(self, cfg):
         super().__init__(cfg)
@@ -807,9 +853,10 @@ class NativeClaudeSession(BaseSession):
     def ask(self, msg):
         assert type(msg) is dict
         with self.lock:
+            msg = _replace_initial_task_with_anchor_reference(self, msg)
             self.history.append(msg)
             trim_messages_history(self.history, self)
-            messages = [{"role": m["role"], "content": list(m["content"])} for m in self.history]
+            messages = _project_task_anchor(self, [{"role": m["role"], "content": list(m["content"])} for m in self.history])
         content_blocks = None
         gen = self.raw_ask(messages)
         try:
@@ -836,6 +883,7 @@ class NativeClaudeSession(BaseSession):
         return MockResponse(thinking, content, tool_calls, raw)
 
 class NativeOAISession(NativeClaudeSession):
+    supports_anthropic_cache_control = False
     native_ua = "codex_exec/0.139.0 (Windows 10.0.26200; x86_64) unknown (codex_exec; 0.139.0)"
     def raw_ask(self, messages):
         messages = _fix_messages(messages)
@@ -1039,7 +1087,7 @@ class MixinSession:
         'reasoning_effort', 'service_tier', 'thinking_type',
         'thinking_budget_tokens', 'omit_thinking', 'proxies', 'verify',
     })
-    _FACADE_STATE = frozenset({'name', 'history', 'system', 'tools', 'lock'})
+    _FACADE_STATE = frozenset({'name', 'history', 'system', 'tools', 'lock', 'task_anchor', '_task_anchor_pending'})
 
     def __init__(self, all_sessions, cfg):
         self._retries = cfg.get('max_retries', 3)
@@ -1071,6 +1119,8 @@ class MixinSession:
     def current(self): return self._sessions[self._cur_idx]
     @property
     def current_name(self): return self.current.name
+    @property
+    def supports_anthropic_cache_control(self): return self.current.supports_anthropic_cache_control
     def __getattr__(self, name): return getattr(self.current, name)
     def __setattr__(self, name, value):
         sessions = self.__dict__.get('_sessions')
@@ -1082,6 +1132,10 @@ class MixinSession:
             for s in sessions)
         if node_owns and name not in self._FACADE_STATE: raise AttributeError(f"MixinSession.{name} is node-specific and read-only")
         object.__setattr__(self, name, value)
+    def begin_task(self, task_anchor):
+        self.task_anchor = task_anchor
+        self._task_anchor_pending = True
+
     def ask(self, prompt):
         self._pick()  # Select the node before ask() reads its context limits.
         return self._ask_impl(self, prompt)

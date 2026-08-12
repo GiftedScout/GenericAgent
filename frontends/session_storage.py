@@ -242,6 +242,43 @@ class SessionStore:
                 ORDER BY last_activity_at""", (now - SHORT_AGE_SECONDS, now - LONG_AGE_SECONDS)).fetchall()
         return [self._row(r) for r in rows]
 
+    def janitor(self, *, apply: bool = False, now: int | None = None) -> dict:
+        """Plan or safely archive retention-eligible durable hot sessions.
+
+        The default is a read-only dry run.  ``apply=True`` processes the fixed
+        eligibility snapshot one session at a time: an active session or a
+        failed archive is reported and does not stop other candidates.  Legacy
+        ``temp/model_responses`` files are deliberately outside this registry
+        and can never be selected here.
+        """
+        planned_at = _now() if now is None else now
+        candidates = self.eligible(now=planned_at)
+        results = []
+        for row in candidates:
+            item = {
+                "session_id": row["session_id"],
+                "class": row["class"],
+                "title": row["title"],
+                "last_activity_at": row["last_activity_at"],
+                "action": "would_archive" if not apply else "archive",
+                "status": "planned" if not apply else "pending",
+            }
+            if apply:
+                try:
+                    archived = self.archive(row["session_id"])
+                    item.update(status="archived", archive_path=archived["archive_path"])
+                except Exception as exc:
+                    item.update(status="skipped", reason=str(exc))
+            results.append(item)
+        return {
+            "mode": "apply" if apply else "dry-run",
+            "planned_at": planned_at,
+            "candidate_count": len(results),
+            "archived_count": sum(item["status"] == "archived" for item in results),
+            "skipped_count": sum(item["status"] == "skipped" for item in results),
+            "sessions": results,
+        }
+
     def archive(self, session_id: str, *, remove_hot: bool = True) -> dict:
         """Create, fully verify, atomically publish and index one immutable archive."""
         session_id = self._validate_id(session_id)

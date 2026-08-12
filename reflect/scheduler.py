@@ -1,4 +1,4 @@
-import os, json, time as _time, socket as _socket, logging
+import os, json, socket as _socket, logging
 from datetime import datetime, timedelta
 
 # 端口锁：防止重复启动，bind失败时agentmain会直接崩溃退出
@@ -27,7 +27,6 @@ if not _logger.handlers:
 
 # 默认最大延迟窗口（小时），超过此时间不触发
 DEFAULT_MAX_DELAY = 6
-_l4_t = 0  # last L4 archive time
 
 def _parse_cooldown(repeat):
     """解析repeat为冷却时间(比实际周期略短,防漂移)"""
@@ -60,19 +59,8 @@ def _last_run(tid, done_files):
     return latest
 
 def check():
-    # L4 archive cron (silent, every 12h)
-    global _l4_t
-    if _time.time() - _l4_t > 43200:
-        _l4_t = _time.time()
-        try:
-            import sys; sys.path.insert(0, os.path.join(_dir, '../memory/L4_raw_sessions'))
-            from compress_session import batch_process
-            raw_dir = os.path.join(_dir, '../temp/model_responses')
-            r = batch_process(raw_dir, dry_run=False)
-            print(f'[L4 cron] {r}')
-        except Exception as e:
-            _logger.error(f'L4 archive failed: {e}')
-
+    # Task discovery is intentionally side-effect free: execution is delegated to
+    # the agent after it receives the returned task prompt.
     if not os.path.isdir(TASKS): return None
     now = datetime.now()
     os.makedirs(DONE, exist_ok=True)

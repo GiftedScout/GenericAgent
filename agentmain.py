@@ -194,6 +194,7 @@ class GenericAgent:
                 if ps > 0: handler.working['key_info'] += f'\n[SYSTEM] 此为 {ps} 个对话前设置的key_info，若已在新任务，先更新或清除工作记忆。\n'
             self.handler = handler  # although new handler, the **full** history is in llmclient, so it is full history!
             self.llmclient.log_path = self.log_path
+            self.llmclient.backend.begin_task(raw_query)
             if self.force_non_stream:
                 self.llmclient.backend.stream = False
                 self.llmclient.backend.read_timeout = max(self.llmclient.backend.read_timeout, 1200)

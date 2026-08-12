@@ -79,6 +79,11 @@ COMMANDS = {
         "desc": "启动命令行交互对话模式，最轻量的使用方式",
         "cmd": ["python", "{PROJECT_DIR}/agentmain.py"],
     },
+    "janitor": {
+        "help": "会话归档维护（默认只读计划；--apply 执行归档）",
+        "desc": "审计或归档到期 UUID 会话；不读取或改动 legacy model_responses",
+        "cmd": ["python", "-m", "frontends.session_janitor"],
+    },
     "launch": {
         "help": "启动 webview 桌面壳 (launch.pyw)",
         "desc": "以原生窗口形式包装 stapp Web 界面（基于 pywebview）",
@@ -343,6 +348,7 @@ def main():
               ga tui2              启动终端 TUI (v2 增强版)
               ga pet               启动桌面宠物 v2
               ga launch            启动 webview 桌面壳
+              ga janitor           查看会话归档计划（加 --apply 执行）
 
               ga sync              安全更新（stash+拉取+恢复，不怕本地改动）
               ga list              列出所有命令

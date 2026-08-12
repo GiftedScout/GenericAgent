@@ -204,31 +204,43 @@ def batch_process(src, l4_dir=None, dry_run=True):
             if hist: f.write('\n' + format_history_block(sn, hist))
     print(f"Appended {len(results)} sessions to all_histories.txt")
 
-    # Phase 3: Archive to monthly zips
+    # Phase 3: Archive to monthly zips.  Retain the raw path only after this
+    # invocation wrote its member and the closed ZIP can read that member back.
     by_month = defaultdict(list)
-    for sn, cpath, _, info, _ in results:
+    for sn, cpath, _, info, raw_path in results:
         year = info.get('year', '2026') if isinstance(info, dict) else '2026'
-        by_month[f"{year}-{sn[:2]}"].append((sn, cpath))
+        by_month[f"{year}-{sn[:2]}"].append((sn, cpath, raw_path))
+    archived_raw = []
     for mk, items in sorted(by_month.items()):
         zpath = os.path.join(l4_dir, f"{mk}.zip")
         mode = 'a' if os.path.exists(zpath) else 'w'
+        written = []
         with zipfile.ZipFile(zpath, mode, zipfile.ZIP_DEFLATED) as zf:
             names = set(zf.namelist()) if mode == 'a' else set()
-            for sn, cp in items:
-                if f"{sn}.txt" not in names: zf.write(cp, f"{sn}.txt")
-        print(f"  {mk}.zip: +{len(items)}")
+            for sn, cp, raw_path in items:
+                member = f"{sn}.txt"
+                if member in names:
+                    print(f"  RETAIN {os.path.basename(raw_path)}: duplicate archive member {member}")
+                    continue
+                zf.write(cp, member)
+                written.append((member, cp, raw_path))
+        with zipfile.ZipFile(zpath, 'r') as zf:
+            for member, compressed_path, raw_path in written:
+                with open(compressed_path, 'rb') as f:
+                    expected = f.read()
+                if member in zf.namelist() and zf.read(member) == expected:
+                    archived_raw.append(raw_path)
+                else:
+                    print(f"  RETAIN {os.path.basename(raw_path)}: archive verification failed")
+        print(f"  {mk}.zip: +{len(written)} written")
 
-    # Phase 4: Delete raw files
-    to_del = [rp for *_, rp in results]
-    for fname, reason in skipped:
-        if 'recent' in reason: continue  # active session still being written
-        m = [f for f in raw_files if os.path.basename(f) == fname]
-        if m: to_del.append(m[0])
+    # Phase 4: Delete only sources verified as newly represented in a ZIP.
+    # Skipped, duplicate, and failed sources are deliberately retained.
     deleted = 0
-    for rp in to_del:
+    for rp in archived_raw:
         try: os.remove(rp); deleted += 1
         except Exception: pass
-    print(f"Deleted {deleted}/{len(to_del)} raw files")
+    print(f"Deleted {deleted}/{len(archived_raw)} successfully archived raw files")
 
     shutil.rmtree(tmp_dir, ignore_errors=True)
     report = {'processed': len(results), 'skipped': len(skipped),

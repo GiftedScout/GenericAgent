@@ -1,7 +1,9 @@
+import io
 import json
 import tempfile
 import time
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -91,6 +93,58 @@ class SessionStoreTests(unittest.TestCase):
         with self.store.lock(sid):
             with self.assertRaisesRegex(RuntimeError, "active/locked"):
                 self.store.archive(sid)
+        self.assertEqual(self.store.get(sid)["state"], "hot")
+
+    def test_janitor_dry_run_plans_only_retention_eligible_rows(self):
+        now = 2_000_000_000
+        short = self.store.create_session(title="old short")["session_id"]
+        long = self.store.create_session(title="old long")["session_id"]
+        recent = self.store.create_session(title="recent")["session_id"]
+        self.store.promote(long, "rename")
+        with self.store._connect() as conn:
+            conn.execute("UPDATE sessions SET last_activity_at=? WHERE session_id=?", (now - SHORT_AGE_SECONDS, short))
+            conn.execute("UPDATE sessions SET last_activity_at=? WHERE session_id=?", (now - LONG_AGE_SECONDS, long))
+            conn.execute("UPDATE sessions SET last_activity_at=? WHERE session_id=?", (now - 1, recent))
+        result = self.store.janitor(now=now)
+        self.assertEqual(result["mode"], "dry-run")
+        self.assertEqual(result["candidate_count"], 2)
+        self.assertEqual({row["session_id"] for row in result["sessions"]}, {short, long})
+        self.assertTrue(all(row["status"] == "planned" for row in result["sessions"]))
+        self.assertTrue(all(self.store.get(sid)["state"] == "hot" for sid in (short, long, recent)))
+
+    def test_janitor_apply_archives_independent_candidates_and_skips_active(self):
+        now = 2_000_000_000
+        active = self.store.create_session(title="active")["session_id"]
+        eligible = self.store.create_session(title="eligible")["session_id"]
+        for sid in (active, eligible):
+            self.store.transcript_path(sid).write_text("transcript", encoding="utf-8")
+        with self.store._connect() as conn:
+            for sid in (active, eligible):
+                conn.execute("UPDATE sessions SET last_activity_at=? WHERE session_id=?", (now - SHORT_AGE_SECONDS, sid))
+        with self.store.lock(active):
+            result = self.store.janitor(apply=True, now=now)
+        by_id = {row["session_id"]: row for row in result["sessions"]}
+        self.assertEqual(result["archived_count"], 1)
+        self.assertEqual(result["skipped_count"], 1)
+        self.assertEqual(by_id[eligible]["status"], "archived")
+        self.assertEqual(by_id[active]["status"], "skipped")
+        self.assertIn("active/locked", by_id[active]["reason"])
+        self.assertEqual(self.store.get(active)["state"], "hot")
+        self.assertEqual(self.store.get(eligible)["state"], "archived")
+        self.assertEqual((self.store.restore(eligible) / "transcript.txt").read_text(encoding="utf-8"), "transcript")
+
+    def test_session_janitor_cli_defaults_to_dry_run_and_emits_json(self):
+        from frontends.session_janitor import main
+        sid = self.store.create_session()["session_id"]
+        now = int(time.time())
+        with self.store._connect() as conn:
+            conn.execute("UPDATE sessions SET last_activity_at=? WHERE session_id=?", (now - SHORT_AGE_SECONDS, sid))
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(main([], store=self.store), 0)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["mode"], "dry-run")
+        self.assertEqual(result["sessions"][0]["session_id"], sid)
         self.assertEqual(self.store.get(sid)["state"], "hot")
 
 
