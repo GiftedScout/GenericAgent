@@ -700,8 +700,8 @@ class BaseSession:
     def ask(self, prompt):
         def _ask_gen():
             with self.lock:
-                prompt = _replace_initial_task_with_anchor_reference(self, prompt)
-                self.history.append({"role": "user", "content": [{"type": "text", "text": prompt}]})
+                request_prompt = _replace_initial_task_with_anchor_reference(self, prompt)
+                self.history.append({"role": "user", "content": [{"type": "text", "text": request_prompt}]})
                 trim_messages_history(self.history, self)
                 messages = _project_task_anchor(self, self.make_messages(self.history))
             content_blocks = None; content = ''
@@ -714,7 +714,7 @@ class BaseSession:
                 if block.get('type', '') == 'tool_use':
                     tu = {'name': block.get('name', ''), 'arguments': block.get('input', {})}
                     yield f'<tool_use>{json.dumps(tu, ensure_ascii=False)}</tool_use>'
-            if content.strip() and not content.startswith("!!!Error:"): self.history.append({"role": "assistant", "content": [{"type": "text", "text": content}]})
+            if content.strip() and not content.lstrip().startswith("!!!Error:"): self.history.append({"role": "assistant", "content": [{"type": "text", "text": content}]})
         return _ask_gen()
 
 def _keep_claude_block(b): return not isinstance(b, dict) or b.get("type") != "thinking" or b.get("signature")
@@ -863,7 +863,7 @@ class NativeClaudeSession(BaseSession):
             while True: yield next(gen)
         except StopIteration as e: content_blocks = e.value or []
         if content_blocks and (_injected := _ensure_text_block(content_blocks)): yield _injected
-        if content_blocks and not (len(content_blocks) == 1 and content_blocks[0].get("text", "").startswith("!!!Error:")):
+        if content_blocks and not (len(content_blocks) == 1 and content_blocks[0].get("text", "").lstrip().startswith("!!!Error:")):
             history_blocks = content_blocks
             if self.omit_thinking: history_blocks = [b for b in content_blocks if b.get("type") != "thinking"]
             self.history.append({"role": "assistant", "content": history_blocks})

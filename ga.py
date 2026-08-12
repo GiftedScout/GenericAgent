@@ -779,7 +779,11 @@ class GenericAgentHandler(BaseHandler):
         if not response or (not content.strip() and not thinking.strip()):
             yield "[Warn] LLM returned an empty response. Retrying...\n"
             return self._retry_or_exit("[ERROR] Blank response, regenerate and tooluse")
-        if '[!!! 流异常中断' in content[-100:] or '!!!Error:' in content[-100:] or content.endswith('</summary>'):
+        # A transport/API failure is not an incomplete model answer.  Retrying it
+        # through the model would persist the provider error as a new instruction.
+        if '!!!Error:' in content[-100:]:
+            return StepOutcome(response, should_exit=True)
+        if '[!!! 流异常中断' in content[-100:] or content.endswith('</summary>'):
             return self._retry_or_exit("[ERROR] Incomplete response. Regenerate and tooluse.")
         if 'max_tokens !!!]' in content[-100:]:
             return self._retry_or_exit("[ERROR] max_tokens limit reached. Use multi small steps to do it.")
