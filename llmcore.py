@@ -1,7 +1,10 @@
-import os, json, re, time, requests, sys, threading, urllib3, base64, importlib, uuid, pathlib, copy
+import os, json, re, time, requests, sys, threading, urllib3, base64, importlib, uuid, pathlib, copy, hashlib
 from datetime import datetime
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-_RESP_CACHE_KEY = str(uuid.uuid4()); _RESP_CODEX_KEY = str(uuid.uuid4())
+# Codex client metadata is unrelated to cache routing.  Keep its process-wide
+# installation/window identifiers while task requests use `_prompt_cache_key`.
+_RESP_CACHE_KEY = str(uuid.uuid4())
+_RESP_CODEX_KEY = str(uuid.uuid4())
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 if _ROOT not in sys.path: sys.path.append(_ROOT)
 
@@ -420,6 +423,29 @@ def _parse_openai_json(data, api_mode="chat_completions"):
             blocks.append({"type": "tool_use", "id": tc.get("id", ""), "name": fn.get("name", ""), "input": args})
     return blocks
 
+def _openai_prompt_cache_enabled(session):
+    """Whether this endpoint accepts OpenAI's standard prompt-cache fields.
+
+    GPT-5.6 requires ``prompt_cache_key`` for reliable cache matching.  Other
+    OpenAI-compatible relays vary, so they must opt in with
+    ``openai_prompt_cache=True`` (or explicitly opt out with False).
+    """
+    configured = getattr(session, 'openai_prompt_cache', None)
+    if configured is not None: return bool(configured)
+    return session.model.lower().startswith('gpt-5.6')
+
+def _prompt_cache_key(session):
+    """Return a privacy-preserving, task-scoped routing key, or None outside a task."""
+    key = getattr(session, '_prompt_cache_key', None)
+    if key: return key
+    anchor = getattr(session, 'task_anchor', None)
+    if not anchor: return None
+    # Keys route same-prefix requests; hashing keeps task text out of provider metadata.
+    # The digest alone is an ASCII, 64-character key accepted by the API.
+    key = hashlib.sha256(str(anchor).encode('utf-8')).hexdigest()
+    session._prompt_cache_key = key
+    return key
+
 def _stamp_oai_cache_markers(messages, model):
     """Add cache_control to last 2 user messages for Anthropic models via OAI-compatible relay."""
     ml = model.lower()
@@ -483,12 +509,16 @@ def _openai_stream(sess, messages):
     elif 'minimax' in ml: temperature = max(0.01, min(temperature, 1.0))  # MiniMax requires temp in (0, 1]
     headers = {"Authorization": f"Bearer {sess.api_key}", "Content-Type": "application/json", "Accept": "text/event-stream", 'originator': 'codex_exec'}
     headers["User-Agent"] = sess.user_agent
+    cache_key = _prompt_cache_key(sess) if _openai_prompt_cache_enabled(sess) else None
     if api_mode == "responses":
         url = auto_make_url(sess.api_base, "responses")
-        payload = {"model": model, "input": _to_responses_input(messages), "stream": sess.stream, 
-                   "prompt_cache_key": _RESP_CACHE_KEY, "instructions": sess.system or "You are an Omnipotent Executor.",
+        payload = {"model": model, "input": _to_responses_input(messages), "stream": sess.stream,
+                   "instructions": sess.system or "You are an Omnipotent Executor.",
                    "client_metadata": {"x-codex-window-id": f"{_RESP_CACHE_KEY}:0","x-codex-installation-id": _RESP_CODEX_KEY},
                    'include': ['reasoning.encrypted_content']}
+        if cache_key:
+            payload["prompt_cache_key"] = cache_key
+            payload["prompt_cache_options"] = {"mode": "explicit"}
         if sess.reasoning_effort: payload["reasoning"] = {"effort": sess.reasoning_effort}
         if sess.max_tokens: payload["max_output_tokens"] = sess.max_tokens
     else:
@@ -496,6 +526,9 @@ def _openai_stream(sess, messages):
         if sess.system: messages = [{"role": "system", "content": sess.system}] + messages
         _stamp_oai_cache_markers(messages, model)
         payload = {"model": model, "messages": messages, "stream": sess.stream}
+        if cache_key:
+            payload["prompt_cache_key"] = cache_key
+            payload["prompt_cache_options"] = {"mode": "explicit"}
         if sess.stream: payload["stream_options"] = {"include_usage": True}
         if temperature != 1: payload["temperature"] = temperature
         if sess.max_tokens: payload["max_completion_tokens" if ml.startswith(("gpt-5", "o1", "o2", "o3", "o4")) else "max_tokens"] = sess.max_tokens
@@ -538,7 +571,11 @@ def _to_responses_input(messages):
                 ptype = part.get("type")
                 if ptype == "text":
                     text = part.get("text", "")
-                    if text: parts.append({"type": text_type, "text": text})
+                    if text:
+                        out = {"type": text_type, "text": text}
+                        if part.get("prompt_cache_breakpoint"):
+                            out["prompt_cache_breakpoint"] = part["prompt_cache_breakpoint"]
+                        parts.append(out)
                 elif ptype == "image_url":
                     url = (part.get("image_url") or {}).get("url", "")
                     if url and role != "assistant": parts.append({"type": "input_image", "image_url": url})
@@ -596,6 +633,11 @@ def _msgs_claude2oai(messages):
                 elif b.get("type") == "text" and b.get("text"):
                     text = {"type": "text", "text": b.get("text", "")}
                     if b.get("cache_control"): text["cache_control"] = b["cache_control"]
+                    # GPT-5.6 explicit caching uses the analogous block marker.
+                    # Keep it when NativeOAI projects Claude-style history into
+                    # Chat Completions messages.
+                    if b.get("prompt_cache_breakpoint"):
+                        text["prompt_cache_breakpoint"] = b["prompt_cache_breakpoint"]
                     text_parts.append(text)
             if text_parts: result.append({"role": "user", "content": text_parts})
         else: result.append(msg)
@@ -632,6 +674,8 @@ def _project_task_anchor(session, history):
     anchor = getattr(session, 'task_anchor', None)
     if not anchor: return history
     block = {'type': 'text', 'text': anchor}
+    if _openai_prompt_cache_enabled(session):
+        block['prompt_cache_breakpoint'] = {'mode': 'explicit'}
     if getattr(session, 'supports_anthropic_cache_control', False):
         block['cache_control'] = {'type': 'ephemeral'}
     return [{'role': 'user', 'content': [block]}] + history
@@ -653,6 +697,10 @@ class BaseSession:
         # projected into each request so working-memory/tool prompts stay hot.
         self.task_anchor = None
         self._task_anchor_pending = False
+        # None: enable only on native GPT-5.6+; explicit true opts compatible
+        # OpenAI-compatible providers into the standard protocol.
+        self.openai_prompt_cache = cfg.get('openai_prompt_cache')
+        self._prompt_cache_key = None
         self.name = cfg.get('name', self.model)
         self.extra_sys_prompt = cfg.get('extra_sys_prompt', '')
         if cfg.get('extra_sys_prompt_file'):
@@ -696,6 +744,9 @@ class BaseSession:
         """Start an external task without storing its stable text in rolling history."""
         self.task_anchor = task_anchor
         self._task_anchor_pending = True
+        # A task-scoped key must not accidentally route a new task to the old
+        # task's cache shard if this session object is reused.
+        self._prompt_cache_key = None
 
     def ask(self, prompt):
         def _ask_gen():
@@ -1135,6 +1186,10 @@ class MixinSession:
     def begin_task(self, task_anchor):
         self.task_anchor = task_anchor
         self._task_anchor_pending = True
+        # raw_ask() is executed by a selected child session, so propagate the
+        # anchor instead of leaving task state only on this facade.
+        for session in self._sessions:
+            session.begin_task(task_anchor)
 
     def ask(self, prompt):
         self._pick()  # Select the node before ask() reads its context limits.
