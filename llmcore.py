@@ -1273,9 +1273,11 @@ def resolve_session(cfg_name):
     cfg = reload_mykeys()[0].get(cfg_name)
     if not cfg: raise ValueError(f"Config '{cfg_name}' not in mykey")
     cfg['_mykey_name'] = cfg_name
-    if 'native' in cfg_name: return (NativeClaudeSession if 'claude' in cfg_name else NativeOAISession)(cfg=cfg)
-    if 'claude' in cfg_name: return ClaudeSession(cfg=cfg)
-    return LLMSession(cfg=cfg) if 'oai' in cfg_name else None
+    if 'native' in cfg_name: s = (NativeClaudeSession if 'claude' in cfg_name else NativeOAISession)(cfg=cfg)
+    elif 'claude' in cfg_name: s = ClaudeSession(cfg=cfg)
+    else: s = LLMSession(cfg=cfg) if 'oai' in cfg_name else None
+    if s: s._mykey_name = cfg_name
+    return s
 
 def resolve_client(cfg_name):
     s = resolve_session(cfg_name)

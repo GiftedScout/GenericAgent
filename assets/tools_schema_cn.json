@@ -78,6 +78,6 @@
     "parameters": {"type": "object", "properties": {}}}
   }
 ,
-{"type": "function", "function": {"name": "ocr", "description": "读取本地图片并使用GPT视觉模型提取文字。仅传图片路径，不要传密钥。", "parameters": {"type": "object", "properties": {"image_path": {"type": "string", "description": "图片路径，相对路径以当前工作目录解析"}, "prompt": {"type": "string", "description": "可选的识别指令"}, "timeout": {"type": "integer", "default": 120}}, "required": ["image_path"]}}},
+{"type": "function", "function": {"name": "ocr", "description": "读取本地图片并提取文字，优先当前模型，失败自动轮换其他已配置视觉模型。仅传图片路径，不要传密钥。", "parameters": {"type": "object", "properties": {"image_path": {"type": "string", "description": "图片路径，相对路径以当前工作目录解析"}, "prompt": {"type": "string", "description": "可选的识别指令"}, "model": {"type": "string", "description": "可选，指定优先使用的 mykey 配置名（如 native_oai_config_aihub2）"}, "timeout": {"type": "integer", "default": 120}}, "required": ["image_path"]}}},
 {"type": "function", "function": {"name": "generate_image", "description": "使用gpt-image-2模型生成图片并自动保存到当前工作目录的image文件夹。size和quality按上游接口接受的值透传。", "parameters": {"type": "object", "properties": {"prompt": {"type": "string"}, "size": {"type": "string", "default": "1K", "description": "上游尺寸参数，默认1K；不在本地硬编码可用枚举。"}, "quality": {"type": "string", "default": "auto", "description": "上游质量参数，默认auto；不在本地硬编码可用枚举。"}, "timeout": {"type": "integer", "default": 180}}, "required": ["prompt"]}}}
 ]

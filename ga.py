@@ -559,14 +559,17 @@ class GenericAgentHandler(BaseHandler):
         return matches[-1].strip() if matches else None
 
     def do_ocr(self, args, response):
-        """用云端 Responses API 的 Luna 视觉模型从本地图片提取文字。"""
+        """用视觉模型从本地图片提取文字；优先当前模型，失败自动轮换其他已配置视觉模型。"""
         path = args.get("image_path") or args.get("path")
         if not path:
             return StepOutcome("[Error] image_path is required", next_prompt="\n")
         try:
             from media_api import ocr
-            result = ocr(self._get_abs_path(path), prompt=args.get("prompt", ""),
-                         timeout=_arg(args, "timeout", 120, int))
+            backend = getattr(getattr(self, "llmclient", None), "backend", None)
+            current = getattr(backend, "_mykey_name", None) if backend is not None else None
+            result = ocr(self._get_abs_path(path), prompt=args.get("prompt") or "",
+                         timeout=_arg(args, "timeout", 120, int),
+                         model=args.get("model") or None, current=current)
             return StepOutcome(result, next_prompt="\n")
         except Exception as e:
             return StepOutcome(f"[Error] OCR failed: {type(e).__name__}: {e}", next_prompt="\n")

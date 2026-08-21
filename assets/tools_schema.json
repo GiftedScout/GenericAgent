@@ -78,10 +78,11 @@
   },
   {"type": "function", "function": {
     "name": "ocr",
-    "description": "Extract text from a local image with the configured vision model. Pass only the image path, never credentials.",
+    "description": "Extract text from a local image. Prefers the current model, then other configured vision models automatically on failure. Pass only the image path, never credentials.",
     "parameters": {"type": "object", "properties": {
       "image_path": {"type": "string", "description": "Image path; relative paths resolve from the agent working directory"},
       "prompt": {"type": "string", "description": "Optional extraction instructions"},
+      "model": {"type": "string", "description": "Optional mykey config name to prefer (e.g. native_oai_config_aihub2); other vision models are tried automatically on failure"},
       "timeout": {"type": "integer", "default": 120}},
       "required": ["image_path"]}
   }},

@@ -10,15 +10,16 @@ import os
 from pathlib import Path
 
 
-def _ocr_config():
-    """Use the explicitly selected cloud Luna config; never inherit another config."""
-    try:
-        cfg = getattr(importlib.import_module("mykey"), "native_oai_config_aihub3")
-    except (ImportError, AttributeError) as e:
-        raise RuntimeError("explicit OCR config native_oai_config_aihub3 is unavailable") from e
-    if not isinstance(cfg, dict) or not cfg.get("apikey"):
-        raise RuntimeError("explicit OCR Luna credential is not configured")
-    return cfg
+# Vision-capable mykey config names, tried after the requested/current model.
+VISION_FALLBACKS = [
+    "native_oai_config_aihub1",
+    "native_oai_config_aihub2",
+    "native_oai_config_aihub3",
+    "native_oai_config_fluxionai1",
+    "native_oai_config_fluxionai2",
+    "native_oai_config_google",
+    "native_oai_config_openrouter_vision",
+]
 
 
 def _image_config():
@@ -36,8 +37,7 @@ def _credential(kind):
     if kind == "image":
         cfg = _image_config()
         return cfg["apikey"], cfg
-    cfg = _ocr_config()
-    return cfg["apikey"], cfg
+    raise ValueError(f"unknown credential kind: {kind}")
 
 
 def _read_image(path):
@@ -48,31 +48,58 @@ def _read_image(path):
     return mime, base64.b64encode(p.read_bytes()).decode("ascii")
 
 
-def _response_text(payload):
-    if isinstance(payload.get("output_text"), str):
-        return payload["output_text"]
-    for item in payload.get("output", []) or []:
-        for content in item.get("content", []) or []:
-            text = content.get("text")
-            if isinstance(text, str):
-                return text
-    raise RuntimeError("OCR response contained no output text")
+def _raw_ask_text(sess, messages):
+    """Drive a session's raw_ask generator; return its full text output."""
+    gen = sess.raw_ask(messages)
+    chunks = []
+    try:
+        while True:
+            chunks.append(next(gen))
+    except StopIteration:
+        pass
+    except Exception as e:
+        return f"!!!Error: {type(e).__name__}: {e}"
+    return "".join(chunks).strip()
 
 
-def ocr(image_path, prompt="Extract all readable text exactly; preserve layout where possible.", timeout=120):
-    import requests
-    key, cfg = _credential("ocr")
+def ocr(image_path, prompt="Extract all readable text exactly; preserve layout where possible.",
+        timeout=120, model=None, current=None):
+    """OCR a local image, rotating through configured vision models.
+
+    Order: explicit ``model`` (mykey config name) -> ``current`` (the caller's
+    active model) -> ``VISION_FALLBACKS``. First successful extraction wins;
+    raises with per-model errors when every model fails.
+    """
+    from llmcore import resolve_session
     mime, data = _read_image(image_path)
-    base = cfg["apibase"].rstrip("/")
-    model = cfg["model"]
-    payload = {"model": model, "input": [{"role": "user", "content": [
-        {"type": "input_text", "text": prompt},
-        {"type": "input_image", "image_url": f"data:{mime};base64,{data}"}
-    ]}]}
-    r = requests.post(base + "/responses", headers={"Authorization": "Bearer " + key,
-        "Content-Type": "application/json"}, json=payload, timeout=timeout)
-    r.raise_for_status()
-    return _response_text(r.json())
+    messages = [{"role": "user", "content": [
+        {"type": "text", "text": prompt or "Extract all readable text exactly; preserve layout where possible."},
+        {"type": "image", "source": {"type": "base64", "media_type": mime, "data": data}},
+    ]}]
+    ordered = []
+    for name in ([model] if model else []) + ([current] if current else []) + VISION_FALLBACKS:
+        if name and name not in ordered:
+            ordered.append(name)
+    errors = []
+    for name in ordered:
+        try:
+            sess = resolve_session(name)
+        except Exception as e:
+            errors.append(f"{name}: {type(e).__name__}: {e}")
+            continue
+        if sess is None:
+            errors.append(f"{name}: not a resolvable session")
+            continue
+        try:
+            sess.read_timeout = max(int(getattr(sess, "read_timeout", 0) or 0), int(timeout))
+            sess.max_retries = min(int(getattr(sess, "max_retries", 2) or 0), 2)
+        except Exception:
+            pass
+        text = _raw_ask_text(sess, messages)
+        if text and not text.startswith(("!!!Error:", "[!!!")):
+            return text
+        errors.append(f"{name}: {(text or 'empty response')[:200]}")
+    raise RuntimeError(f"all {len(ordered)} OCR models failed: " + " | ".join(errors))
 
 
 def generate_image(prompt, size="1K", quality="auto", timeout=180, output_dir=None):
