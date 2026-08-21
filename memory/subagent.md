@@ -6,6 +6,7 @@
 - `python agentmain.py --func prompt.txt [--llm_no N]`（cwd=代码根）
 - 读prompt文件→执行→结果写`prompt.out.txt`→退出，主agent读完可删
 - 后台启动(print PID)，加`--nobg`前台同步等结果
+- 后台模式必须记录PID，并在主agent交付前轮询到进程退出、读取最终`[ROUND END]`；若取消则精确终止该PID并确认退出（`_stop`仅用于`--task`等待阶段，不适用于`--func`），禁止遗留运行中的子代理
 - 适用：单次任务、并行map、不需要追问的场景
 
 ### --task 持续协作模式
