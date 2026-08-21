@@ -617,6 +617,7 @@ class BaseSession:
         self.trim_keep_prefix = max(0, int(cfg.get('trim_keep_prefix', 0) or 0))
         self.history = []; self.lock = threading.Lock(); self.system = ""
         self.name = cfg.get('name', self.model)
+        self.ssh_tunnel = cfg.get('ssh_tunnel')
         self.extra_sys_prompt = cfg.get('extra_sys_prompt', '')
         if cfg.get('extra_sys_prompt_file'):
             self.extra_sys_prompt = (self.extra_sys_prompt or '') + open(cfg['extra_sys_prompt_file'] if os.path.isabs(cfg['extra_sys_prompt_file']) else os.path.join(_ROOT, cfg['extra_sys_prompt_file']), encoding='utf-8').read()
@@ -838,9 +839,17 @@ class NativeClaudeSession(BaseSession):
 class NativeOAISession(NativeClaudeSession):
     native_ua = "codex_exec/0.139.0 (Windows 10.0.26200; x86_64) unknown (codex_exec; 0.139.0)"
     def raw_ask(self, messages):
-        messages = _fix_messages(messages)
-        messages = _ensure_thinking_blocks(messages, self.model)
-        return (yield from _openai_stream(self, _msgs_claude2oai(messages)))
+        tunnel = None
+        if self.ssh_tunnel == 'qwen3-27b':
+            from qwen3_ssh_tunnel import ensure_qwen3_tunnel, release_qwen3_tunnel
+            ensure_qwen3_tunnel()
+            tunnel = release_qwen3_tunnel
+        try:
+            messages = _fix_messages(messages)
+            messages = _ensure_thinking_blocks(messages, self.model)
+            return (yield from _openai_stream(self, _msgs_claude2oai(messages)))
+        finally:
+            if tunnel: tunnel()
 
 def openai_tools_to_claude(tools):
     """[{type:'function', function:{name,description,parameters}}] → [{name,description,input_schema}]."""
