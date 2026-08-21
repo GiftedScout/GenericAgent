@@ -7,6 +7,7 @@ import base64
 import importlib
 import mimetypes
 import os
+import re
 from pathlib import Path
 
 
@@ -19,7 +20,12 @@ VISION_FALLBACKS = [
     "native_oai_config_fluxionai2",
     "native_oai_config_google",
     "native_oai_config_openrouter_vision",
+    "native_oai_config_qwen3_ssh",
+    "native_oai_config_lfm",
 ]
+
+_DEFAULT_OCR_PROMPT = ("Extract all readable text exactly; preserve layout where possible. "
+                       "Output ONLY the extracted text; no commentary, no explanation.")
 
 
 def _image_config():
@@ -48,6 +54,29 @@ def _read_image(path):
     return mime, base64.b64encode(p.read_bytes()).decode("ascii")
 
 
+_PREAMBLE_START = re.compile(
+    r"^(The user (wants|would like|is asking|asks)|I (need to|will|am going to|'m going to|'ll|can)|"
+    r"Sure|Certainly|Of course|Here (is|'s|are)|Below (is|are)|Following is)\b", re.I)
+_PREAMBLE_META = re.compile(r"\b(extract\w*|transcri\w*|image\w*|visible text|certificat\w*|text|read\w*)\b", re.I)
+
+
+def _strip_preamble(text):
+    """Drop leading commentary lines if they are clearly model meta-talk before the extraction."""
+    lines = text.split("\n")
+    idx = 0
+    while idx < len(lines):
+        first = lines[idx].strip()
+        if not first or not first.isascii() or (idx == 0 and len(first) < 40):
+            break
+        if _PREAMBLE_START.match(first) and _PREAMBLE_META.search(first):
+            idx += 1
+            continue
+        break
+    if idx:
+        return "\n".join(lines[idx:]).lstrip("\n")
+    return text
+
+
 def _raw_ask_text(sess, messages):
     """Drive a session's raw_ask generator; return its full text output."""
     gen = sess.raw_ask(messages)
@@ -62,7 +91,7 @@ def _raw_ask_text(sess, messages):
     return "".join(chunks).strip()
 
 
-def ocr(image_path, prompt="Extract all readable text exactly; preserve layout where possible.",
+def ocr(image_path, prompt=_DEFAULT_OCR_PROMPT,
         timeout=120, model=None, current=None):
     """OCR a local image, rotating through configured vision models.
 
@@ -73,7 +102,7 @@ def ocr(image_path, prompt="Extract all readable text exactly; preserve layout w
     from llmcore import resolve_session
     mime, data = _read_image(image_path)
     messages = [{"role": "user", "content": [
-        {"type": "text", "text": prompt or "Extract all readable text exactly; preserve layout where possible."},
+        {"type": "text", "text": prompt or _DEFAULT_OCR_PROMPT},
         {"type": "image", "source": {"type": "base64", "media_type": mime, "data": data}},
     ]}]
     ordered = []
@@ -97,7 +126,7 @@ def ocr(image_path, prompt="Extract all readable text exactly; preserve layout w
             pass
         text = _raw_ask_text(sess, messages)
         if text and not text.startswith(("!!!Error:", "[!!!")):
-            return text
+            return _strip_preamble(text)
         errors.append(f"{name}: {(text or 'empty response')[:200]}")
     raise RuntimeError(f"all {len(ordered)} OCR models failed: " + " | ".join(errors))
 
