@@ -100,7 +100,11 @@ print = safeprint
 STATS = {}
 
 def trim_messages_history(history, sess):
-    cap = sess.context_win * 3
+    # Most legacy backends configure `context_win` as GA's historical
+    # character-scale heuristic.  A backend may instead provide an explicit
+    # safe character budget when its configured context is a server token
+    # ceiling (the Qwen SSH backend does this below).
+    cap = int(getattr(sess, 'history_char_limit', sess.context_win * 3))
     target = int(cap * getattr(sess, 'trim_keep_rate', 0.6))
     kp = sess.trim_keep_prefix
     def cost(ms): return sum(len(json.dumps(m, ensure_ascii=False)) for m in ms)
@@ -235,12 +239,51 @@ def _try_parse_tool_args(raw):
         return parsed
     return [{"_raw": raw}]
 
-def _parse_openai_sse(resp_lines, api_mode="chat_completions"):
+def _strip_think_tags(text):
+    return re.sub(r"<think(?:ing)?>(.*?)</think(?:ing)?>", "", text or "", flags=re.DOTALL)
+
+
+def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=False):
     """Parse OpenAI SSE stream (chat_completions or responses API).
     Yields text chunks, returns list[content_block].
     content_block: {type:'text', text:str} | {type:'tool_use', id:str, name:str, input:dict}
     """
     content_text = ""
+    # A few OpenAI-compatible servers place CoT inside regular content deltas
+    # as <think>...</think>, sometimes splitting tags across SSE frames.  Do
+    # the filtering before yielding so Qwen's private reasoning never flashes
+    # in the TUI and is never accumulated in content_text/history.
+    tag_state = {"inside": False, "tail": ""}
+    open_tags, close_tags = ("<thinking>", "<think>"), ("</thinking>", "</think>")
+    def _visible_content(delta, finish=False):
+        if not omit_thinking: return delta
+        data = tag_state["tail"] + (delta or "")
+        tag_state["tail"] = ""
+        out = []
+        while data:
+            tags = close_tags if tag_state["inside"] else open_tags
+            positions = [(data.find(tag), tag) for tag in tags if data.find(tag) >= 0]
+            if positions:
+                pos, tag = min(positions)
+                if not tag_state["inside"]: out.append(data[:pos])
+                data = data[pos + len(tag):]
+                tag_state["inside"] = not tag_state["inside"]
+                continue
+            # Retain only a possible prefix of an opening/closing tag for the
+            # next SSE frame; every other character is safe to reveal now.
+            keep = 0
+            for tag in tags:
+                for n in range(1, min(len(tag) - 1, len(data)) + 1):
+                    if data.endswith(tag[:n]): keep = max(keep, n)
+            if finish:
+                if not tag_state["inside"]: out.append(data)
+            elif keep:
+                if not tag_state["inside"]: out.append(data[:-keep])
+                tag_state["tail"] = data[-keep:]
+            elif not tag_state["inside"]:
+                out.append(data)
+            break
+        return "".join(out)
     if api_mode == "responses":
         seen_delta = False; fc_buf = {}; current_fc_idx = None; reasoning_text = ""
         for line in resp_lines:
@@ -253,17 +296,17 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions"):
             except: continue
             etype = evt.get("type", "")
             if etype == "response.output_text.delta":
-                delta = evt.get("delta", "")
+                delta = _visible_content(evt.get("delta", ""))
                 if delta: seen_delta = True; content_text += delta; yield delta
             elif etype == "response.output_text.done" and not seen_delta:
-                text = evt.get("text", "")
+                text = _visible_content(evt.get("text", ""), finish=True)
                 if text: content_text += text; yield text
             elif etype == "response.reasoning_text.delta":
                 delta = evt.get("delta", "")
-                if delta: reasoning_text += delta
+                if delta and not omit_thinking: reasoning_text += delta
             elif etype == "response.reasoning_text.done":
                 text = evt.get("text", "")
-                if text: reasoning_text = text
+                if text and not omit_thinking: reasoning_text = text
             elif etype == "response.output_item.added":
                 item = evt.get("item", {})
                 if item.get("type") == "function_call":
@@ -304,8 +347,10 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions"):
                 _raise_if_retryable_overload(emsg)
                 if emsg: content_text += f"!!!Error: {emsg}"; yield f"!!!Error: {emsg}"
                 break
+        tail = _visible_content("", finish=True)
+        if tail: content_text += tail; yield tail
         blocks = []
-        if reasoning_text: blocks.append({"type": "thinking", "thinking": reasoning_text})
+        if reasoning_text and not omit_thinking: blocks.append({"type": "thinking", "thinking": reasoning_text})
         if content_text: blocks.append({"type": "text", "text": content_text})
         for idx in sorted(fc_buf):
             fc = fc_buf[idx]
@@ -329,9 +374,11 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions"):
             ch = (evt.get("choices") or [{}])[0]
             delta = ch.get("delta") or {}
             if rc := delta.get("reasoning_content") or delta.get("reasoning", ""):
-                reasoning_text += rc; yield rc
+                if not omit_thinking:
+                    reasoning_text += rc; yield rc
             if delta.get("content"):
-                text = delta["content"]; content_text += text; yield text
+                text = _visible_content(delta["content"])
+                if text: content_text += text; yield text
             for tc in (delta.get("tool_calls") or []):
                 idx = tc.get("index", 0)
                 has_name = bool(tc.get("function", {}).get("name"))
@@ -343,8 +390,10 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions"):
                 if tc.get("id") and not tc_buf[idx]["id"]: tc_buf[idx]["id"] = tc["id"]
             usage = evt.get("usage")
             if usage: _record_usage(usage, api_mode)
+        tail = _visible_content("", finish=True)
+        if tail: content_text += tail; yield tail
         blocks = []
-        if reasoning_text: blocks.append({"type": "thinking", "thinking": reasoning_text})
+        if reasoning_text and not omit_thinking: blocks.append({"type": "thinking", "thinking": reasoning_text})
         if content_text: blocks.append({"type": "text", "text": content_text})
         for idx in sorted(tc_buf):
             tc = tc_buf[idx]
@@ -380,7 +429,7 @@ def _record_usage(usage, api_mode):
     else: return
     STATS.update(inp=inp, cached=cached, out=out)
     
-def _parse_openai_json(data, api_mode="chat_completions"):
+def _parse_openai_json(data, api_mode="chat_completions", omit_thinking=False):
     blocks = []
     if api_mode == "responses":
         _record_usage(data.get("usage") or {}, api_mode)
@@ -388,8 +437,9 @@ def _parse_openai_json(data, api_mode="chat_completions"):
             if item.get("type") == "message":
                 for p in (item.get("content") or []):
                     if p.get("type") in ("output_text", "text") and p.get("text"):
-                        blocks.append({"type": "text", "text": p["text"]}); yield p["text"]
-            elif item.get("type") == "reasoning":
+                        text = _strip_think_tags(p["text"]) if omit_thinking else p["text"]
+                        if text: blocks.append({"type": "text", "text": text}); yield text
+            elif item.get("type") == "reasoning" and not omit_thinking:
                 for p in (item.get("content") or []):
                     if p.get("type") in ("reasoning_text", "summary_text") and p.get("text"):
                         blocks.append({"type": "thinking", "thinking": p["text"]})
@@ -412,9 +462,10 @@ def _parse_openai_json(data, api_mode="chat_completions"):
         _record_usage(data.get("usage") or {}, api_mode)
         msg = (data.get("choices") or [{}])[0].get("message", {})
         reasoning = msg.get("reasoning_content") or msg.get("reasoning", "")
-        if reasoning:
+        if reasoning and not omit_thinking:
             blocks.append({"type": "thinking", "thinking": reasoning})
         content = msg.get("content", "")
+        if omit_thinking: content = _strip_think_tags(content)
         if content:
             blocks.append({"type": "text", "text": content}); yield content
         for tc in (msg.get("tool_calls") or []):
@@ -507,7 +558,7 @@ def _openai_stream(sess, messages):
     tools = getattr(sess, 'tools', None)
     if tools: payload["tools"] = _prepare_oai_tools(tools, api_mode)
     if sess.service_tier: payload["service_tier"] = sess.service_tier
-    parse_fn = (lambda r: _parse_openai_sse(r.iter_lines(), api_mode)) if sess.stream else (lambda r: _parse_openai_json(r.json(), api_mode))
+    parse_fn = (lambda r: _parse_openai_sse(r.iter_lines(), api_mode, sess.omit_thinking)) if sess.stream else (lambda r: _parse_openai_json(r.json(), api_mode, sess.omit_thinking))
     return (yield from _stream_with_retry(sess, url, headers, payload, parse_fn))
         
 def _prepare_oai_tools(tools, api_mode="chat_completions"):
@@ -612,12 +663,19 @@ class BaseSession:
         if 'deepseek' in self.model.lower():
             default_context_win = 80000; default_cut_msg_interval = 25; self.trim_keep_rate = 0.3
         self.context_win = cfg.get('context_win', default_context_win)
+        self.ssh_tunnel = cfg.get('ssh_tunnel')
+        # The Qwen SSH service is hard-capped at `context_win` tokens.  GA
+        # measures serialized history in chars, so reserve 75% for the
+        # system/new turn/tools/output and retain only a conservative quarter.
+        # This is intentionally Qwen-specific: older configs use context_win
+        # as GA's legacy character heuristic rather than a server token cap.
+        if self.ssh_tunnel == 'qwen3-27b':
+            self.history_char_limit = int(cfg.get('history_char_limit', max(1, self.context_win // 4)))
         self.maxlen_multiplier = min(max(self.context_win / default_context_win * 0.75, 1.0), 3.0)
         self.cut_msg_interval = int(default_cut_msg_interval * self.maxlen_multiplier)
         self.trim_keep_prefix = max(0, int(cfg.get('trim_keep_prefix', 0) or 0))
         self.history = []; self.lock = threading.Lock(); self.system = ""
         self.name = cfg.get('name', self.model)
-        self.ssh_tunnel = cfg.get('ssh_tunnel')
         self.extra_sys_prompt = cfg.get('extra_sys_prompt', '')
         if cfg.get('extra_sys_prompt_file'):
             self.extra_sys_prompt = (self.extra_sys_prompt or '') + open(cfg['extra_sys_prompt_file'] if os.path.isabs(cfg['extra_sys_prompt_file']) else os.path.join(_ROOT, cfg['extra_sys_prompt_file']), encoding='utf-8').read()
@@ -637,7 +695,10 @@ class BaseSession:
         self.service_tier = _enum('service_tier', {'auto', 'default', 'priority', 'flex'})
         self.thinking_type = _enum('thinking_type', {'adaptive', 'enabled', 'disabled'})
         self.thinking_budget_tokens = cfg.get('thinking_budget_tokens')
-        self.omit_thinking = cfg.get('omit_thinking', False)  # Exclude thinking from session history
+        # Qwen's OpenAI-compatible endpoint emits DeepSeek-style raw CoT.
+        # Never stream or retain it for this bounded 128K SSH backend; final
+        # text (including GA's <summary>) and tool calls remain unaffected.
+        self.omit_thinking = bool(cfg.get('omit_thinking', False) or self.ssh_tunnel == 'qwen3-27b')
         mode = str(cfg.get('api_mode', 'chat_completions')).strip().lower().replace('-', '_')
         self.api_mode = 'responses' if mode in ('responses', 'response') else 'chat_completions'
         self.temperature = cfg.get('temperature', 1)
@@ -816,6 +877,15 @@ class NativeClaudeSession(BaseSession):
         try:
             while True: yield next(gen)
         except StopIteration as e: content_blocks = e.value or []
+        if self.omit_thinking:
+            # Some compatible servers put CoT in either a thinking block or
+            # literal <think> tags.  Neither belongs in Qwen history.
+            think_pattern = r"<think(?:ing)?>(.*?)</think(?:ing)?>"
+            content_blocks = [
+                ({**b, "text": re.sub(think_pattern, "", b.get("text", ""), flags=re.DOTALL)}
+                 if b.get("type") == "text" else b)
+                for b in content_blocks if b.get("type") != "thinking"
+            ]
         if content_blocks and (_injected := _ensure_text_block(content_blocks)): yield _injected
         if content_blocks and not (len(content_blocks) == 1 and content_blocks[0].get("text", "").startswith("!!!Error:")):
             history_blocks = content_blocks

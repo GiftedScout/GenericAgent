@@ -6161,8 +6161,8 @@ class GenericAgentTUI(App[None]):
             if cap > 0:
                 pct_left = max(0.0, (cap - used) / cap * 100.0)
                 ls.append(
-                    f"  Context window:  {pct_left:>5.0f}% left  "
-                    f"({_k(used)} chars used / {_k(cap)} cap)"
+                    f"  History soft cap: {_k(used)} / {_k(cap)} chars  "
+                    f"({pct_left:>5.0f}% remaining)"
                 )
             ls.append(f"  Requests:        {t.requests:>7}")
             return ls

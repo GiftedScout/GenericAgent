@@ -229,7 +229,7 @@ _I18N: dict[str, dict[str, str]] = {
         'status.state.waiting': 'waiting · ask_user pending',
         'status.state.idle':    'idle',
         'status.ctx.unknown':   'n/a',
-        'status.ctx.fmt':       '{used:,} / {cap:,} ctx',
+        'status.ctx.fmt':       '{used:,} / {cap:,} chars (soft)',
 
         # banner
         'banner.label.model':       'model:',
@@ -497,7 +497,7 @@ _I18N: dict[str, dict[str, str]] = {
         'status.state.waiting': 'waiting · ask_user pending',
         'status.state.idle':    'idle',
         'status.ctx.unknown':   'n/a',
-        'status.ctx.fmt':       '{used:,} / {cap:,} ctx',
+        'status.ctx.fmt':       '{used:,} / {cap:,} 字符（软限）',
 
         # banner
         'banner.label.model':       'model:',
@@ -4498,7 +4498,7 @@ class SB:
                 from frontends import cost_tracker as _ct
                 cap = _ct.context_window_chars(be) if be is not None else 0
                 used = _ct.context_chars_used(be) if be is not None else 0
-                ctx_use = _t('status.ctx.fmt', used=used, cap=cap * 3) if cap else _t('status.ctx.unknown')
+                ctx_use = _t('status.ctx.fmt', used=used, cap=cap) if cap else _t('status.ctx.unknown')
             except Exception:
                 ctx_use = _t('status.ctx.unknown')
             cwd = os.getcwd().replace(os.path.expanduser('~'), '~')

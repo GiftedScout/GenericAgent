@@ -39,15 +39,13 @@ class TokenStats:
         return max(0.0, time.time() - self.started_at)
 
 
-# GA's real context budget lives on `BaseSession.context_win` (chars). The
-# trim trigger is `context_win * 3` (see llmcore.trim_messages_history), so
-# `/cost` compares actual-history chars against that cap for consistent units.
+# `context_win` is normally GA's legacy character heuristic.  Backends with a
+# server token ceiling may set `history_char_limit`; it is a conservative local
+# serialized-history soft limit, never a claim about the remote token window.
 def context_window_chars(backend) -> int:
-    """`context_win * 3` — the char cap before `trim_messages_history` kicks
-    in. Reads dynamically so a `mykey.py` override propagates. Returns 0 on
-    bad/missing backend so the caller can hide the row."""
+    """Return GA's local serialized-history character soft cap, or 0."""
     try:
-        return int(getattr(backend, 'context_win', 0)) * 3
+        return int(getattr(backend, 'history_char_limit', getattr(backend, 'context_win', 0) * 3))
     except (TypeError, ValueError):
         return 0
 
