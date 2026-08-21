@@ -155,6 +155,7 @@ def _raise_if_retryable_overload(emsg):
 def _parse_claude_sse(resp_lines):
     """Parse Anthropic SSE stream. Yields text chunks, returns list[content_block]."""
     content_blocks = []; current_block = None; tool_json_buf = ""
+    think_open = False  # display-only <thinking> envelope; TUI strips it on finalize
     stop_reason = None; got_message_stop = False; warn = None
     for line in resp_lines:
         if not line: continue
@@ -173,7 +174,9 @@ def _parse_claude_sse(resp_lines):
         elif evt_type == "content_block_start":
             block = evt.get("content_block", {})
             if block.get("type") == "text": current_block = {"type": "text", "text": ""}
-            elif block.get("type") == "thinking": current_block = {"type": "thinking", "thinking": "", "signature": ""}
+            elif block.get("type") == "thinking":
+                current_block = {"type": "thinking", "thinking": "", "signature": ""}
+                if not think_open: yield "\n<thinking>\n"; think_open = True
             elif block.get("type") == "tool_use":
                 current_block = {"type": "tool_use", "id": block.get("id", ""), "name": block.get("name", ""), "input": {}}
                 tool_json_buf = ""
@@ -193,6 +196,8 @@ def _parse_claude_sse(resp_lines):
             elif delta.get("type") == "input_json_delta": tool_json_buf += delta.get("partial_json", "")
         elif evt_type == "content_block_stop":
             if current_block:
+                if current_block["type"] == "thinking":
+                    yield "\n</thinking>\n"; think_open = False
                 if current_block["type"] == "tool_use":
                     try: current_block["input"] = json.loads(tool_json_buf) if tool_json_buf else {}
                     except: current_block["input"] = {"_raw": tool_json_buf}
@@ -364,6 +369,7 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
     else:
         tc_buf = {}  # index -> {id, name, args}
         reasoning_text = ""
+        think_open = False  # display-only <thinking> envelope; TUI strips it on finalize
         for line in resp_lines:
             if not line: continue
             line = line.decode('utf-8', errors='replace') if isinstance(line, bytes) else line
@@ -376,10 +382,14 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
             delta = ch.get("delta") or {}
             if rc := delta.get("reasoning_content") or delta.get("reasoning", ""):
                 if not omit_thinking:
-                    reasoning_text += rc; yield rc
+                    reasoning_text += rc
+                    if not think_open: yield "\n<thinking>\n"; think_open = True
+                    yield rc
             if delta.get("content"):
                 text = _visible_content(delta["content"])
-                if text: content_text += text; yield text
+                if text:
+                    if think_open: yield "\n</thinking>\n"; think_open = False
+                    content_text += text; yield text
             for tc in (delta.get("tool_calls") or []):
                 idx = tc.get("index", 0)
                 has_name = bool(tc.get("function", {}).get("name"))
@@ -391,6 +401,7 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
                 if tc.get("id") and not tc_buf[idx]["id"]: tc_buf[idx]["id"] = tc["id"]
             usage = evt.get("usage")
             if usage: _record_usage(usage, api_mode)
+        if think_open: yield "\n</thinking>\n"
         tail = _visible_content("", finish=True)
         if tail: content_text += tail; yield tail
         blocks = []
