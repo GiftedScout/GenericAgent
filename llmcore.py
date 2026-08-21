@@ -610,6 +610,7 @@ def _to_responses_input(messages):
 
 
 def _msgs_claude2oai(messages):
+    """Convert GA Claude-style blocks to OpenAI messages."""
     result = []
     for msg in messages:
         role = msg.get("role", "user")
@@ -661,17 +662,18 @@ class BaseSession:
         self.api_base = cfg['apibase'].rstrip('/')
         self.model = cfg.get('model', '')
         default_context_win = 35000; default_cut_msg_interval = 7
-        if 'deepseek' in self.model.lower():
+        self.ssh_tunnel = cfg.get('ssh_tunnel')
+        # Qwen has the same long-reasoning history profile as DeepSeek.
+        deepseek_style_history = 'deepseek' in self.model.lower() or self.ssh_tunnel == 'qwen3-27b'
+        if deepseek_style_history:
             default_context_win = 80000; default_cut_msg_interval = 25; self.trim_keep_rate = 0.3
         self.context_win = cfg.get('context_win', default_context_win)
-        self.ssh_tunnel = cfg.get('ssh_tunnel')
-        # The Qwen SSH service is hard-capped at `context_win` tokens.  GA
-        # measures serialized history in chars, so reserve 75% for the
-        # system/new turn/tools/output and retain only a conservative quarter.
-        # This is intentionally Qwen-specific: older configs use context_win
-        # as GA's legacy character heuristic rather than a server token cap.
-        if self.ssh_tunnel == 'qwen3-27b':
-            self.history_char_limit = int(cfg.get('history_char_limit', max(1, self.context_win // 4)))
+        # Qwen's configured context is llama.cpp's token window while GA
+        # tracks history in chars.  Reserve its maximum 8K completion and use
+        # the remaining 120K as the explicit conservative history budget.
+        self.history_char_limit = cfg.get('history_char_limit')
+        if self.ssh_tunnel == 'qwen3-27b' and self.history_char_limit is None:
+            self.history_char_limit = max(1, self.context_win - 8192)
         self.maxlen_multiplier = min(max(self.context_win / default_context_win * 0.75, 1.0), 3.0)
         self.cut_msg_interval = int(default_cut_msg_interval * self.maxlen_multiplier)
         self.trim_keep_prefix = max(0, int(cfg.get('trim_keep_prefix', 0) or 0))
@@ -696,10 +698,10 @@ class BaseSession:
         self.service_tier = _enum('service_tier', {'auto', 'default', 'priority', 'flex'})
         self.thinking_type = _enum('thinking_type', {'adaptive', 'enabled', 'disabled'})
         self.thinking_budget_tokens = cfg.get('thinking_budget_tokens')
-        # Qwen's OpenAI-compatible endpoint emits DeepSeek-style raw CoT.
-        # Never stream or retain it for this bounded 128K SSH backend; final
-        # text (including GA's <summary>) and tool calls remain unaffected.
-        self.omit_thinking = bool(cfg.get('omit_thinking', False) or self.ssh_tunnel == 'qwen3-27b')
+        # Retain Qwen reasoning in the bounded, DeepSeek-style history.  An
+        # explicit config value remains available for users who prefer hiding
+        # it, but SSH Qwen is no longer forced into that mode.
+        self.omit_thinking = bool(cfg.get('omit_thinking', False))
         mode = str(cfg.get('api_mode', 'chat_completions')).strip().lower().replace('-', '_')
         self.api_mode = 'responses' if mode in ('responses', 'response') else 'chat_completions'
         self.temperature = cfg.get('temperature', 1)
