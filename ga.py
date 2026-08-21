@@ -533,11 +533,15 @@ def consume_file(dr, file):
 
 class GenericAgentHandler(BaseHandler):
     '''Generic Agent 工具库，包含多种工具的实现。工具函数自动加上了 do_ 前缀。实际工具名没有前缀。'''
-    def __init__(self, parent, last_history=None, cwd='./temp'):
+    def __init__(self, parent, last_history=None, cwd='./temp', original_task=''):
         self.parent = parent
         self.working = {}
         self.cwd = cwd;  self.current_turn = 0
         self.history_info = last_history if last_history else []
+        # A task can outlive the rolling summary/history window.  Keep a bounded,
+        # immutable copy for tool-result continuations rather than reconstructing it
+        # from recent agent summaries.
+        self.original_task = smart_format((original_task or '').strip(), max_str_len=1195)[:1200]
         self.code_stop_signal = []
         self._done_hooks = []
         self.print = safe_print
@@ -859,6 +863,7 @@ class GenericAgentHandler(BaseHandler):
         joined_history = "\n".join(h[-W:])
         history = f'<history>\n{joined_history}\n</history>' if self.current_turn % 2 == 1 else ""
         prompt = f"\n### [WORKING MEMORY]\n{earlier}{history}"
+        if self.original_task: prompt += f"\n<task_anchor>{self.original_task}</task_anchor>"
         prompt += f"\nCurrent turn: {self.current_turn}\n"
         if self.working.get('key_info'): prompt += f"\n<key_info>{self.working.get('key_info')}</key_info>"
         if getattr(self.parent, 'verbose', False): self.print(prompt)

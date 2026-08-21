@@ -40,11 +40,12 @@ def __getattr__(name):  # once guard in PEP 562
     if name == 'mykeys': return reload_mykeys()[0]
     raise AttributeError(f"module 'llmcore' has no attribute {name}")
 
-def compress_history_tags(messages, keep_recent=10, max_len=800, force=False, interval=5):
-    """Compress <thinking>/<tool_use>/<tool_result> tags in older messages to save tokens."""
-    compress_history_tags._cd = getattr(compress_history_tags, '_cd', 0) + 1
-    if force: compress_history_tags._cd = 0
-    if compress_history_tags._cd % interval != 0: return messages
+def compress_history_tags(messages, keep_recent=10, max_len=800, force=False, interval=5, counter_owner=None):
+    """Compress old tag-heavy history, with cadence scoped to one LLM session."""
+    owner = counter_owner if counter_owner is not None else compress_history_tags
+    owner._history_compress_cd = getattr(owner, '_history_compress_cd', 0) + 1
+    if force: owner._history_compress_cd = 0
+    if owner._history_compress_cd % interval != 0: return messages
     _before = sum(len(json.dumps(m, ensure_ascii=False)) for m in messages)
     _pats = {tag: re.compile(rf'(<{tag}>)([\s\S]*?)(</{tag}>)') for tag in ('thinking', 'think', 'tool_use', 'tool_result')}
     _hist_pat = re.compile(r'<(history|key_info|earlier_context)>[\s\S]*?</\1>')
@@ -108,10 +109,10 @@ def trim_messages_history(history, sess):
     target = int(cap * getattr(sess, 'trim_keep_rate', 0.6))
     kp = sess.trim_keep_prefix
     def cost(ms): return sum(len(json.dumps(m, ensure_ascii=False)) for m in ms)
-    compress_history_tags(history, interval=getattr(sess, 'cut_msg_interval', 7))
+    compress_history_tags(history, interval=getattr(sess, 'cut_msg_interval', 7), counter_owner=sess)
     STATS.update(ctx=(c := cost(history)), msgs=len(history)); print(f'[Debug] Current context: {c} chars, {len(history)} messages.')
     if c <= cap: return
-    compress_history_tags(history, keep_recent=4, force=True)
+    compress_history_tags(history, keep_recent=4, force=True, counter_owner=sess)
     if cost(history) <= target: return
     pre, post = history[:kp], history[kp:]
     while len(post) > 9 and cost(pre) + cost(post) > target:
