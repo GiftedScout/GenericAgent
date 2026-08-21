@@ -49,6 +49,9 @@ class UpdateCommandTests(unittest.TestCase):
             ("merge-base", "--is-ancestor", "HEAD", "origin/main"): (0, ""),
             ("merge-base", "--is-ancestor", "origin/main", "HEAD"): (1, ""),
             ("merge", "--ff-only", "origin/main"): (0, ""),
+            ("branch", "backup/update-auto-20260101-000000", "HEAD"): (0, ""),
+            ("stash", "push", "-m", "/update auto-stash 20260101-000000"): (0, ""),
+            ("stash", "pop"): (0, ""),
             ("diff", "--name-only", "--diff-filter=U"): (0, ""),
             ("ls-files", "-z", "--", "*.py"): (0, "module.py\0"),
             ("merge-base", "--is-ancestor", "myfork/main", "HEAD"): (0, ""),
@@ -67,12 +70,40 @@ class UpdateCommandTests(unittest.TestCase):
         self.assertTrue(runner.used("push", "myfork", "HEAD:main"))
         self.assertFalse(any("--force" in part for call in runner.calls for part in call))
 
-    def test_dirty_tree_is_handed_to_agent_without_fetch(self):
-        runner = _Runner(self.replies({("status", "--porcelain"): (0, " M file.py")}))
-        outcome = update_cmd.run_update("keep my edit", root=self.root, runner=runner)
-        self.assertIn("uncommitted changes", outcome.prompt)
-        self.assertIn("keep my edit", outcome.prompt)
-        self.assertFalse(runner.used("fetch", "--prune", "origin"))
+    def test_dirty_tree_is_stashed_merged_and_restored(self):
+        with patch("frontends.update_cmd.time.strftime", return_value="20260101-000000"):
+            runner = _Runner(self.replies({("status", "--porcelain"): (0, " M file.py")}))
+            outcome = update_cmd.run_update("keep my edit", root=self.root, runner=runner)
+        self.assertIsNone(outcome.prompt)
+        self.assertIn("fast-forwarded", outcome.report)
+        self.assertIn("stash", outcome.report)
+        self.assertTrue(runner.used("branch", "backup/update-auto-20260101-000000", "HEAD"))
+        self.assertTrue(runner.used("stash", "push", "-m", "/update auto-stash 20260101-000000"))
+        self.assertTrue(runner.used("stash", "pop"))
+        self.assertTrue(runner.used("push", "myfork", "HEAD:main"))
+        self.assertFalse(any("-u" in part for call in runner.calls for part in call if call[3:][:1] == ("stash",)))
+
+    def test_untracked_only_tree_is_never_stashed(self):
+        runner = _Runner(self.replies({("status", "--porcelain"): (0, "?? secret.txt")}))
+        outcome = update_cmd.run_update(root=self.root, runner=runner)
+        self.assertIsNone(outcome.prompt)
+        self.assertIn("fast-forwarded", outcome.report)
+        self.assertFalse(any(call[3:][:1] == ("stash",) for call in runner.calls))
+        self.assertFalse(any(call[3:][:2] == ("branch", "backup") for call in runner.calls))
+
+    def test_stash_pop_conflict_is_handed_to_agent_without_push(self):
+        with patch("frontends.update_cmd.time.strftime", return_value="20260101-000000"):
+            runner = _Runner(self.replies({
+                ("status", "--porcelain"): (0, " M file.py"),
+                ("stash", "pop"): (1, "CONFLICT (content): Merge conflict in file.py"),
+                ("diff", "--name-only", "--diff-filter=U"): (0, "file.py"),
+            }))
+            outcome = update_cmd.run_update("keep my edit", root=self.root, runner=runner)
+        self.assertIn("stash pop", outcome.prompt)
+        self.assertIn("file.py", outcome.system)
+        self.assertIn("然后必须调用 `ask_user`", outcome.prompt)
+        self.assertTrue(runner.used("stash", "push", "-m", "/update auto-stash 20260101-000000"))
+        self.assertFalse(runner.used("push", "myfork", "HEAD:main"))
 
     def test_non_main_branch_is_rejected_without_remote_changes(self):
         runner = _Runner(self.replies({("branch", "--show-current"): (0, "feature")}))

@@ -2,15 +2,20 @@
 
 The Git transition is deterministic: it fetches, explicitly merges
 ``origin/main``, validates the checkout, and fast-forwards the ``myfork``
-mirror.  A successful transition is handed to the normal agent once more so
-that the same LLM can produce the concise user-facing update summary.
-Ambiguous states deliberately return a prompt instead of guessing a conflict
-resolution or force-pushing a fork.
+mirror.  Tracked worktree changes are handled automatically: a backup branch
+marks the pre-update HEAD, the tracked changes are stashed (never with
+``-u``, so untracked/private files stay put), and ``stash pop`` restores them
+after validation.  A successful transition is handed to the normal agent once
+more so that the same LLM can produce the concise user-facing update summary.
+Ambiguous states (merge conflicts, stash-pop conflicts, divergent mirror)
+deliberately return a prompt instead of guessing a conflict resolution or
+force-pushing a fork.
 """
 from __future__ import annotations
 
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
@@ -128,6 +133,21 @@ def _conflict_prompt(
     )
 
 
+def _stash_pop(runner: _Run, root: Path, label: str, note: str = "") -> UpdateOutcome | None:
+    """Restore the auto stash; return a conflict outcome only if pop conflicts."""
+    if not label:
+        return None
+    popped = _git(runner, root, "stash", "pop")
+    if popped.returncode:
+        unmerged = _git(runner, root, "diff", "--name-only", "--diff-filter=U")
+        return _conflict_prompt(
+            "restoring the automatically stashed local changes (stash pop) has conflicts; "
+            f"the stash ({label}) is still in `git stash list`",
+            root, runner, note, _text(unmerged),
+        )
+    return None
+
+
 def _success_prompt(report: str) -> str:
     """Give only upstream facts to the LLM that writes the final report."""
     marker = "上游更新："
@@ -186,8 +206,21 @@ def run_update(note: str = "", *, root: Path = _ROOT, runner: _Run = _run) -> Up
                 "a merge is already in progress", root, runner, note, _text(unmerged)
             )
         return _attention_prompt("a merge is already in progress", root, note)
-    if _text(dirty):
-        return _attention_prompt("the worktree has uncommitted changes", root, note)
+    # Tracked changes are handled automatically: mark a backup branch at the
+    # pre-update HEAD, stash the tracked changes (never -u: untracked/private
+    # files stay put), and restore them with stash pop after full validation.
+    # Untracked-only dirt cannot block a merge, so it is left in place; a
+    # colliding merge then fails safely into the attention path below.
+    stash_label = ""
+    tracked_dirty = [line for line in _text(dirty).splitlines() if line and not line.startswith("??")]
+    if tracked_dirty:
+        stash_label = time.strftime("%Y%m%d-%H%M%S")
+        backup = _git(runner, root, "branch", f"backup/update-auto-{stash_label}", "HEAD")
+        if backup.returncode:
+            return _attention_prompt("the worktree has uncommitted changes and no backup branch could be created", root, note)
+        stashed = _git(runner, root, "stash", "push", "-m", f"/update auto-stash {stash_label}")
+        if stashed.returncode:
+            return _attention_prompt("the worktree has uncommitted changes and git stash push failed", root, note)
 
     old = _git(runner, root, "rev-parse", "HEAD")
     if old.returncode:
@@ -227,6 +260,13 @@ def run_update(note: str = "", *, root: Path = _ROOT, runner: _Run = _run) -> Up
             )
         return _fail("merge origin/main", merged)
 
+    # Restore the user's tracked changes before validation so the compile and
+    # unit tests see the real working tree; a pop conflict means the user's
+    # in-flight edits collide with the upstream merge and needs a human call.
+    pop_conflict = _stash_pop(runner, root, stash_label, note)
+    if pop_conflict is not None:
+        return pop_conflict
+
     validation_error = _validate(runner, root)
     if validation_error:
         return _attention_prompt(validation_error, root, note)
@@ -256,10 +296,12 @@ def run_update(note: str = "", *, root: Path = _ROOT, runner: _Run = _run) -> Up
             changes += "\n- 更多上游提交已省略"
     else:
         changes = "- 无上游新提交"
+    restored = "\n本地未提交改动：已自动 stash 并在更新后原样恢复（未提交状态保留）。" if stash_label else ""
     return UpdateOutcome(
         report=(f"✅ 更新完成 · {mode} · main/myfork {head_id[:10]}\n"
                 f"上游更新：\n{changes}\n"
-                "验证：已通过 Python 编译与单元测试。")
+                "验证：已通过 Python 编译与单元测试。"
+                f"{restored}")
     )
 
 
