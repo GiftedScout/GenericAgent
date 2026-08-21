@@ -677,7 +677,10 @@ class BaseSession:
         # Qwen has the same long-reasoning history profile as DeepSeek.
         deepseek_style_history = 'deepseek' in self.model.lower() or self.ssh_tunnel == 'qwen3-27b'
         if deepseek_style_history:
-            default_context_win = 80000; default_cut_msg_interval = 25; self.trim_keep_rate = 0.3
+            default_context_win = 80000; default_cut_msg_interval = 25
+            # Qwen's 256K window tolerates a higher retention floor than
+            # DeepSeek's. Both remain cfg-overridable via trim_keep_rate.
+            self.trim_keep_rate = float(cfg.get('trim_keep_rate', 0.6 if self.ssh_tunnel == 'qwen3-27b' else 0.3))
         self.context_win = cfg.get('context_win', default_context_win)
         # Qwen's configured context is llama.cpp's token window while GA
         # tracks history in chars.  Reserve its maximum 8K completion and use
