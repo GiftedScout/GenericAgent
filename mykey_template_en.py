@@ -68,7 +68,7 @@ native_oai_config = {
 
 # ── 4. Web search API (optional) ──────────────────────────────────────────────
 # `web_scan` searches through these APIs. Any top-level dict whose `provider` is
-# `tavily`, `brave`, or `exa` is discovered (the variable name is arbitrary).
+# `tavily` or `exa` is discovered (the variable name is arbitrary).
 # By default it uses Tavily; Exa is only used when explicitly requested or if
 # default Tavily has a timeout/connection failure. For browser page inspection or
 # interaction, use `web_execute_js(scan=true)` or pass JavaScript.
@@ -82,7 +82,7 @@ native_oai_config = {
 #     'provider': 'exa',
 #     'api_key': 'your-exa-api-key',
 # }
-# Environment variables: TAVILY_API_KEY=tvly-...; EXA_API_KEY=...; BRAVE_SEARCH_API_KEY=...
+# Environment variables: TAVILY_API_KEY=tvly-...; EXA_API_KEY=...
 # Optional GA_WEB_SEARCH_PROVIDER selects a configured default if you do not want Tavily.
 
 

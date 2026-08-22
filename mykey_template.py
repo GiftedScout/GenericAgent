@@ -304,7 +304,7 @@ mixin_config = {
 # Web 搜索 API（可选）
 # ══════════════════════════════════════════════════════════════════════════════
 # `web_scan` 通过这些 API 搜索网页。任意顶层字典只要 `provider` 为
-# `tavily`、`brave` 或 `exa` 都会被识别（变量名可任意）。默认使用 Tavily；
+# `tavily` 或 `exa` 都会被识别（变量名可任意）。默认使用 Tavily；
 # Exa 仅在显式指定，或默认 Tavily 超时/连接失败时才会使用。浏览器页面读取和交互改用
 # `web_execute_js(scan=true)` 或传入 JavaScript。
 # web_search_config_tavily = {
@@ -317,7 +317,7 @@ mixin_config = {
 #     'provider': 'exa',
 #     'api_key': 'your-exa-api-key',
 # }
-# 环境变量：TAVILY_API_KEY=tvly-...；EXA_API_KEY=...；BRAVE_SEARCH_API_KEY=...
+# 环境变量：TAVILY_API_KEY=tvly-...；EXA_API_KEY=...
 # 可选的 GA_WEB_SEARCH_PROVIDER 可在不想默认 Tavily 时指定已配置的默认供应商。
 
 

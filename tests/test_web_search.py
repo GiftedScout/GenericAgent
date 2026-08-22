@@ -62,24 +62,6 @@ class WebSearchTests(unittest.TestCase):
             timeout=8,
         )
 
-    def test_brave_uses_freshness_mapping_and_normalizes_results(self):
-        response = _Response({"web": {"results": [{
-            "title": "Result", "url": "https://example.test", "description": "text", "age": "2 days ago",
-        }]}})
-        with patch("ga._web_search_config", return_value=("brave", "secret-key", {})), \
-             patch("ga.requests.get", return_value=response) as get:
-            result = web_scan("climate", max_results=3, time_range="month")
-
-        self.assertEqual(result["results"], [{
-            "title": "Result", "url": "https://example.test", "content": "text", "published_date": "2 days ago",
-        }])
-        get.assert_called_once_with(
-            "https://api.search.brave.com/res/v1/web/search",
-            params={"q": "climate", "count": 3, "freshness": "pm"},
-            headers={"Accept": "application/json", "X-Subscription-Token": "secret-key"},
-            timeout=20,
-        )
-
     def test_exa_uses_published_date_cutoff_and_normalizes_results(self):
         response = _Response({"results": [{
             "title": "Result", "url": "https://example.test", "text": "text", "score": 0.8,
@@ -105,7 +87,7 @@ class WebSearchTests(unittest.TestCase):
         with patch("ga._web_search_config", return_value=("", None, {})), \
              patch("ga.requests.post") as post, patch("ga.requests.get") as get:
             no_config = web_scan("test")
-        with patch("ga._web_search_config", return_value=("brave", None, {})), \
+        with patch("ga._web_search_config", return_value=("exa", None, {})), \
              patch("ga.requests.post") as post, patch("ga.requests.get") as get:
             no_key = web_scan("test")
 
@@ -117,7 +99,7 @@ class WebSearchTests(unittest.TestCase):
         get.assert_not_called()
 
     def test_handler_routes_web_search_arguments(self):
-        result = {"status": "success", "provider": "brave", "query": "test", "results": []}
+        result = {"status": "success", "provider": "exa", "query": "test", "results": []}
         with patch("ga.web_scan", return_value=result) as search:
             outcome = exhaust(self.handler.dispatch("web_scan", {
                 "query": "test", "max_results": "4", "search_depth": "advanced", "topic": "news", "time_range": "day", "provider": "exa",

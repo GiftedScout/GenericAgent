@@ -189,9 +189,9 @@ def first_init_driver():
                 return
             return
 
-_WEB_SEARCH_PROVIDERS = ('tavily', 'brave', 'exa')
+_WEB_SEARCH_PROVIDERS = ('tavily', 'exa')
 _WEB_SEARCH_ENV_KEYS = {
-    'tavily': 'TAVILY_API_KEY', 'brave': 'BRAVE_SEARCH_API_KEY', 'exa': 'EXA_API_KEY',
+    'tavily': 'TAVILY_API_KEY', 'exa': 'EXA_API_KEY',
 }
 
 
@@ -251,7 +251,7 @@ def _web_search_config(requested_provider=None):
 
 def _web_search_setup_msg():
     return ("Web search is not configured. Add any top-level dictionary with "
-            "`provider` ('tavily', 'brave', or 'exa') and `api_key` to mykey.py, "
+            "`provider` ('tavily' or 'exa') and `api_key` to mykey.py, "
             "or set GA_WEB_SEARCH_PROVIDER plus its provider API-key environment variable.")
 
 
@@ -283,19 +283,6 @@ def _web_search_request(provider, api_key, config, query, max_results, search_de
             results = [{k: item[k] for k in ('title', 'url', 'content', 'score', 'published_date') if item.get(k) is not None}
                        for item in data.get('results', [])]
             answer = data.get('answer')
-        elif provider == 'brave':
-            params = {'q': query, 'count': max_results}
-            freshness = {'day': 'pd', 'week': 'pw', 'month': 'pm', 'year': 'py'}
-            if time_range in freshness: params['freshness'] = freshness[time_range]
-            response = requests.get(config.get('base_url', 'https://api.search.brave.com/res/v1/web/search'),
-                                    params=params, headers={'Accept': 'application/json', 'X-Subscription-Token': api_key}, timeout=timeout)
-            if not response.ok: return _search_error(response), False
-            data = response.json()
-            results = [dict((key, value) for key, value in (
-                ('title', item.get('title')), ('url', item.get('url')),
-                ('content', item.get('description')), ('published_date', item.get('age')),
-            ) if value is not None) for item in data.get('web', {}).get('results', [])]
-            answer = None
         else:  # exa
             payload = {'query': query, 'type': 'auto', 'num_results': max_results,
                        'contents': {'text': {'max_characters': 3000}}}
