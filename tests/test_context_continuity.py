@@ -52,7 +52,9 @@ class ContextContinuityTests(unittest.TestCase):
         self.assertEqual(qwen.context_win, 131072)
         self.assertEqual(qwen.history_char_limit, 122880)
         self.assertEqual(qwen.cut_msg_interval, 30)
-        self.assertEqual(qwen.trim_keep_rate, 0.3)
+        # SSH-tunnel llama.cpp models default to a 0.6 retention floor
+        # (their large windows tolerate keeping more reasoning history).
+        self.assertEqual(qwen.trim_keep_rate, 0.6)
         self.assertFalse(qwen.omit_thinking)
 
         lines = [
@@ -67,7 +69,9 @@ class ContextContinuityTests(unittest.TestCase):
                 displayed.append(next(stream))
         except StopIteration as done:
             blocks = done.value
-        self.assertEqual(displayed, ["inspect files", "completed"])
+        # Display stream wraps reasoning in the <thinking> envelope
+        # (see tests/test_thinking_envelope.py); history blocks stay clean.
+        self.assertEqual(displayed, ["\n<thinking>\n", "inspect files", "\n</thinking>\n", "completed"])
         self.assertEqual(blocks, [
             {"type": "thinking", "thinking": "inspect files"},
             {"type": "text", "text": "completed"},

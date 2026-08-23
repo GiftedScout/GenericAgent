@@ -674,19 +674,18 @@ class BaseSession:
         self.model = cfg.get('model', '')
         default_context_win = 35000; default_cut_msg_interval = 7
         self.ssh_tunnel = cfg.get('ssh_tunnel')
-        # Qwen has the same long-reasoning history profile as DeepSeek.
-        deepseek_style_history = 'deepseek' in self.model.lower() or self.ssh_tunnel == 'qwen3-27b'
+        # Local-SSH-tunnel models (qwen3.8-27b, ornith1.5-35B-A3B, ...) have
+        # the same long-reasoning history profile as DeepSeek.
+        deepseek_style_history = 'deepseek' in self.model.lower() or self.ssh_tunnel is not None
         if deepseek_style_history:
             default_context_win = 80000; default_cut_msg_interval = 25
-            # Qwen's 256K window tolerates a higher retention floor than
-            # DeepSeek's. Both remain cfg-overridable via trim_keep_rate.
-            self.trim_keep_rate = float(cfg.get('trim_keep_rate', 0.6 if self.ssh_tunnel == 'qwen3-27b' else 0.3))
+            self.trim_keep_rate = float(cfg.get('trim_keep_rate', 0.6))
         self.context_win = cfg.get('context_win', default_context_win)
-        # Qwen's configured context is llama.cpp's token window while GA
-        # tracks history in chars.  Reserve its maximum 8K completion and use
-        # the remaining 120K as the explicit conservative history budget.
+        # The configured context is llama.cpp's token window while GA tracks
+        # history in chars.  Reserve its maximum 8K completion and use the
+        # remainder as the explicit conservative history budget.
         self.history_char_limit = cfg.get('history_char_limit')
-        if self.ssh_tunnel == 'qwen3-27b' and self.history_char_limit is None:
+        if self.ssh_tunnel is not None and self.history_char_limit is None:
             self.history_char_limit = max(1, self.context_win - 8192)
         self.maxlen_multiplier = min(max(self.context_win / default_context_win * 0.75, 1.0), 3.0)
         self.cut_msg_interval = int(default_cut_msg_interval * self.maxlen_multiplier)
@@ -930,10 +929,10 @@ class NativeOAISession(NativeClaudeSession):
     native_ua = "codex_exec/0.139.0 (Windows 10.0.26200; x86_64) unknown (codex_exec; 0.139.0)"
     def raw_ask(self, messages):
         tunnel = None
-        if self.ssh_tunnel == 'qwen3-27b':
-            from qwen3_ssh_tunnel import ensure_qwen3_tunnel, release_qwen3_tunnel
-            ensure_qwen3_tunnel()
-            tunnel = release_qwen3_tunnel
+        if self.ssh_tunnel:
+            from ssh_tunnel import ensure_tunnel, release_tunnel
+            ensure_tunnel(self.ssh_tunnel)
+            tunnel = lambda: release_tunnel(self.ssh_tunnel)
         try:
             messages = _fix_messages(messages)
             messages = _ensure_thinking_blocks(messages, self.model)
