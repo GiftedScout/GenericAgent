@@ -23,7 +23,8 @@ _STARTUP_TIMEOUT = 20
 # tunnel name -> ssh-config Host + locally forwarded port
 TUNNELS = {
     "qwen3-27b": ("ga-qwen3-27b", 18080),
-    "ornith1.5-35B-A3B": ("ga-ornith1.5", 28080),
+    # local 28081 (28080 is taken by VS Code locally); remote listens on 28080
+    "ornith1.5-35B-A3B": ("ga-ornith1.5", 28081),
 }
 
 _lock = threading.RLock()
