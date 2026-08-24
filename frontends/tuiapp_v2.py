@@ -169,14 +169,28 @@ def preclean_display(text: str) -> str:
     _m_open = re.search(r"<thinking>[ \t]*\n?([\s\S]*$)", text)
     if _m_open:
         inner = _m_open.group(1).strip("\n")
-        tail = inner if len(inner) <= 500 else "…" + inner[-500:]
-        text = text[:_m_open.start()] + f"＜thinking＞\n{tail}\n＜/thinking＞（思考中…）"
+        # ≤500：自然生长原样显示；一旦超限只“变一次”——固定头 200 字 + 折叠
+        # 计数，此后每帧仅数字变化，避免尾窗逐帧滑动的闪烁。
+        if len(inner) <= 500:
+            text = text[:_m_open.start()] + f"＜thinking＞\n{inner}\n＜/thinking＞"
+        else:
+            head = inner[:200].strip("\n") or "…"
+            text = text[:_m_open.start()] + (
+                f"＜thinking＞\n{head}\n…（思考中，已折叠 {len(inner)} 字）\n＜/thinking＞"
+            )
     # 配对剥除后残余的孤立 thinking/think 标签（CoT 内嵌字面标签导致信封早闭的
     # 残留）一律清除——正常流里它们不该再出现。
     text = re.sub(r"</?(?:thinking|think)>", "", text)
     text = _SUMMARY_FENCE_RE.sub(r"\1", text)
     # 流式半截态：栅栏已开而 </summary> 未到 —— 先摘掉开栏防止其吞掉后续行
     text = _FENCE_BEFORE_SUMMARY_RE.sub("", text)
+    # 工具调用参数块压缩为单行（大量 JSON 直接刷屏；完整内容仍在消息原文与
+    # 工具审计 ctrl 视图里可查）
+    text = re.sub(
+        r"🛠️ Tool: `([^`]+)`\s*📥 args:\n````text\n([\s\S]*?)\n?````",
+        lambda m: f"🛠️ {m.group(1)} · args {m.group(2).count(chr(10)) + 1} 行",
+        text,
+    )
     return _escape_stray_tags(text)
 
 
@@ -1847,7 +1861,7 @@ Screen { background: $ga-bg; color: $ga-fg; }
    scrolling; the inner #sidebar Static keeps the padding so the click
    hit-test math in on_click (event.y - 3) is unchanged. */
 #sidebar-scroll {
-    width: 34;
+    width: 28;
     height: 100%;
     background: $ga-bg;
     border-right: solid $ga-alt-bg;
@@ -1863,12 +1877,12 @@ Screen { background: $ga-bg; color: $ga-fg; }
 #sidebar {
     width: 1fr;
     height: auto;
-    padding: 1 2;
+    padding: 0 1;
 }
 
 #main {
     height: 100%;
-    padding: 1 6;
+    padding: 0 2;
     background: $ga-bg;
 }
 
@@ -1972,7 +1986,7 @@ SearchableChoiceList.picker {
 
 .role {
     height: 1;
-    margin-top: 1;
+    margin-top: 0;
     margin-bottom: 0;
 }
 .msg {
@@ -1982,7 +1996,7 @@ SearchableChoiceList.picker {
 .fold-header:hover { background: $ga-sel-bg; }
 .spinner {
     height: 1;
-    margin-top: 1;
+    margin-top: 0;
 }
 
 #palette {
