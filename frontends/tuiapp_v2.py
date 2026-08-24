@@ -162,7 +162,10 @@ _SUMMARY_FENCE_RE = re.compile(
 _FENCE_BEFORE_SUMMARY_RE = re.compile(r"```[a-zA-Z]*(?=[ \t]*\n<summary>)")
 
 
-def preclean_display(text: str) -> str:
+def preclean_display(text: str, compact_tools: bool = True) -> str:
+    """
+    compact_tools=True  → 流式态：工具参数块压成单行（防刷屏）
+    compact_tools=False → 定稿/展开态：保留完整参数（折叠展开后要能看全）"""
     text = _THINK_PAIR_RE.sub("", text)
     # 流式中开放的 thinking 信封 → 定长滚动尾窗（默认末 500 字符）：固定大小、
     # 持续滚动，既能看到模型在动又不刷屏；闭合后整对剥离，定稿不留痕。
@@ -185,12 +188,13 @@ def preclean_display(text: str) -> str:
     # 流式半截态：栅栏已开而 </summary> 未到 —— 先摘掉开栏防止其吞掉后续行
     text = _FENCE_BEFORE_SUMMARY_RE.sub("", text)
     # 工具调用参数块压缩为单行（大量 JSON 直接刷屏；完整内容仍在消息原文与
-    # 工具审计 ctrl 视图里可查）
-    text = re.sub(
-        r"🛠️ Tool: `([^`]+)`\s*📥 args:\n````text\n([\s\S]*?)\n?````",
-        lambda m: f"🛠️ {m.group(1)} · args {m.group(2).count(chr(10)) + 1} 行",
-        text,
-    )
+    # 工具审计 ctrl 视图里可查）。定稿/展开态保留全文——折叠展开后要能看全。
+    if compact_tools:
+        text = re.sub(
+            r"🛠️ Tool: `([^`]+)`\s*📥 args:\n````text\n([\s\S]*?)\n?````",
+            lambda m: f"🛠️ {m.group(1)} · args {m.group(2).count(chr(10)) + 1} 行",
+            text,
+        )
     return _escape_stray_tags(text)
 
 
@@ -7633,7 +7637,7 @@ class GenericAgentTUI(App[None]):
         # rendering (unclosed code fences, paragraph whitespace stripping) can't eat it.
         if not raw.strip():
             return [("text", Text("（空）" if m.done else " ", style=C_DIM), None)]
-        cleaned = preclean_display(_ANSI_CONTROL_RE.sub("", raw))
+        cleaned = preclean_display(_ANSI_CONTROL_RE.sub("", raw), compact_tools=not m.done)
         raw_segs = fold_turns(cleaned)
         # Drop cache entries whose width changed — content keys with stale width
         # would never be hit again and would leak memory across resizes.
@@ -8072,7 +8076,7 @@ class GenericAgentTUI(App[None]):
                 and new_sig and new_sig[-1][0] == "text"):
             width = self._messages_width()
             raw = m.content or ""
-            cleaned = preclean_display(_ANSI_CONTROL_RE.sub("", raw))
+            cleaned = preclean_display(_ANSI_CONTROL_RE.sub("", raw), compact_tools=not m.done)
             last_seg = fold_turns(cleaned)[-1]
             last_text = _TURN_MARKER_RE.sub("", last_seg.get("content", ""), count=1)
             last_widget = m._segment_widgets[-1]
@@ -8115,7 +8119,7 @@ class GenericAgentTUI(App[None]):
         raw = m.content or ""
         if not raw.strip():
             return (("text", None),)
-        cleaned = preclean_display(_ANSI_CONTROL_RE.sub("", raw))
+        cleaned = preclean_display(_ANSI_CONTROL_RE.sub("", raw), compact_tools=not m.done)
         segs_ft = fold_turns(cleaned)
         n_folds = sum(1 for s in segs_ft if s["type"] == "fold")
         _group_collapsed = n_folds >= 2 and (-1 in m._toggled_folds)
