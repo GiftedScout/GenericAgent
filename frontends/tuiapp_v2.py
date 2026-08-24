@@ -164,6 +164,9 @@ _FENCE_BEFORE_SUMMARY_RE = re.compile(r"```[a-zA-Z]*(?=[ \t]*\n<summary>)")
 
 def preclean_display(text: str) -> str:
     text = _THINK_PAIR_RE.sub("", text)
+    # 配对剥除后残余的孤立 thinking/think 标签（CoT 内嵌字面标签导致信封早闭的
+    # 残留）一律清除——正常流里它们不该再出现。
+    text = re.sub(r"</?(?:thinking|think)>", "", text)
     text = _SUMMARY_FENCE_RE.sub(r"\1", text)
     # 流式半截态：栅栏已开而 </summary> 未到 —— 先摘掉开栏防止其吞掉后续行
     text = _FENCE_BEFORE_SUMMARY_RE.sub("", text)
@@ -172,7 +175,7 @@ def preclean_display(text: str) -> str:
 
 # 根治：Rich/Markdown 把未知尖括号标签当 HTML 块，从标签起吞掉后续正文。
 # 非 fenced 区域里的杂散伪标签转成全角；功能标签与栅栏内代码原样保留。
-_FUNC_TAG_RE = re.compile(r"</?(?:summary|thinking|tool_use|file_content)>")
+_FUNC_TAG_RE = re.compile(r"</?(?:summary|thinking|tool_use|tool_call|file_content)>")
 _TAGLIKE_RE = re.compile(r"</?[A-Za-z][A-Za-z0-9_-]*(?:\s[^<>]*?)?/?>")
 _FENCE_SPLIT_RE = re.compile(r"(~~~[^\n]*\n[\s\S]*?(?:~~~|$)|```[^\n]*\n[\s\S]*?(?:```|$))")
 

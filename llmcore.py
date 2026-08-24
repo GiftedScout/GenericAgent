@@ -249,6 +249,14 @@ def _strip_think_tags(text):
     return re.sub(r"<think(?:ing)?>(.*?)</think(?:ing)?>", "", text or "", flags=re.DOTALL)
 
 
+def _disp_think_escape(s):
+    """Display-only: neutralize literal think tags inside streamed CoT so the
+    TUI pair-stripper cannot close the envelope early (screenshot bug: CoT that
+    quotes source code containing </thinking> split into junk folds).  Blocks /
+    history keep the raw text."""
+    return (s or "").replace("</thinking>", "＜/thinking＞").replace("<thinking>", "＜thinking＞") \
+                    .replace("</think>", "＜/think＞").replace("<think>", "＜think＞")
+
 def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=False, think_cap=1600):
     """Parse OpenAI SSE stream (chat_completions or responses API).
     Yields text chunks, returns list[content_block].
@@ -259,7 +267,7 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
     # as <think>...</think>, sometimes splitting tags across SSE frames.  Do
     # the filtering before yielding so Qwen's private reasoning never flashes
     # in the TUI and is never accumulated in content_text/history.
-    tag_state = {"inside": False, "tail": ""}
+    tag_state = {"inside": False, "tail": "", "think_out": []}
     open_tags, close_tags = ("<thinking>", "<think>"), ("</thinking>", "</think>")
     def _visible_content(delta, finish=False):
         if not omit_thinking: return delta
@@ -281,7 +289,8 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
             positions = [(data.find(tag), tag) for tag in tags if data.find(tag) >= 0]
             if positions:
                 pos, tag = min(positions)
-                if not tag_state["inside"]: out.append(data[:pos])
+                if tag_state["inside"]: tag_state["think_out"].append(data[:pos])
+                else: out.append(data[:pos])
                 data = data[pos + len(tag):]
                 tag_state["inside"] = not tag_state["inside"]
                 continue
@@ -293,12 +302,17 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
                 for n in range(1, min(len(tag) - 1, len(data)) + 1):
                     if data.endswith(tag[:n]): keep = max(keep, n)
             if finish:
-                if not tag_state["inside"]: out.append(data)
+                if tag_state["inside"]: tag_state["think_out"].append(data)
+                else: out.append(data)
             elif keep:
-                if not tag_state["inside"]: out.append(data[:-keep])
+                if tag_state["inside"]: tag_state["think_out"].append(data[:-keep])
+                else: out.append(data[:-keep])
                 tag_state["tail"] = data[-keep:]
             elif not tag_state["inside"]:
                 out.append(data)
+            else:
+                # inside 态且无标签前缀可缓冲：这段是纯 CoT 正文，存入 think_out
+                tag_state["think_out"].append(data)
             break
         return "".join(out)
     if api_mode == "responses":
@@ -383,6 +397,7 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
         finish_reason = None
         think_open = False  # display-only <thinking> envelope; TUI strips it on finalize
         think_cap_warned = False
+        think_shown = 0  # 已上屏的 thinking 字符数（字段路径+内联路径共享预算）
         for line in resp_lines:
             if not line: continue
             line = line.decode('utf-8', errors='replace') if isinstance(line, bytes) else line
@@ -399,12 +414,28 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
                 # 后停止 yield 只提示一次；是否入库仍由 omit_thinking 决定。
                 reasoning_text += rc
                 if not think_open: yield "\n<thinking>\n"; think_open = True
-                if len(reasoning_text) <= think_cap:
-                    yield rc
+                if think_shown < think_cap:
+                    piece = _disp_think_escape(rc[:think_cap - think_shown])
+                    yield piece; think_shown += len(piece)
+                    if len(piece) < len(rc) and not think_cap_warned:
+                        yield f"\n...[thinking 显示截断 >{think_cap} 字符]"; think_cap_warned = True
                 elif not think_cap_warned:
                     yield f"\n...[thinking 显示截断 >{think_cap} 字符]"; think_cap_warned = True
             if delta.get("content"):
+                _n = len(tag_state["think_out"])
                 text = _visible_content(delta["content"])
+                thk = "".join(tag_state["think_out"][_n:])
+                if thk:
+                    # 内联 <think>（服务端 --reasoning-format none）同样走显示信封：
+                    # 可见但限长，且绝不进入 content_text/历史。
+                    if not think_open: yield "\n<thinking>\n"; think_open = True
+                    if think_shown < think_cap:
+                        piece = thk[:think_cap - think_shown]
+                        yield piece; think_shown += len(piece)
+                        if len(piece) < len(thk) and not think_cap_warned:
+                            yield f"\n...[thinking 显示截断 >{think_cap} 字符]"; think_cap_warned = True
+                    elif not think_cap_warned:
+                        yield f"\n...[thinking 显示截断 >{think_cap} 字符]"; think_cap_warned = True
                 if text:
                     if think_open: yield "\n</thinking>\n"; think_open = False
                     content_text += text; yield text

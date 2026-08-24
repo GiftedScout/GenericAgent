@@ -23,7 +23,7 @@ for f in ('/home/pushuai/GenericAgent/llmcore.py', '/home/pushuai/GenericAgent/a
     py_compile.compile(f, doraise=True)
 print("✅ syntax OK (llmcore.py, agentmain.py)")
 
-from llmcore import _parse_openai_sse, _parse_claude_sse
+from llmcore import _parse_openai_sse, _parse_claude_sse, _parse_text_tool_calls
 
 def sse(pairs):
     return [f"data: {p}\n".encode() for p in pairs]
@@ -166,6 +166,37 @@ msg_int = "\nTurn 2 ...\n<thinking>\nfinal reasoning that used to leak"
 guard = (lambda s: s + "\n</thinking>\n" if s.count("<thinking>") > s.count("</thinking>") else s)
 stripped_int = meta_re.sub("", guard(msg_int))
 check("interrupted final turn: guard+strip -> clean", "final reasoning that used to leak" not in stripped_int and "<thinking>" not in stripped_int)
+
+# [6] inline <think> in content deltas (server --reasoning-format none) + CoT
+#     quoting literal tags: visible-capped streaming, clean history, no junk folds
+print("\n[6] inline think: visible+capped, escaped embedded tags, history clean")
+import json as _json
+def _frames(*fs):
+    out = [("data: " + _json.dumps(f)).encode() for f in fs]
+    out.append(b"data: [DONE]")
+    return iter(out)
+def _ccd(content=None, rc=None):
+    d = {}
+    if content is not None: d["content"] = content
+    if rc is not None: d["reasoning_content"] = rc
+    return {"choices": [{"delta": d}]}
+big = "推" * 500
+out6, blocks6 = drain_ret(_parse_openai_sse, _frames(
+    _ccd(rc='把 yield "\\n</thinking>\\n"; 改转义'),
+    _ccd(content="<th"), _ccd(content="ink>" + big), _ccd(content="推推"),
+    _ccd(content="</think>\n\n"),
+    _ccd(content='<tool_call>{"name":"run","arguments":{"x":1}}</tool_call>'),
+), api_mode="chat_completions", omit_thinking=True, think_cap=100)
+s6 = "".join(out6)
+check("envelope exactly one pair (embedded tag escaped)", s6.count("<thinking>") == 1 and s6.count("</thinking>") == 1)
+check("cap enforced with one-shot note", s6.count("显示截断") == 1)
+_vt = s6.split("<thinking>", 1)[1].split("</thinking>", 1)[0].replace("\n...[thinking 显示截断 >100 字符]", "").strip()
+check("visible CoT <= cap", len(_vt) <= 100)
+_tb = [b for b in (blocks6 or []) if b.get("type") == "text"]
+_t6 = _tb[0]["text"] if _tb else ""
+check("history text free of CoT/tags/note", "<think" not in _t6 and "推推" not in _t6 and "显示截断" not in _t6)
+_tc, _ = _parse_text_tool_calls(_t6)
+check("ask-layer tool_call intact", bool(_tc) and _tc[0].function.name == "run")
 
 print(f"\n{'='*40}\nRESULT: {PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)
