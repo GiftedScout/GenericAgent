@@ -231,6 +231,20 @@ def _compact_tool_dumps(text: str) -> str:
 
 
 def preclean_display(text: str, compact_tools: bool = True) -> str:
+    out = _preclean_display_impl(text, compact_tools)
+    if os.environ.get("GA_TUI_PRECLEAN_DEBUG"):
+        try:
+            with open("/tmp/tui_preclean_debug.log", "a", encoding="utf-8") as f:
+                import time as _t
+                f.write(f"\n==== {_t.strftime('%H:%M:%S')} compact={compact_tools} in_len={len(text)} ====\n")
+                f.write("IN : " + text[:600].replace("\n", "⏎") + "\n")
+                f.write("OUT: " + out[:600].replace("\n", "⏎") + "\n")
+        except Exception:
+            pass
+    return out
+
+
+def _preclean_display_impl(text: str, compact_tools: bool) -> str:
     """
     compact_tools=True  → 流式态：工具参数块压成单行（防刷屏）
     compact_tools=False → 定稿/展开态：保留完整参数（折叠展开后要能看全）"""
