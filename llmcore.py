@@ -114,11 +114,12 @@ def trim_messages_history(history, sess):
     if c <= cap: return
     compress_history_tags(history, keep_recent=4, force=True, counter_owner=sess)
     if cost(history) <= target: return
-    pre, post = history[:kp], history[kp:]
-    while len(post) > 9 and cost(pre) + cost(post) > target:
-        post.pop(0)
-        while post and post[0].get('role') != 'user': post.pop(0)
-        if post and post[0].get('role') == 'user': post[0] = _sanitize_leading_user_msg(post[0])
+    pre, post = history[:kp], history[kp:]; costs = [len(json.dumps(m, ensure_ascii=False)) for m in post]; c = cost(pre) + sum(costs); i = 0
+    while len(post) - i > 9 and c > target:
+        c -= costs[i]; i += 1
+        while i < len(post) and post[i].get('role') != 'user': c -= costs[i]; i += 1
+        if i < len(post): old = costs[i]; post[i] = _sanitize_leading_user_msg(post[i]); costs[i] = len(json.dumps(post[i], ensure_ascii=False)); c += costs[i] - old
+    post = post[i:]
     if kp and pre:
         m = pre[-1]
         if m.get('role') == 'assistant' and isinstance(m.get('content'), list):
