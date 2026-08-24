@@ -386,7 +386,7 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
         tail = _visible_content("", finish=True)
         if tail: content_text += tail; yield tail
         blocks = []
-        if reasoning_text and not omit_thinking: blocks.append({"type": "thinking", "thinking": reasoning_text})
+        if reasoning_text and not omit_thinking: blocks.append({"type": "thinking", "thinking": _disp_think_escape(reasoning_text)})
         if content_text: blocks.append({"type": "text", "text": content_text})
         for idx in sorted(fc_buf):
             fc = fc_buf[idx]
@@ -450,7 +450,7 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
             note = "\n[!] 输出因长度/上下文限制被截断 (finish_reason=length)"
             yield note; content_text += note
         blocks = []
-        if reasoning_text and not omit_thinking: blocks.append({"type": "thinking", "thinking": reasoning_text})
+        if reasoning_text and not omit_thinking: blocks.append({"type": "thinking", "thinking": _disp_think_escape(reasoning_text)})
         if content_text: blocks.append({"type": "text", "text": content_text})
         for idx in sorted(tc_buf):
             tc = tc_buf[idx]
