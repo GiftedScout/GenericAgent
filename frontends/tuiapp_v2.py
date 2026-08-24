@@ -164,6 +164,13 @@ _FENCE_BEFORE_SUMMARY_RE = re.compile(r"```[a-zA-Z]*(?=[ \t]*\n<summary>)")
 
 def preclean_display(text: str) -> str:
     text = _THINK_PAIR_RE.sub("", text)
+    # 流式中开放的 thinking 信封 → 定长滚动尾窗（默认末 500 字符）：固定大小、
+    # 持续滚动，既能看到模型在动又不刷屏；闭合后整对剥离，定稿不留痕。
+    _m_open = re.search(r"<thinking>[ \t]*\n?([\s\S]*$)", text)
+    if _m_open:
+        inner = _m_open.group(1).strip("\n")
+        tail = inner if len(inner) <= 500 else "…" + inner[-500:]
+        text = text[:_m_open.start()] + f"＜thinking＞\n{tail}\n＜/thinking＞（思考中…）"
     # 配对剥除后残余的孤立 thinking/think 标签（CoT 内嵌字面标签导致信封早闭的
     # 残留）一律清除——正常流里它们不该再出现。
     text = re.sub(r"</?(?:thinking|think)>", "", text)
@@ -4468,18 +4475,25 @@ class GenericAgentTUI(App[None]):
         self._resize_timer = self.set_timer(0.05, self._flush_resize)
 
     def action_toggle_fold(self) -> None:
-        self.fold_mode = not self.fold_mode
-        # Global toggle is authoritative: clear per-fold overrides so the new state
-        # is uniformly all-collapsed or all-expanded.
-        for sess in self.sessions.values():
-            for m in sess.messages:
-                if m.role == "assistant":
-                    m._toggled_folds.clear()
-                    m._cached_body = None
-                    m._cache_key = ()
-        self._remount_current_session()
-        self._refresh_topbar()
-        self.notify(f"Fold: {'on' if self.fold_mode else 'off'}", timeout=1)
+        # ctrl+o：折叠/展开“最近一条助手消息”的全部过程轮次（最终输出始终可见）。
+        # 小的逐轮折叠不再受此键影响——只能用鼠标点击各自的箭头。
+        target = None
+        try:
+            for mm in reversed(self.current.messages):
+                if getattr(mm, "role", "") == "assistant":
+                    target = mm; break
+        except Exception:
+            target = None
+        if target is None:
+            self.notify("没有可折叠的轮次", timeout=1)
+            return
+        if -1 in target._toggled_folds:
+            target._toggled_folds.discard(-1)
+            self.notify("Group fold: expanded", timeout=1)
+        else:
+            target._toggled_folds.add(-1)
+            self.notify("Group fold: collapsed (输出保持可见)", timeout=1)
+        self._remount_assistant_message(target)
 
     def action_escape(self) -> None:
         # Back out of free-text-input mode → restore the picker the user was
@@ -7618,20 +7632,18 @@ class GenericAgentTUI(App[None]):
             return v
 
         out: list[tuple] = []
-        # 消息级外层折叠：本次提问含 ≥2 个轮次 fold 时提供总箭头（fold_idx=-1），
-        # 点击折叠整条消息的全部轮次，防止长任务刷屏。
+        # 消息级外层折叠：≥2 个轮次 fold 时提供总箭头（fold_idx=-1）。只折叠
+        # “过程”轮次；最终输出（最后的 text 段）始终保留可见。
         n_folds = sum(1 for s in raw_segs if s["type"] == "fold")
+        group_collapsed = n_folds >= 2 and (-1 in m._toggled_folds)
         if n_folds >= 2:
-            collapsed = -1 in m._toggled_folds
-            head = Text(("▸ " if collapsed else "▾ ") + f"本次提问 · {n_folds} 轮", style=C_DIM)
+            head = Text(("▸ " if group_collapsed else "▾ ") + f"本次提问 · {n_folds} 轮", style=C_DIM)
             out.append(("group-header", head, -1))
-            if collapsed:
-                if m.done:
-                    m._cached_body = out; m._cache_key = key
-                return out
         last_i = len(raw_segs) - 1
         for i, seg in enumerate(raw_segs):
             if seg["type"] == "fold":
+                if group_collapsed:
+                    continue
                 # fold_mode=True → default collapsed; False → default expanded. Per-fold
                 # clicks flip the default for that fold via the toggle set.
                 expanded = (not self.fold_mode) ^ (i in m._toggled_folds)
@@ -8089,13 +8101,14 @@ class GenericAgentTUI(App[None]):
         cleaned = preclean_display(_ANSI_CONTROL_RE.sub("", raw))
         segs_ft = fold_turns(cleaned)
         n_folds = sum(1 for s in segs_ft if s["type"] == "fold")
+        _group_collapsed = n_folds >= 2 and (-1 in m._toggled_folds)
         sig = []
         if n_folds >= 2:
             sig.append(("group-header", -1))
-            if -1 in m._toggled_folds:
-                return tuple(sig)
         for i, seg in enumerate(segs_ft):
             if seg["type"] == "fold":
+                if _group_collapsed:
+                    continue
                 sig.append(("fold-header", i))
                 if (not self.fold_mode) ^ (i in m._toggled_folds):
                     sig.append(("fold-body", i))

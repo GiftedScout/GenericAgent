@@ -168,8 +168,9 @@ stripped_int = meta_re.sub("", guard(msg_int))
 check("interrupted final turn: guard+strip -> clean", "final reasoning that used to leak" not in stripped_int and "<thinking>" not in stripped_int)
 
 # [6] inline <think> in content deltas (server --reasoning-format none) + CoT
-#     quoting literal tags: visible-capped streaming, clean history, no junk folds
-print("\n[6] inline think: visible+capped, escaped embedded tags, history clean")
+#     quoting literal tags: full CoT streams visibly inside one envelope
+#     (sliding tail window handled by TUI preclean), history stays clean
+print("\n[6] inline think: full visible streaming, escaped embedded tags, history clean")
 import json as _json
 def _frames(*fs):
     out = [("data: " + _json.dumps(f)).encode() for f in fs]
@@ -186,17 +187,25 @@ out6, blocks6 = drain_ret(_parse_openai_sse, _frames(
     _ccd(content="<th"), _ccd(content="ink>" + big), _ccd(content="推推"),
     _ccd(content="</think>\n\n"),
     _ccd(content='<tool_call>{"name":"run","arguments":{"x":1}}</tool_call>'),
-), api_mode="chat_completions", omit_thinking=True, think_cap=100)
+), api_mode="chat_completions", omit_thinking=True)
 s6 = "".join(out6)
 check("envelope exactly one pair (embedded tag escaped)", s6.count("<thinking>") == 1 and s6.count("</thinking>") == 1)
-check("cap enforced with one-shot note", s6.count("显示截断") == 1)
-_vt = s6.split("<thinking>", 1)[1].split("</thinking>", 1)[0].replace("\n...[thinking 显示截断 >100 字符]", "").strip()
-check("visible CoT <= cap", len(_vt) <= 100)
+check("full CoT streams (no hard cap)", "推推" in s6 and "显示截断" not in s6)
 _tb = [b for b in (blocks6 or []) if b.get("type") == "text"]
 _t6 = _tb[0]["text"] if _tb else ""
-check("history text free of CoT/tags/note", "<think" not in _t6 and "推推" not in _t6 and "显示截断" not in _t6)
+check("history text free of CoT/tags", "<think" not in _t6 and "推推" not in _t6)
 _tc, _ = _parse_text_tool_calls(_t6)
 check("ask-layer tool_call intact", bool(_tc) and _tc[0].function.name == "run")
 
+# preclean_display: 开放信封 → 定长滚动尾窗；闭合信封 → 整对剥离
+import sys as _sys
+_sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'frontends'))
+import tuiapp_v2 as _tui
+open_env = "<thinking>\n" + "思" * 2000 + "\n🛠️ Tool"
+w = _tui.preclean_display(open_env)
+check("open envelope -> sliding tail window", "思考中" in w and len(w) < 700 and w.count("<thinking>") == 0)
+closed_env = "<thinking>\nCoT\n</thinking>\n答案"
+w2 = _tui.preclean_display(closed_env)
+check("closed envelope fully stripped", w2 == "答案")
 print(f"\n{'='*40}\nRESULT: {PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)
