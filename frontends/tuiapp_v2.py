@@ -7711,7 +7711,10 @@ class GenericAgentTUI(App[None]):
         new turns only append. Last segment carries the streaming suffix."""
         raw = m.content or ""
         # Cache final renders — Markdown re-parse on every resize is expensive over long history.
-        key = (len(raw), m.done, width, self.fold_mode, frozenset(m._toggled_folds))
+        key = (len(raw), m.done, width, self.fold_mode, frozenset(m._toggled_folds),
+               sum(1 for s in fold_turns(preclean_display(_ANSI_CONTROL_RE.sub("", raw),
+                                                           compact_tools=not m.done))
+                   if s["type"] == "fold"))
         if m.done and m._cache_key == key and m._cached_body is not None:
             return m._cached_body
         # No streaming suffix here — spinner lives in m._spinner_widget so Markdown
@@ -7991,10 +7994,14 @@ class GenericAgentTUI(App[None]):
 
     @staticmethod
     def _segment_sig(segs: list[tuple]) -> tuple:
-        # Topology fingerprint: ignores body content so streaming chunks within the same
-        # last text segment don't invalidate the structure. Used to decide stream-update
-        # (in-place .update of last widget) vs. full remount (when folds appear/expand).
-        return tuple((kind, idx) for kind, _, idx in segs)
+        # Topology fingerprint: ignores body content except the group header's
+        # dynamic turn count. When the current question gains another fold while
+        # the group is collapsed, the header must remount immediately (not only
+        # after opening it).
+        return tuple(
+            (kind, body.plain if kind == "group-header" and hasattr(body, "plain") else idx)
+            for kind, body, idx in segs
+        )
 
     def _mount_message(self, container: VerticalScroll, m: ChatMessage) -> None:
         # Looked up at call time (not class init) so theme switches propagate.
@@ -8206,7 +8213,8 @@ class GenericAgentTUI(App[None]):
         _group_collapsed = n_folds >= 2 and (-1 in m._toggled_folds)
         sig = []
         if n_folds >= 2:
-            sig.append(("group-header", -1))
+            arrow = "▸" if _group_collapsed else "▾"
+            sig.append(("group-header", f"{arrow} 本次提问 · {n_folds} 轮"))
         for i, seg in enumerate(segs_ft):
             if seg["type"] == "fold":
                 if _group_collapsed:
