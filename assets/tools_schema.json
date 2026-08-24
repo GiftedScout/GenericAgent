@@ -73,7 +73,7 @@
   }},
   {"type": "function", "function": {
     "name": "start_long_term_update",
-    "description": "After a long task completes, distill long-term memory. Call when discovering info worth remembering (env facts/user prefs/lessons learned). Skip if memory already updated or in autonomous flow. Must call when a task that took 15+ turns is completed.",
+    "description": "Final memory-settlement marker. Call only after the task is genuinely complete and all necessary memory reads/writes have already finished. This is the LAST tool call: after it returns, the main agent loop enters a bounded memory-only settlement (up to 8 turns), then terminates; no done hooks or ordinary tools can restart the task.",
     "parameters": {"type": "object", "properties": {}}}
   },
   {"type": "function", "function": {

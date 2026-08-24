@@ -829,8 +829,12 @@ class GenericAgentHandler(BaseHandler):
         path = './memory/memory_management_sop.md'
         if os.path.exists(path): result = 'This is L0:\n' + file_read(path, show_linenos=False)
         else: result = "Memory Management SOP not found. Do not update memory."
-        if self.current_turn < 10: result, prompt = 'start_long_term_update is only used after completing a long turn task!', '\n'
-        return StepOutcome(result, next_prompt=prompt)
+        if self.current_turn < 10:
+            result, prompt = 'start_long_term_update is only used after completing a long turn task!', '\n'
+            return StepOutcome(result, next_prompt=prompt, settlement=False)
+        # Enter bounded memory-only settlement; the main task is already done,
+        # but the model may still perform the approved memory file operations.
+        return StepOutcome(result, next_prompt=prompt, settlement=True)
 
     def _fold_earlier(self, lines):
         FALLBACK = '直接回答了用户问题'

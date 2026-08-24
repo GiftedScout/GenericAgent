@@ -8,6 +8,10 @@ class StepOutcome:
     data: Any
     next_prompt: Optional[str] = None
     should_exit: bool = False
+    # Start a bounded, memory-only settlement sub-loop.  This is deliberately
+    # separate from should_exit: the tool must still let the model finish the
+    # approved file_read/file_patch/file_write memory update before stopping.
+    settlement: bool = False
 def try_call_generator(func, *args, **kwargs):
     ret = func(*args, **kwargs)
     if hasattr(ret, '__iter__') and not isinstance(ret, (str, bytes, dict, list)): ret = yield from ret
@@ -39,6 +43,21 @@ def get_pretty_json(data):
         data = data.copy(); data["script"] = data["script"].replace("; ", ";\n  ")
     return json.dumps(data, indent=2, ensure_ascii=False).replace('\\n', '\n')
 
+def _settlement_tools(tools_schema):
+    """Return only tools allowed after start_long_term_update."""
+    allowed = {"file_read", "file_patch", "file_write"}
+    if not isinstance(tools_schema, (list, tuple)):
+        return []
+    result = []
+    for spec in tools_schema:
+        if not isinstance(spec, dict):
+            continue
+        fn = spec.get("function") if isinstance(spec.get("function"), dict) else spec
+        if fn.get("name") in allowed:
+            result.append(spec)
+    return result
+
+
 def agent_runner_loop(client, system_prompt, user_input, handler, tools_schema, 
                       max_turns=40, verbose=True, initial_user_content=None, yield_info=False):
     messages = [
@@ -46,17 +65,27 @@ def agent_runner_loop(client, system_prompt, user_input, handler, tools_schema,
         {"role": "user", "content": initial_user_content if initial_user_content is not None else user_input}
     ]
     turn = 0;  handler.max_turns = max_turns
+    settlement_mode = False
+    settlement_turns = 0
+    settlement_schema = _settlement_tools(tools_schema)
     _hook('agent_before', locals())
     while turn < handler.max_turns:
-        turn += 1; turnstr = f'LLM Running (Turn {turn}) ...'
-        if handler.parent.task_dir: turnstr = f'Turn {turn} ...'
-        if verbose: turnstr = f'**{turnstr}**'
+        if settlement_mode and settlement_turns >= 8:
+            exit_reason = {'result': 'MEMORY_SETTLEMENT_LIMIT'}
+            break
+        turn += 1
+        turnstr = f'LLM Running (Turn {turn}) ...'
+        if handler.parent.task_dir:
+            turnstr = f'Turn {turn} ...'
+        if verbose:
+            turnstr = f'**{turnstr}**'
         if yield_info: yield {'turn': turn}
         yield f"\n{turnstr}\n\n"
         if turn%10 == 0: client.last_tools = ''  # 每10轮重置一次工具描述
         _hook('turn_before', locals())
         _hook('llm_before', locals())
-        response_gen = client.chat(messages=messages, tools=tools_schema)
+        active_tools = settlement_schema if settlement_mode else tools_schema
+        response_gen = client.chat(messages=messages, tools=active_tools)
         if verbose:
             response = yield from response_gen
             yield '\n\n'
@@ -100,17 +129,26 @@ def agent_runner_loop(client, system_prompt, user_input, handler, tools_schema,
                 yield {"tool_result": {"full": full_block, "preview": preview},
                        "turn": turn}
             
-            if outcome.should_exit: 
+            if outcome.should_exit:
                 exit_reason = {'result': 'EXITED', 'data': outcome.data}; break
-            if not outcome.next_prompt: 
+            if outcome.settlement:
+                settlement_mode = True
+                handler._done_hooks.clear()
+            if not outcome.next_prompt:
                 exit_reason = {'result': 'CURRENT_TASK_DONE', 'data': outcome.data}; break
             if outcome.next_prompt.startswith('未知工具'): client.last_tools = ''
             if outcome.data is not None and tool_name != 'no_tool': 
                 datastr = json.dumps(outcome.data, ensure_ascii=False, default=json_default) if type(outcome.data) in [dict, list] else str(outcome.data) 
                 tool_results.append({'tool_use_id': tid, 'content': datastr})
             next_prompts.add(outcome.next_prompt)
-        if len(next_prompts) == 0 or exit_reason:
-            if len(handler._done_hooks) == 0 or exit_reason.get('result', '') == 'EXITED': break
+        if exit_reason:
+            # CURRENT_TASK_DONE / EXITED are terminal states. Never let an
+            # external completion hook resurrect a task that has already
+            # produced its final response (especially after memory finalization).
+            break
+        if not next_prompts:
+            if len(handler._done_hooks) == 0:
+                break
             next_prompts.add(handler._done_hooks.pop(0))
         next_prompt = handler.turn_end_callback(response, tool_calls, tool_results, turn, '\n'.join(next_prompts), exit_reason)
         _hook('turn_after', locals())

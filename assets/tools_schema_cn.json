@@ -74,7 +74,7 @@
   }},
   {"type": "function", "function": {
     "name": "start_long_term_update",
-    "description": "准备开始提炼记忆。发现值得长期记忆的信息（环境事实/用户偏好/避坑经验）时调用此工具。已记忆更新或在自主流程内时无需调用。超15轮完成的任务必须调用以沉淀经验",
+    "description": "最终记忆结算标记。仅在任务真正完成且所有必要的记忆读取/写入已经完成后调用。这是最后一个工具调用：返回后主 agent loop 立即结束；禁止再调用任何工具或开启下一轮。",
     "parameters": {"type": "object", "properties": {}}}
   }
 ,
