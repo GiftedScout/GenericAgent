@@ -249,7 +249,7 @@ def _strip_think_tags(text):
     return re.sub(r"<think(?:ing)?>(.*?)</think(?:ing)?>", "", text or "", flags=re.DOTALL)
 
 
-def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=False):
+def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=False, think_cap=1600):
     """Parse OpenAI SSE stream (chat_completions or responses API).
     Yields text chunks, returns list[content_block].
     content_block: {type:'text', text:str} | {type:'tool_use', id:str, name:str, input:dict}
@@ -382,6 +382,7 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
         reasoning_text = ""
         finish_reason = None
         think_open = False  # display-only <thinking> envelope; TUI strips it on finalize
+        think_cap_warned = False
         for line in resp_lines:
             if not line: continue
             line = line.decode('utf-8', errors='replace') if isinstance(line, bytes) else line
@@ -394,10 +395,14 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
             delta = ch.get("delta") or {}
             if ch.get("finish_reason"): finish_reason = ch["finish_reason"]
             if rc := delta.get("reasoning_content") or delta.get("reasoning", ""):
-                if not omit_thinking:
-                    reasoning_text += rc
-                    if not think_open: yield "\n<thinking>\n"; think_open = True
+                # 流式 thinking 始终上屏（让用户知道模型没卡死），超 think_cap
+                # 后停止 yield 只提示一次；是否入库仍由 omit_thinking 决定。
+                reasoning_text += rc
+                if not think_open: yield "\n<thinking>\n"; think_open = True
+                if len(reasoning_text) <= think_cap:
                     yield rc
+                elif not think_cap_warned:
+                    yield f"\n...[thinking 显示截断 >{think_cap} 字符]"; think_cap_warned = True
             if delta.get("content"):
                 text = _visible_content(delta["content"])
                 if text:
@@ -588,7 +593,7 @@ def _openai_stream(sess, messages):
     tools = getattr(sess, 'tools', None)
     if tools: payload["tools"] = _prepare_oai_tools(tools, api_mode)
     if sess.service_tier: payload["service_tier"] = sess.service_tier
-    parse_fn = (lambda r: _parse_openai_sse(r.iter_lines(), api_mode, sess.omit_thinking)) if sess.stream else (lambda r: _parse_openai_json(r.json(), api_mode, sess.omit_thinking))
+    parse_fn = (lambda r: _parse_openai_sse(r.iter_lines(), api_mode, sess.omit_thinking, getattr(sess, 'think_display_cap', 1600))) if sess.stream else (lambda r: _parse_openai_json(r.json(), api_mode, sess.omit_thinking))
     return (yield from _stream_with_retry(sess, url, headers, payload, parse_fn))
         
 def _prepare_oai_tools(tools, api_mode="chat_completions"):
@@ -735,6 +740,9 @@ class BaseSession:
         # explicit config value remains available for users who prefer hiding
         # it, but SSH Qwen is no longer forced into that mode.
         self.omit_thinking = bool(cfg.get('omit_thinking', False))
+        # 流式 thinking 显示上限（字符）：超限停止上屏只提示一次，防终端闪烁漂移；
+        # 仅影响显示，回传/入库由 omit_thinking 决定。
+        self.think_display_cap = int(cfg.get('think_display_cap', 1600) or 1600)
         mode = str(cfg.get('api_mode', 'chat_completions')).strip().lower().replace('-', '_')
         self.api_mode = 'responses' if mode in ('responses', 'response') else 'chat_completions'
         self.temperature = cfg.get('temperature', 1)

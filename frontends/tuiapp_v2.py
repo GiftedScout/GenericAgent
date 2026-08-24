@@ -167,7 +167,25 @@ def preclean_display(text: str) -> str:
     text = _SUMMARY_FENCE_RE.sub(r"\1", text)
     # 流式半截态：栅栏已开而 </summary> 未到 —— 先摘掉开栏防止其吞掉后续行
     text = _FENCE_BEFORE_SUMMARY_RE.sub("", text)
-    return text
+    return _escape_stray_tags(text)
+
+
+# 根治：Rich/Markdown 把未知尖括号标签当 HTML 块，从标签起吞掉后续正文。
+# 非 fenced 区域里的杂散伪标签转成全角；功能标签与栅栏内代码原样保留。
+_FUNC_TAG_RE = re.compile(r"</?(?:summary|thinking|tool_use|file_content)>")
+_TAGLIKE_RE = re.compile(r"</?[A-Za-z][A-Za-z0-9_-]*(?:\s[^<>]*?)?/?>")
+_FENCE_SPLIT_RE = re.compile(r"(~~~[^\n]*\n[\s\S]*?(?:~~~|$)|```[^\n]*\n[\s\S]*?(?:```|$))")
+
+
+def _escape_stray_tags(text: str) -> str:
+    def _sub(m):
+        tok = m.group(0)
+        return tok if _FUNC_TAG_RE.fullmatch(tok) else tok.replace("<", "＜").replace(">", "＞")
+    out = []
+    for i, part in enumerate(_FENCE_SPLIT_RE.split(text)):
+        # 奇数段是 fenced（含未闭合尾巴——Markdown 视其为代码，本就安全）
+        out.append(part if i % 2 == 1 else _TAGLIKE_RE.sub(_sub, part))
+    return "".join(out)
 
 
 # Rotating usage tips, picked once per launch.
@@ -7597,6 +7615,17 @@ class GenericAgentTUI(App[None]):
             return v
 
         out: list[tuple] = []
+        # 消息级外层折叠：本次提问含 ≥2 个轮次 fold 时提供总箭头（fold_idx=-1），
+        # 点击折叠整条消息的全部轮次，防止长任务刷屏。
+        n_folds = sum(1 for s in raw_segs if s["type"] == "fold")
+        if n_folds >= 2:
+            collapsed = -1 in m._toggled_folds
+            head = Text(("▸ " if collapsed else "▾ ") + f"本次提问 · {n_folds} 轮", style=C_DIM)
+            out.append(("group-header", head, -1))
+            if collapsed:
+                if m.done:
+                    m._cached_body = out; m._cache_key = key
+                return out
         last_i = len(raw_segs) - 1
         for i, seg in enumerate(raw_segs):
             if seg["type"] == "fold":
@@ -7945,7 +7974,7 @@ class GenericAgentTUI(App[None]):
         last_text = None
         anchor = after
         for kind, body, fold_idx in segs:
-            if kind == "fold-header":
+            if kind in ("fold-header", "group-header"):
                 w = FoldHeader(body, m, fold_idx, classes="msg fold-header")
             else:
                 if isinstance(body, _MdRender):
@@ -8055,8 +8084,14 @@ class GenericAgentTUI(App[None]):
         if not raw.strip():
             return (("text", None),)
         cleaned = preclean_display(_ANSI_CONTROL_RE.sub("", raw))
+        segs_ft = fold_turns(cleaned)
+        n_folds = sum(1 for s in segs_ft if s["type"] == "fold")
         sig = []
-        for i, seg in enumerate(fold_turns(cleaned)):
+        if n_folds >= 2:
+            sig.append(("group-header", -1))
+            if -1 in m._toggled_folds:
+                return tuple(sig)
+        for i, seg in enumerate(segs_ft):
             if seg["type"] == "fold":
                 sig.append(("fold-header", i))
                 if (not self.fold_mode) ^ (i in m._toggled_folds):

@@ -3,7 +3,8 @@
 1. chat_completions SSE: reasoning wrapped in <thinking>…</thinking> in display stream, blocks stay clean
 2. interrupted stream: dangling envelope closable by agentmain._close_think_envelope
 3. claude SSE: same envelope behavior
-4. omit_thinking=True regression: no envelope, no reasoning in stream or blocks
+4. omit_thinking=True: reasoning STREAMS visibly (capped) but no thinking block
+   reaches blocks/history — omit only controls context inclusion
 5. TUI: _META_TAG_RE strips envelope from finalized message; fold_turns last-turn clean
 """
 import sys, os, re
@@ -122,13 +123,14 @@ ct = [b for b in (cblocks or []) if b.get("type") == "thinking"]
 check("claude thinking block clean", ct and "<thinking>" not in ct[0].get("thinking", ""))
 
 # ---------- 5. omit_thinking regression ----------
-print("\n[4] omit_thinking=True regression (qwen legacy behavior)")
+print("\n[4] omit_thinking=True: visible-but-capped streaming, excluded from history")
 out, oblocks = drain_ret(_parse_openai_sse, lines, api_mode="chat_completions", omit_thinking=True)
 ostream = "".join(out)
-check("no reasoning in stream", "Let me think" not in ostream)
-check("no envelope", "<thinking>" not in ostream)
+check("reasoning visible in stream", "Let me think" in ostream)
+check("envelope present", "<thinking>" in ostream and "</thinking>" in ostream)
 check("answer still in stream", "Final answer here." in ostream)
-check("no thinking block", not [b for b in (oblocks or []) if b.get("type") == "thinking"])
+check("no truncation note under cap", "显示截断" not in ostream)
+check("no thinking block into history", not [b for b in (oblocks or []) if b.get("type") == "thinking"])
 
 # ---------- 6. TUI finalize simulation ----------
 print("\n[5] TUI finalize: _META_TAG_RE strip + fold_turns last turn")
