@@ -139,6 +139,36 @@ _META_TAG_RE = re.compile(
     re.DOTALL | re.IGNORECASE | re.MULTILINE,
 )
 
+# meta 标签剥离后可能遗留孤儿代码栅栏（模型常把 <summary> 包在 ```html 栅栏里）：
+# 内容被剥空的栅栏直接删除；悬空未闭合的尾部开栏会让 Rich/markdown 把后续
+# 内容全部吞进代码块，必须收尾。
+_ORPHAN_FENCE_RE = re.compile(r"```\w*[ \t]*\n[ \t\n]*```")
+
+
+def collapse_orphan_fences(text: str) -> str:
+    text = _ORPHAN_FENCE_RE.sub("", text)
+    if text.count("```") % 2 == 1:
+        text = re.sub(r"\n?```\w*[ \t]*$", "", text)
+    return text
+
+
+# 显示级预清理：ox-alpha 等模型习惯把 <summary> 包在 ```html 栅栏里，且
+# thinking 信封在 done 前会经 Text.from_ansi 以原文直出。在进入 fold_turns /
+# from_ansi 之前统一剥掉 thinking 对、把 summary 栅栏还原成裸 <summary> 行
+# （fold 标题提取与定稿剥离都依赖它），m.content 原文不受影响。
+_THINK_PAIR_RE = re.compile(r"<thinking>.*?</thinking>\s*", re.DOTALL)
+_SUMMARY_FENCE_RE = re.compile(
+    r"```[a-zA-Z]*[ \t]*\n?(<summary>.*?</summary>)[ \t]*\n?```[ \t]*", re.DOTALL)
+_FENCE_BEFORE_SUMMARY_RE = re.compile(r"```[a-zA-Z]*(?=[ \t]*\n<summary>)")
+
+
+def preclean_display(text: str) -> str:
+    text = _THINK_PAIR_RE.sub("", text)
+    text = _SUMMARY_FENCE_RE.sub(r"\1", text)
+    # 流式半截态：栅栏已开而 </summary> 未到 —— 先摘掉开栏防止其吞掉后续行
+    text = _FENCE_BEFORE_SUMMARY_RE.sub("", text)
+    return text
+
 
 # Rotating usage tips, picked once per launch.
 _TIPS = (
@@ -2050,10 +2080,11 @@ class ChatMessage:
     _stream_started_at: Optional[float] = field(default=None, repr=False)
     _stream_baseline_input: int = field(default=0, repr=False)
     _stream_baseline_output: int = field(default=0, repr=False)
-    # Frozen `(elapsed, last_in, last_out)` at done→True; keeps the post-turn
+    _stream_baseline_cache: int = field(default=0, repr=False)
+    # Frozen `(elapsed, in, out, cache)` at done→True; keeps the post-turn
     # card from ticking when the next turn shifts cost_tracker deltas.
     _done_summary: Optional[tuple] = field(default=None, repr=False)
-    # Frozen `(elapsed, last_in, last_out)` stamped the instant the user aborts
+    # Frozen `(elapsed, in, out, cache)` stamped the instant the user aborts
     # (Ctrl+C / `/stop`). Flips the live spinner to a settled "Stopping…" line so
     # elapsed stops climbing while the LLM stream unwinds in the background.
     _stop_summary: Optional[tuple] = field(default=None, repr=False)
@@ -7497,6 +7528,7 @@ class GenericAgentTUI(App[None]):
                 return _render_tool_use_block(m)
             text = _TOOL_USE_RE.sub(_sub_tool, text)
             text = _META_TAG_RE.sub("", text)
+            text = collapse_orphan_fences(text)
             buf = StringIO()
             Console(file=buf, width=render_w, force_terminal=True,
                     color_system="truecolor", legacy_windows=False,
@@ -7549,7 +7581,7 @@ class GenericAgentTUI(App[None]):
         # rendering (unclosed code fences, paragraph whitespace stripping) can't eat it.
         if not raw.strip():
             return [("text", Text("（空）" if m.done else " ", style=C_DIM), None)]
-        cleaned = _ANSI_CONTROL_RE.sub("", raw)
+        cleaned = preclean_display(_ANSI_CONTROL_RE.sub("", raw))
         raw_segs = fold_turns(cleaned)
         # Drop cache entries whose width changed — content keys with stale width
         # would never be hit again and would leak memory across resizes.
@@ -7624,11 +7656,14 @@ class GenericAgentTUI(App[None]):
             return f"{v:.1f}k" if v < 100 else f"{int(v)}k"
         return f"{n / 1_000_000.0:.2f}M"
 
-    def _fmt_tokens(self, last_in: int, last_out: int) -> str:
-        """`↑ N · ↓ M` for the latest call's sizes, or "" when both are zero."""
+    def _fmt_tokens(self, last_in: int, last_out: int, cache: int = 0) -> str:
+        """`↑ N · ↓ M` (+ `· ⚡K` when cached tokens exist), or "" when all zero."""
         if last_in <= 0 and last_out <= 0:
             return ""
-        return f"↑ {self._humanize_tokens(last_in)} · ↓ {self._humanize_tokens(last_out)}"
+        s = f"↑ {self._humanize_tokens(last_in)} · ↓ {self._humanize_tokens(last_out)}"
+        if cache > 0:
+            s += f" · ⚡{self._humanize_tokens(cache)}"
+        return s
 
     def _spinner_annotation(self, m) -> Text:
         """Render `⠋ Gerund… (Xm Ys · ↑ N · ↓ M)` for a streaming message.
@@ -7640,14 +7675,14 @@ class GenericAgentTUI(App[None]):
             return self._stopping_annotation(m)
         out = Text()
         elapsed = int(time.time() - m._stream_started_at) if m._stream_started_at else 0
-        last_in, last_out = self._live_call_tokens(m)
+        last_in, last_out, last_cache = self._live_call_tokens(m)
         gerund_style = _gerund_color(elapsed, last_in)
         out.append(self._spinner_glyph(), style=gerund_style)
         out.append(f" {self._spinner_gerund(m)}…", style=gerund_style)
         bits = []
         if m._stream_started_at:
             bits.append(_fmt_elapsed(elapsed))
-        tok = self._fmt_tokens(last_in, last_out)
+        tok = self._fmt_tokens(last_in, last_out, last_cache)
         if tok:
             bits.append(tok)
         if bits:
@@ -7657,22 +7692,23 @@ class GenericAgentTUI(App[None]):
         return out
 
     def _live_call_tokens(self, m) -> tuple:
-        """`(last_in, last_out)` for this turn, gated on cumulative deltas past
-        the per-message baselines. Returns zeros until the new turn moves
-        the counters. Shared by spinner + done-card."""
-        last_in = last_out = 0
+        """`(in, out, cache)` accumulated for THIS question: process-wide totals
+        minus the per-message baselines snapshotted at submit time. Cache reads
+        and creations count toward `in` AND are reported separately as the
+        third element. Returns zeros until this question's requests move the
+        counters. Shared by spinner + done-card."""
+        in_tok = out_tok = cache_tok = 0
         try:
             import cost_tracker
             sess = self.sessions.get(self.current_id)
             tname = sess.thread.name if sess and sess.thread else f"ga-tui-agent-{self.current_id}"
             t = cost_tracker.get(tname)
-            cum_in = t.input + t.cache_create + t.cache_read
-            cum_out = t.output
-            if cum_in > m._stream_baseline_input: last_in = t.last_input
-            if cum_out > m._stream_baseline_output: last_out = t.last_output
+            in_tok = max(0, (t.input + t.cache_create + t.cache_read) - m._stream_baseline_input)
+            out_tok = max(0, t.output - m._stream_baseline_output)
+            cache_tok = max(0, (t.cache_read + t.cache_create) - m._stream_baseline_cache)
         except Exception:
             pass
-        return last_in, last_out
+        return in_tok, out_tok, cache_tok
 
     # Settled-state braille pairs with the spinner frames (⠋…⠏ → ⠿).
     _DONE_GLYPH = "⠿"
@@ -7704,15 +7740,15 @@ class GenericAgentTUI(App[None]):
         shift the line. A user-aborted turn reads `⠿ Stopped after Xm Ys`
         off the abort-time `_stop_summary` instead."""
         if m._stop_summary is not None:
-            elapsed, last_in, last_out = m._stop_summary
+            elapsed, last_in, last_out, last_cache = m._stop_summary
             verb, glyph_style = "Stopped after", C_DIM
         else:
-            elapsed, last_in, last_out = m._done_summary or (0, 0, 0)
+            elapsed, last_in, last_out, last_cache = m._done_summary or (0, 0, 0, 0)
             verb, glyph_style = f"{self._done_gerund(m)} for", C_GREEN
         out = Text()
         out.append(self._DONE_GLYPH + " ", style=glyph_style)
         out.append(f"{verb} {_fmt_elapsed(int(elapsed))}", style=C_DIM)
-        tok = self._fmt_tokens(last_in, last_out)
+        tok = self._fmt_tokens(last_in, last_out, last_cache)
         if tok:
             out.append("  · " + tok, style=C_DIM)
         return out
@@ -7722,11 +7758,11 @@ class GenericAgentTUI(App[None]):
         user aborts until the LLM stream actually unwinds. Numbers frozen via
         `_stop_summary` so elapsed stops climbing while we wait — the live
         spinner would otherwise keep ticking until `done` finally flips."""
-        elapsed, last_in, last_out = m._stop_summary or (0, 0, 0)
+        elapsed, last_in, last_out, last_cache = m._stop_summary or (0, 0, 0, 0)
         out = Text()
         out.append(self._DONE_GLYPH + " ", style=C_DIM)
         out.append(f"Stopping… ({_fmt_elapsed(int(elapsed))}", style=C_DIM)
-        tok = self._fmt_tokens(last_in, last_out)
+        tok = self._fmt_tokens(last_in, last_out, last_cache)
         if tok:
             out.append(" · " + tok, style=C_DIM)
         out.append(")", style=C_DIM)
@@ -7801,9 +7837,11 @@ class GenericAgentTUI(App[None]):
             t = cost_tracker.get(tname)
             m._stream_baseline_input = t.input + t.cache_create + t.cache_read
             m._stream_baseline_output = t.output
+            m._stream_baseline_cache = t.cache_read + t.cache_create
         except Exception:
             m._stream_baseline_input = 0
             m._stream_baseline_output = 0
+            m._stream_baseline_cache = 0
 
     @staticmethod
     def _segment_sig(segs: list[tuple]) -> tuple:
@@ -7973,7 +8011,7 @@ class GenericAgentTUI(App[None]):
                 and new_sig and new_sig[-1][0] == "text"):
             width = self._messages_width()
             raw = m.content or ""
-            cleaned = _ANSI_CONTROL_RE.sub("", raw)
+            cleaned = preclean_display(_ANSI_CONTROL_RE.sub("", raw))
             last_seg = fold_turns(cleaned)[-1]
             last_text = _TURN_MARKER_RE.sub("", last_seg.get("content", ""), count=1)
             last_widget = m._segment_widgets[-1]
@@ -8016,7 +8054,7 @@ class GenericAgentTUI(App[None]):
         raw = m.content or ""
         if not raw.strip():
             return (("text", None),)
-        cleaned = _ANSI_CONTROL_RE.sub("", raw)
+        cleaned = preclean_display(_ANSI_CONTROL_RE.sub("", raw))
         sig = []
         for i, seg in enumerate(fold_turns(cleaned)):
             if seg["type"] == "fold":

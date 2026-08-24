@@ -268,6 +268,16 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
         out = []
         while data:
             tags = close_tags if tag_state["inside"] else open_tags
+            # 非思维链态遇到孤立的关闭标签（如上游只发了 "</think>"）：
+            # 原样放行会把噪声字面量泄入 content/history，直接丢弃该 token。
+            if not tag_state["inside"]:
+                hits = [(data.find(t), t) for t in close_tags if data.find(t) >= 0]
+                opos = min([p for p in (data.find(t) for t in open_tags) if p >= 0], default=-1)
+                if hits:
+                    cpos, ctag = min(hits)
+                    if opos == -1 or cpos < opos:
+                        out.append(data[:cpos]); data = data[cpos + len(ctag):]
+                        continue
             positions = [(data.find(tag), tag) for tag in tags if data.find(tag) >= 0]
             if positions:
                 pos, tag = min(positions)
@@ -277,8 +287,9 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
                 continue
             # Retain only a possible prefix of an opening/closing tag for the
             # next SSE frame; every other character is safe to reveal now.
+            # 非思维链态也要为关闭标签的前缀做缓冲，防止 "</think>" 跨帧碎裂泄漏。
             keep = 0
-            for tag in tags:
+            for tag in (tags if tag_state["inside"] else tags + close_tags):
                 for n in range(1, min(len(tag) - 1, len(data)) + 1):
                     if data.endswith(tag[:n]): keep = max(keep, n)
             if finish:
@@ -369,6 +380,7 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
     else:
         tc_buf = {}  # index -> {id, name, args}
         reasoning_text = ""
+        finish_reason = None
         think_open = False  # display-only <thinking> envelope; TUI strips it on finalize
         for line in resp_lines:
             if not line: continue
@@ -380,6 +392,7 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
             except: continue
             ch = (evt.get("choices") or [{}])[0]
             delta = ch.get("delta") or {}
+            if ch.get("finish_reason"): finish_reason = ch["finish_reason"]
             if rc := delta.get("reasoning_content") or delta.get("reasoning", ""):
                 if not omit_thinking:
                     reasoning_text += rc
@@ -404,6 +417,11 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
         if think_open: yield "\n</thinking>\n"
         tail = _visible_content("", finish=True)
         if tail: content_text += tail; yield tail
+        if finish_reason == "length":
+            # 截断必须可见化：否则 omit_thinking 下未闭合 <think> 被整段吃光，
+            # agent_loop 会把空响应误判为 no_tool 并静默结束任务。
+            note = "\n[!] 输出因长度/上下文限制被截断 (finish_reason=length)"
+            yield note; content_text += note
         blocks = []
         if reasoning_text and not omit_thinking: blocks.append({"type": "thinking", "thinking": reasoning_text})
         if content_text: blocks.append({"type": "text", "text": content_text})
@@ -685,8 +703,10 @@ class BaseSession:
         # history in chars.  Reserve its maximum 8K completion and use the
         # remainder as the explicit conservative history budget.
         self.history_char_limit = cfg.get('history_char_limit')
-        if self.ssh_tunnel is not None and self.history_char_limit is None:
-            self.history_char_limit = max(1, self.context_win - 8192)
+        if self.history_char_limit is None:
+            # 统一口径：context_win 填模型真实 token 窗口，按 ~3字符/token
+            # 折算成本地序列化历史预算（保守方向）。隧道后端不再特殊化。
+            self.history_char_limit = max(1, int(self.context_win or 35000) * 3)
         self.maxlen_multiplier = min(max(self.context_win / default_context_win * 0.75, 1.0), 3.0)
         self.cut_msg_interval = int(default_cut_msg_interval * self.maxlen_multiplier)
         self.trim_keep_prefix = max(0, int(cfg.get('trim_keep_prefix', 0) or 0))
@@ -936,7 +956,17 @@ class NativeOAISession(NativeClaudeSession):
         try:
             messages = _fix_messages(messages)
             messages = _ensure_thinking_blocks(messages, self.model)
-            return (yield from _openai_stream(self, _msgs_claude2oai(messages)))
+            try:
+                return (yield from _openai_stream(self, _msgs_claude2oai(messages)))
+            except Exception as e:
+                # Self-heal: the tunnel may die right after the health probe
+                # (reboot/freeze recovery windows).  Rebuild it once and retry.
+                if self.ssh_tunnel and 'Connection refused' in str(e):
+                    import ssh_tunnel as _st
+                    _st.close_tunnel(self.ssh_tunnel)
+                    _st.ensure_tunnel(self.ssh_tunnel)
+                    return (yield from _openai_stream(self, _msgs_claude2oai(messages)))
+                raise
         finally:
             if tunnel: tunnel()
 
@@ -1227,12 +1257,12 @@ class MixinSession:
 
 THINKING_PROMPT_ZH = """
 ### 行动规范（持续有效）
-每次回复（含工具调用轮）都先在回复文字中包含一个<summary></summary> 中输出极简单行（<30字）物理快照：上次结果新信息+本次意图。此内容进入长期工作记忆。
+每次回复（含工具调用轮）都先在回复文字中包含一个<summary></summary> 中输出极简单行（<30字）物理快照：上次结果新信息+本次意图。此内容进入长期工作记忆。`<summary>` 必须独占一行、以裸标签输出；**严禁**包裹在 ```html 等任何代码栅栏内。
 \n**若用户需求未完成，必须进行工具调用！**
 """.strip()
 THINKING_PROMPT_EN = """
 ### Action Protocol (always in effect)
-The reply body should first include a minimal one-line (<30 words) physical snapshot in <summary></summary>: new info from last result + current intent. This goes into long-term working memory.
+The reply body should first include a minimal one-line (<30 words) physical snapshot in <summary></summary>: new info from last result + current intent. This goes into long-term working memory. `<summary>` must sit alone on its own line as a bare tag; **never** wrap it in ```html or any code fence.
 \n**If the user's request is not yet complete, tool calls are required!**
 """.strip()
 

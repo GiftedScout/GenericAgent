@@ -1209,6 +1209,12 @@ def strip_meta_tags(text: str) -> str:
     text = _TOOL_USE_TAG_RE.sub(_tool_replace, text)
     text = _META_TAG_RE.sub('', text)
     text = _TOOL_USE_BLOCK_RE.sub('', text)
+    # 剥离 meta 标签后可能遗留孤儿代码栅栏（模型常把 <summary> 包在 ```html 中）：
+    # 内容被剥空的栅栏直接删除；悬空未闭合的尾部开栏会让 markdown 把后续内容
+    # 全部吞进代码块，必须收尾。
+    text = re.sub(r'```\w*[ \t]*\n[ \t\n]*```', '', text)
+    if text.count('```') % 2 == 1:
+        text = re.sub(r'\n?```\w*[ \t]*$', '', text)
     text = _render_checkboxes(text)
     return re.sub(r'\n{3,}', '\n\n', text).strip()
 
