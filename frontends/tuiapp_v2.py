@@ -162,6 +162,71 @@ _SUMMARY_FENCE_RE = re.compile(
 _FENCE_BEFORE_SUMMARY_RE = re.compile(r"```[a-zA-Z]*(?=[ \t]*\n<summary>)")
 
 
+_TOOL_HEAD_RE = re.compile(r"^🛠️ Tool: `([^`]+)`\s*📥 args:\s*$")
+
+
+def _compact_tool_dumps(text: str) -> str:
+    """行扫描器版工具参数压缩：把
+        🛠️ Tool: `name`  📥 args:
+        ````text
+        ...（可含任意内容，包括内嵌反引号栅栏）
+        ````
+    整块替换为单行 '🛠️ name · args K 行'。逐行匹配对参数里内嵌的栅栏/反引号
+    免疫——正则版会被 JSON 内嵌的 ```` 提前闭合，残留孤儿栅栏破坏 fold_turns
+    的分轮 stash（表现为轮次箭头消失、全部平铺）。找不到闭合（流式半截）时
+    该块原样保留。"""
+    lines = text.split("\n")
+    out = []
+    i, n = 0, len(lines)
+    while i < n:
+        m = _TOOL_HEAD_RE.match(lines[i].strip())
+        if m and i + 2 < n and lines[i + 1] == "````text":
+            j = i + 2
+            while j < n and lines[j] != "````":
+                j += 1
+            if j < n:
+                out.append(f"🛠️ {m.group(1)} · args {j - i - 1} 行")
+                i = j + 1
+                continue
+        out.append(lines[i])
+        i += 1
+    return "\n".join(out)
+
+
+def _compact_tool_dumps(text: str) -> str:
+    """行扫描器版显示压缩（仅流式态调用）：
+    1) 工具参数块（🛠️ 头 + ````text … ````）→ '🛠️ name · args K 行'
+    2) 工具结果块（独立 ````` 五反引号栅栏）→ '📄 结果 K 行'
+    逐行匹配对参数/结果里内嵌的栅栏、反引号免疫——正则版会被 JSON 内嵌的
+    ```` 提前闭合，残留孤儿栅栏破坏 fold_turns 的分轮 stash（表现为轮次箭头
+    消失、内容平铺）。找不到闭合（流式半截）时该块原样保留。"""
+    lines = text.split("\n")
+    out = []
+    i, n = 0, len(lines)
+    while i < n:
+        ln = lines[i]
+        m = _TOOL_HEAD_RE.match(ln.strip()) if "🛠️ Tool:" in ln else None
+        if m and i + 2 < n and lines[i + 1] == "````text":
+            j = i + 2
+            while j < n and lines[j] != "````":
+                j += 1
+            if j < n:
+                out.append(f"🛠️ {m.group(1)} · args {j - i - 1} 行")
+                i = j + 1
+                continue
+        if ln == "`````":
+            j = i + 1
+            while j < n and lines[j] != "`````":
+                j += 1
+            if j < n:
+                out.append(f"📄 结果 {max(0, j - i - 1)} 行")
+                i = j + 1
+                continue
+        out.append(ln)
+        i += 1
+    return "\n".join(out)
+
+
 def preclean_display(text: str, compact_tools: bool = True) -> str:
     """
     compact_tools=True  → 流式态：工具参数块压成单行（防刷屏）
@@ -190,11 +255,7 @@ def preclean_display(text: str, compact_tools: bool = True) -> str:
     # 工具调用参数块压缩为单行（大量 JSON 直接刷屏；完整内容仍在消息原文与
     # 工具审计 ctrl 视图里可查）。定稿/展开态保留全文——折叠展开后要能看全。
     if compact_tools:
-        text = re.sub(
-            r"🛠️ Tool: `([^`]+)`\s*📥 args:\n````text\n([\s\S]*?)\n?````",
-            lambda m: f"🛠️ {m.group(1)} · args {m.group(2).count(chr(10)) + 1} 行",
-            text,
-        )
+        text = _compact_tool_dumps(text)
     return _escape_stray_tags(text)
 
 
