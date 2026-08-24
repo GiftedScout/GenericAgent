@@ -80,11 +80,25 @@ def agent_runner_loop(client, system_prompt, user_input, handler, tools_schema,
             handler.current_turn = turn
             gen = handler.dispatch(tool_name, args, response, index=ii, tool_num=len(tool_calls))
             try:
-                v = next(gen)
-                if verbose: yield '`````\n' + v
-                outcome = (yield from gen) if verbose else exhaust(gen)
-                if verbose: yield '`````\n'
-            except StopIteration as e: outcome = e.value
+                result_parts = []
+                while True:
+                    # 工具结果只在 agent_loop 内收集；向调用方发无正文进度事件，
+                    # 让 stop/abort 仍有机会被外层检查，但不把 stdout 刷进终端。
+                    part = next(gen)
+                    if part is not None:
+                        result_parts.append(str(part))
+                    if verbose:
+                        yield {"tool_progress": True, "turn": turn}
+            except StopIteration as e:
+                outcome = e.value
+
+            if verbose:
+                full_result = "".join(result_parts)
+                full_block = f"`````\n{full_result}`````\n"
+                preview = f"📄 结果 {full_result.count(chr(10)) + 1} 行\n"
+                # full 只供 agentmain 的 done/history 通道，preview 才进入流式通道。
+                yield {"tool_result": {"full": full_block, "preview": preview},
+                       "turn": turn}
             
             if outcome.should_exit: 
                 exit_reason = {'result': 'EXITED', 'data': outcome.data}; break
