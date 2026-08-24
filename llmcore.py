@@ -246,7 +246,12 @@ def _try_parse_tool_args(raw):
     return [{"_raw": raw}]
 
 def _strip_think_tags(text):
-    return re.sub(r"<think(?:ing)?>(.*?)</think(?:ing)?>", "", text or "", flags=re.DOTALL)
+    # 贪婪匹配：CoT 内嵌字面 </think> 时非贪婪会提前截断，剩余推理内容
+    # 泄漏进历史/正文。吃到最后一个闭合才干净。
+    prev = None
+    while prev != (text := re.sub(r"<think(?:ing)?>([\s\S]*)</think(?:ing)?>", "", text or "", flags=re.DOTALL)):
+        prev = text
+    return text
 
 
 def _disp_think_escape(s):

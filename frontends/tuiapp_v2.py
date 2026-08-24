@@ -156,7 +156,8 @@ def collapse_orphan_fences(text: str) -> str:
 # thinking 信封在 done 前会经 Text.from_ansi 以原文直出。在进入 fold_turns /
 # from_ansi 之前统一剥掉 thinking 对、把 summary 栅栏还原成裸 <summary> 行
 # （fold 标题提取与定稿剥离都依赖它），m.content 原文不受影响。
-_THINK_PAIR_RE = re.compile(r"<thinking>.*?</thinking>\s*", re.DOTALL)
+_THINK_PAIR_RE = re.compile(r"<thinking>[\s\S]*</thinking>\s*")
+_THINK_PAIR2_RE = re.compile(r"<think>[\s\S]*</think>\s*")
 _SUMMARY_FENCE_RE = re.compile(
     r"```[a-zA-Z]*[ \t]*\n?(<summary>.*?</summary>)[ \t]*\n?```[ \t]*", re.DOTALL)
 _FENCE_BEFORE_SUMMARY_RE = re.compile(r"```[a-zA-Z]*(?=[ \t]*\n<summary>)")
@@ -248,7 +249,13 @@ def _preclean_display_impl(text: str, compact_tools: bool) -> str:
     """
     compact_tools=True  → 流式态：工具参数块压成单行（防刷屏）
     compact_tools=False → 定稿/展开态：保留完整参数（折叠展开后要能看全）"""
-    text = _THINK_PAIR_RE.sub("", text)
+    # 贪婪配对：CoT 常引用源码，内嵌字面 </thinking> 会把非贪婪匹配提前截断，
+    # 导致剩余思考内容以裸文本泄漏到定稿视图。贪婪吃到最后一个闭合才安全；
+    # 多信封场景循环清空。
+    while _THINK_PAIR_RE.search(text):
+        text = _THINK_PAIR_RE.sub("", text)
+    while _THINK_PAIR2_RE.search(text):
+        text = _THINK_PAIR2_RE.sub("", text)
     # 流式中开放的 thinking 信封 → 定长滚动尾窗（默认末 500 字符）：固定大小、
     # 持续滚动，既能看到模型在动又不刷屏；闭合后整对剥离，定稿不留痕。
     _m_open = re.search(r"<thinking>[ \t]*\n?([\s\S]*$)", text)
