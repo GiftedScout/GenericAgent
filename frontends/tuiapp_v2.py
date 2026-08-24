@@ -214,12 +214,15 @@ def _compact_tool_dumps(text: str) -> str:
                 out.append(f"🛠️ {m.group(1)} · args {j - i - 1} 行")
                 i = j + 1
                 continue
-        if ln == "`````":
+        if ln.startswith("`````"):
+            # 注意：llmcore/agent_loop 把开栅栏和结果首行拼在同一帧
+            # （'`````' + v），所以开栏行形如 "`````[Action] ..."，
+            # 必须用 startswith 而非全等匹配。
             j = i + 1
-            while j < n and lines[j] != "`````":
+            while j < n and not lines[j].startswith("`````"):
                 j += 1
-            if j < n:
-                out.append(f"📄 结果 {max(0, j - i - 1)} 行")
+            if j < n and j > i:
+                out.append(f"📄 结果 {j - i} 行")
                 i = j + 1
                 continue
         out.append(ln)
