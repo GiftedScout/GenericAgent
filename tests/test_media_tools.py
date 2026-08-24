@@ -45,7 +45,8 @@ class MediaToolTests(unittest.TestCase):
                 self.response,
             ))
         self.assertEqual(outcome.data, "recognized")
-        mocked.assert_called_once_with(expected_path, prompt="tables only", timeout=7)
+        mocked.assert_called_once_with(expected_path, prompt="tables only", timeout=7,
+                                       model=None, current=None)
 
     def test_generate_image_dispatch_uses_agent_working_directory(self):
         target = str(Path(self.tmp.name, "image", "generated.png"))

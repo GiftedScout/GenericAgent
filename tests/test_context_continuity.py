@@ -50,7 +50,9 @@ class ContextContinuityTests(unittest.TestCase):
             "context_win": 131072, "max_tokens": 8192,
         })
         self.assertEqual(qwen.context_win, 131072)
-        self.assertEqual(qwen.history_char_limit, 122880)
+        # ced532a unified history_char_limit: context_win*3 chars (~3 chars/token),
+        # ssh-tunnel backends no longer special-cased.
+        self.assertEqual(qwen.history_char_limit, 393216)
         self.assertEqual(qwen.cut_msg_interval, 30)
         # SSH-tunnel llama.cpp models default to a 0.6 retention floor
         # (their large windows tolerate keeping more reasoning history).

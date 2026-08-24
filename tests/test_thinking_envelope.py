@@ -207,5 +207,15 @@ check("open envelope -> sliding tail window", "思考中" in w and len(w) < 700 
 closed_env = "<thinking>\nCoT\n</thinking>\n答案"
 w2 = _tui.preclean_display(closed_env)
 check("closed envelope fully stripped", w2 == "答案")
-print(f"\n{'='*40}\nRESULT: {PASS} passed, {FAIL} failed")
-sys.exit(1 if FAIL else 0)
+if __name__ == "__main__":
+    print(f"\n{'='*40}\nRESULT: {PASS} passed, {FAIL} failed")
+    sys.exit(1 if FAIL else 0)
+
+
+# unittest discovery support: module-level checks already ran on import;
+# expose their verdict as a real test so `python -m unittest discover` gates it.
+import unittest as _unittest
+
+class ThinkingEnvelopeChecks(_unittest.TestCase):
+    def test_module_checks_pass(self):
+        self.assertEqual(FAIL, 0, f"{PASS} passed, {FAIL} failed")

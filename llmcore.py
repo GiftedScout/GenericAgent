@@ -727,9 +727,9 @@ class BaseSession:
             default_context_win = 80000; default_cut_msg_interval = 25
             self.trim_keep_rate = float(cfg.get('trim_keep_rate', 0.6))
         self.context_win = cfg.get('context_win', default_context_win)
-        # The configured context is llama.cpp's token window while GA tracks
-        # history in chars.  Reserve its maximum 8K completion and use the
-        # remainder as the explicit conservative history budget.
+        # The configured context is the backend's real token window while GA
+        # tracks history in chars; convert uniformly at ~3 chars/token.
+        # (ced532a: no ssh-tunnel special case — old ctx-8192 collapsed to 1 char at ctx=8192.)
         self.history_char_limit = cfg.get('history_char_limit')
         if self.history_char_limit is None:
             # 统一口径：context_win 填模型真实 token 窗口，按 ~3字符/token
