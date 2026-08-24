@@ -4475,25 +4475,28 @@ class GenericAgentTUI(App[None]):
         self._resize_timer = self.set_timer(0.05, self._flush_resize)
 
     def action_toggle_fold(self) -> None:
-        # ctrl+o：折叠/展开“最近一条助手消息”的全部过程轮次（最终输出始终可见）。
-        # 小的逐轮折叠不再受此键影响——只能用鼠标点击各自的箭头。
-        target = None
+        # ctrl+o：当前会话内所有助手消息的组折叠**全局联动**——要么一起折叠
+        # 过程轮次，要么一起展开（最终输出始终可见）。小逐轮折叠仅鼠标控制。
+        msgs = []
         try:
-            for mm in reversed(self.current.messages):
-                if getattr(mm, "role", "") == "assistant":
-                    target = mm; break
+            msgs = [mm for mm in self.current.messages if getattr(mm, "role", "") == "assistant"]
         except Exception:
-            target = None
-        if target is None:
+            pass
+        if not msgs:
             self.notify("没有可折叠的轮次", timeout=1)
             return
-        if -1 in target._toggled_folds:
-            target._toggled_folds.discard(-1)
-            self.notify("Group fold: expanded", timeout=1)
-        else:
-            target._toggled_folds.add(-1)
-            self.notify("Group fold: collapsed (输出保持可见)", timeout=1)
-        self._remount_assistant_message(target)
+        # 方向：任一消息处于折叠态 → 全部展开；否则全部折叠
+        collapse = not any(-1 in mm._toggled_folds for mm in msgs)
+        for mm in msgs:
+            if collapse:
+                mm._toggled_folds.add(-1)
+            else:
+                mm._toggled_folds.discard(-1)
+            try:
+                self._remount_assistant_message(mm)
+            except Exception:
+                pass
+        self.notify(f"Group fold: {'collapsed' if collapse else 'expanded'} ×{len(msgs)}", timeout=1)
 
     def action_escape(self) -> None:
         # Back out of free-text-input mode → restore the picker the user was
