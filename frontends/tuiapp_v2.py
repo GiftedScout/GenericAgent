@@ -8207,7 +8207,7 @@ class GenericAgentTUI(App[None]):
         raw = m.content or ""
         if not raw.strip():
             return (("text", None),)
-        cleaned = preclean_display(_ANSI_CONTROL_RE.sub("", raw), compact_tools=not m.done)
+        cleaned = preclean_display(_ANSI_CONTROL_RE.sub("", raw), compact_tools=False)
         segs_ft = fold_turns(cleaned)
         n_folds = sum(1 for s in segs_ft if s["type"] == "fold")
         _group_collapsed = n_folds >= 2 and (-1 in m._toggled_folds)
