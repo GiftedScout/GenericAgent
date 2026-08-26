@@ -8179,7 +8179,7 @@ class GenericAgentTUI(App[None]):
                 and new_sig and new_sig[-1][0] == "text"):
             width = self._messages_width()
             raw = m.content or ""
-            cleaned = preclean_display(_ANSI_CONTROL_RE.sub("", raw), compact_tools=False)
+            cleaned = preclean_display(_ANSI_CONTROL_RE.sub("", raw), compact_tools=True)
             last_seg = fold_turns(cleaned)[-1]
             last_text = _TURN_MARKER_RE.sub("", last_seg.get("content", ""), count=1)
             last_widget = m._segment_widgets[-1]
