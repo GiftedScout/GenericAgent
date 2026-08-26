@@ -7738,6 +7738,13 @@ class GenericAgentTUI(App[None]):
             return [("text", Text("（空）" if m.done else " ", style=C_DIM), None)]
         cleaned = preclean_display(_ANSI_CONTROL_RE.sub("", raw), compact_tools=False)
         raw_segs = fold_turns(cleaned)
+        # 双通道：已完成轮次用全文（展开即看完整参数），仅最后一个尚未完成的
+        # fold 用紧凑单行（防当前轮流式刷屏）。两条 preclean 的分轮结构一致。
+        if not m.done:
+            cleaned_c = preclean_display(_ANSI_CONTROL_RE.sub("", raw), compact_tools=True)
+            segs_c = fold_turns(cleaned_c)
+        else:
+            segs_c = raw_segs
         # Drop cache entries whose width changed — content keys with stale width
         # would never be hit again and would leak memory across resizes.
         if m._seg_render_cache and any(k[1] != width for k in m._seg_render_cache):
@@ -7772,7 +7779,10 @@ class GenericAgentTUI(App[None]):
                 header = Text(); header.append(f"{arrow} ", style=C_DIM); header.append(title, style=C_MUTED)
                 out.append(("fold-header", header, i))
                 if expanded:
-                    out.append(("fold-body", cached_render(seg.get("content", "")), i))
+                    body_seg = seg
+                    if not m.done and i == last_i and i < len(segs_c):
+                        body_seg = segs_c[i]  # 活跃末轮：紧凑形态
+                    out.append(("fold-body", cached_render(body_seg.get("content", "")), i))
             else:
                 content = _TURN_MARKER_RE.sub("", seg.get("content", ""), count=1)
                 # While streaming, the tail text segment grows every chunk — Markdown
