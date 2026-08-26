@@ -266,7 +266,7 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
     # as <think>...</think>, sometimes splitting tags across SSE frames.  Do
     # the filtering before yielding so Qwen's private reasoning never flashes
     # in the TUI and is never accumulated in content_text/history.
-    tag_state = {"inside": False, "tail": ""}
+    tag_state = {"inside": False, "tail": "", "think_out": []}
     open_tags, close_tags = ("<thinking>", "<think>"), ("</thinking>", "</think>")
     def _visible_content(delta, finish=False):
         if not omit_thinking: return delta
@@ -278,7 +278,12 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
             positions = [(data.find(tag), tag) for tag in tags if data.find(tag) >= 0]
             if positions:
                 pos, tag = min(positions)
-                if not tag_state["inside"]: out.append(data[:pos])
+                if not tag_state["inside"]:
+                    out.append(data[:pos])
+                else:
+                    # Inside a think block: this text is private reasoning,
+                    # captured for display envelope (not for history).
+                    tag_state["think_out"].append(data[:pos])
                 data = data[pos + len(tag):]
                 tag_state["inside"] = not tag_state["inside"]
                 continue
@@ -289,12 +294,18 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
                 for n in range(1, min(len(tag) - 1, len(data)) + 1):
                     if data.endswith(tag[:n]): keep = max(keep, n)
             if finish:
-                if not tag_state["inside"]: out.append(data)
+                if tag_state["inside"]: tag_state["think_out"].append(data)
+                else: out.append(data)
             elif keep:
-                if not tag_state["inside"]: out.append(data[:-keep])
+                if tag_state["inside"]: tag_state["think_out"].append(data[:-keep])
+                else: out.append(data[:-keep])
                 tag_state["tail"] = data[-keep:]
             elif not tag_state["inside"]:
                 out.append(data)
+            else:
+                # Inside a think block with no partial tag prefix: this text is
+                # pure CoT, capture it for display envelope.
+                tag_state["think_out"].append(data)
             break
         return "".join(out)
     if api_mode == "responses":
@@ -393,7 +404,13 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
                 if not think_open: yield "\n<thinking>\n"; think_open = True
                 yield _disp_think_escape(rc)
             if delta.get("content"):
+                _n = len(tag_state["think_out"])
                 text = _visible_content(delta["content"])
+                thk = "".join(tag_state["think_out"][_n:])
+                if thk:
+                    # Inline <think> CoT: display via envelope, never into history.
+                    if not think_open: yield "\n<thinking>\n"; think_open = True
+                    yield _disp_think_escape(thk)
                 if text:
                     if think_open: yield "\n</thinking>\n"; think_open = False
                     content_text += text; yield text
