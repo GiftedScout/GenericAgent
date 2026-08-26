@@ -114,12 +114,11 @@ def trim_messages_history(history, sess):
     if c <= cap: return
     compress_history_tags(history, keep_recent=4, force=True, counter_owner=sess)
     if cost(history) <= target: return
-    pre, post = history[:kp], history[kp:]; costs = [len(json.dumps(m, ensure_ascii=False)) for m in post]; c = cost(pre) + sum(costs); i = 0
-    while len(post) - i > 9 and c > target:
-        c -= costs[i]; i += 1
-        while i < len(post) and post[i].get('role') != 'user': c -= costs[i]; i += 1
-        if i < len(post): old = costs[i]; post[i] = _sanitize_leading_user_msg(post[i]); costs[i] = len(json.dumps(post[i], ensure_ascii=False)); c += costs[i] - old
-    post = post[i:]
+    pre, post = history[:kp], history[kp:]
+    while len(post) > 9 and cost(pre) + cost(post) > target:
+        post.pop(0)
+        while post and post[0].get('role') != 'user': post.pop(0)
+        if post and post[0].get('role') == 'user': post[0] = _sanitize_leading_user_msg(post[0])
     if kp and pre:
         m = pre[-1]
         if m.get('role') == 'assistant' and isinstance(m.get('content'), list):
@@ -246,22 +245,16 @@ def _try_parse_tool_args(raw):
         return parsed
     return [{"_raw": raw}]
 
-def _strip_think_tags(text):
-    # 贪婪匹配：CoT 内嵌字面 </think> 时非贪婪会提前截断，剩余推理内容
-    # 泄漏进历史/正文。吃到最后一个闭合才干净。
-    prev = None
-    while prev != (text := re.sub(r"<think(?:ing)?>([\s\S]*)</think(?:ing)?>", "", text or "", flags=re.DOTALL)):
-        prev = text
-    return text
-
-
 def _disp_think_escape(s):
     """Display-only: neutralize literal think tags inside streamed CoT so the
-    TUI pair-stripper cannot close the envelope early (screenshot bug: CoT that
-    quotes source code containing </thinking> split into junk folds).  Blocks /
-    history keep the raw text."""
+    TUI pair-stripper cannot close the envelope early. Blocks / history keep
+    the raw text."""
     return (s or "").replace("</thinking>", "＜/thinking＞").replace("<thinking>", "＜thinking＞") \
                     .replace("</think>", "＜/think＞").replace("<think>", "＜think＞")
+
+def _strip_think_tags(text):
+    return re.sub(r"<think(?:ing)?>(.*?)</think(?:ing)?>", "", text or "", flags=re.DOTALL)
+
 
 def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=False):
     """Parse OpenAI SSE stream (chat_completions or responses API).
@@ -273,7 +266,7 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
     # as <think>...</think>, sometimes splitting tags across SSE frames.  Do
     # the filtering before yielding so Qwen's private reasoning never flashes
     # in the TUI and is never accumulated in content_text/history.
-    tag_state = {"inside": False, "tail": "", "think_out": []}
+    tag_state = {"inside": False, "tail": ""}
     open_tags, close_tags = ("<thinking>", "<think>"), ("</thinking>", "</think>")
     def _visible_content(delta, finish=False):
         if not omit_thinking: return delta
@@ -282,43 +275,26 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
         out = []
         while data:
             tags = close_tags if tag_state["inside"] else open_tags
-            # 非思维链态遇到孤立的关闭标签（如上游只发了 "</think>"）：
-            # 原样放行会把噪声字面量泄入 content/history，直接丢弃该 token。
-            if not tag_state["inside"]:
-                hits = [(data.find(t), t) for t in close_tags if data.find(t) >= 0]
-                opos = min([p for p in (data.find(t) for t in open_tags) if p >= 0], default=-1)
-                if hits:
-                    cpos, ctag = min(hits)
-                    if opos == -1 or cpos < opos:
-                        out.append(data[:cpos]); data = data[cpos + len(ctag):]
-                        continue
             positions = [(data.find(tag), tag) for tag in tags if data.find(tag) >= 0]
             if positions:
                 pos, tag = min(positions)
-                if tag_state["inside"]: tag_state["think_out"].append(data[:pos])
-                else: out.append(data[:pos])
+                if not tag_state["inside"]: out.append(data[:pos])
                 data = data[pos + len(tag):]
                 tag_state["inside"] = not tag_state["inside"]
                 continue
             # Retain only a possible prefix of an opening/closing tag for the
             # next SSE frame; every other character is safe to reveal now.
-            # 非思维链态也要为关闭标签的前缀做缓冲，防止 "</think>" 跨帧碎裂泄漏。
             keep = 0
-            for tag in (tags if tag_state["inside"] else tags + close_tags):
+            for tag in tags:
                 for n in range(1, min(len(tag) - 1, len(data)) + 1):
                     if data.endswith(tag[:n]): keep = max(keep, n)
             if finish:
-                if tag_state["inside"]: tag_state["think_out"].append(data)
-                else: out.append(data)
+                if not tag_state["inside"]: out.append(data)
             elif keep:
-                if tag_state["inside"]: tag_state["think_out"].append(data[:-keep])
-                else: out.append(data[:-keep])
+                if not tag_state["inside"]: out.append(data[:-keep])
                 tag_state["tail"] = data[-keep:]
             elif not tag_state["inside"]:
                 out.append(data)
-            else:
-                # inside 态且无标签前缀可缓冲：这段是纯 CoT 正文，存入 think_out
-                tag_state["think_out"].append(data)
             break
         return "".join(out)
     if api_mode == "responses":
@@ -387,7 +363,7 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
         tail = _visible_content("", finish=True)
         if tail: content_text += tail; yield tail
         blocks = []
-        if reasoning_text and not omit_thinking: blocks.append({"type": "thinking", "thinking": _disp_think_escape(reasoning_text)})
+        if reasoning_text and not omit_thinking: blocks.append({"type": "thinking", "thinking": reasoning_text})
         if content_text: blocks.append({"type": "text", "text": content_text})
         for idx in sorted(fc_buf):
             fc = fc_buf[idx]
@@ -400,7 +376,6 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
     else:
         tc_buf = {}  # index -> {id, name, args}
         reasoning_text = ""
-        finish_reason = None
         think_open = False  # display-only <thinking> envelope; TUI strips it on finalize
         for line in resp_lines:
             if not line: continue
@@ -412,22 +387,13 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
             except: continue
             ch = (evt.get("choices") or [{}])[0]
             delta = ch.get("delta") or {}
-            if ch.get("finish_reason"): finish_reason = ch["finish_reason"]
             if rc := delta.get("reasoning_content") or delta.get("reasoning", ""):
-                # 流式 thinking 始终全量上屏（定长滚动尾窗由前端裁剪，防止刷屏）；
-                # 是否入库仍由 omit_thinking 决定。内嵌字面标签显示前全角化。
+                # 流式始终上屏（用户需要看到模型在动）；是否入库由 omit_thinking 决定。
                 reasoning_text += rc
                 if not think_open: yield "\n<thinking>\n"; think_open = True
                 yield _disp_think_escape(rc)
             if delta.get("content"):
-                _n = len(tag_state["think_out"])
                 text = _visible_content(delta["content"])
-                thk = "".join(tag_state["think_out"][_n:])
-                if thk:
-                    # 内联 <think>（--reasoning-format none）同样全量走显示信封；
-                    # 绝不进入 content_text/历史。内嵌字面标签已全角化。
-                    if not think_open: yield "\n<thinking>\n"; think_open = True
-                    yield _disp_think_escape(thk)
                 if text:
                     if think_open: yield "\n</thinking>\n"; think_open = False
                     content_text += text; yield text
@@ -445,13 +411,8 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
         if think_open: yield "\n</thinking>\n"
         tail = _visible_content("", finish=True)
         if tail: content_text += tail; yield tail
-        if finish_reason == "length":
-            # 截断必须可见化：否则 omit_thinking 下未闭合 <think> 被整段吃光，
-            # agent_loop 会把空响应误判为 no_tool 并静默结束任务。
-            note = "\n[!] 输出因长度/上下文限制被截断 (finish_reason=length)"
-            yield note; content_text += note
         blocks = []
-        if reasoning_text and not omit_thinking: blocks.append({"type": "thinking", "thinking": _disp_think_escape(reasoning_text)})
+        if reasoning_text and not omit_thinking: blocks.append({"type": "thinking", "thinking": reasoning_text})
         if content_text: blocks.append({"type": "text", "text": content_text})
         for idx in sorted(tc_buf):
             tc = tc_buf[idx]
@@ -727,13 +688,16 @@ class BaseSession:
             default_context_win = 80000; default_cut_msg_interval = 25
             self.trim_keep_rate = float(cfg.get('trim_keep_rate', 0.6))
         self.context_win = cfg.get('context_win', default_context_win)
-        # The configured context is the backend's real token window while GA
-        # tracks history in chars; convert uniformly at ~3 chars/token.
-        # (ced532a: no ssh-tunnel special case — old ctx-8192 collapsed to 1 char at ctx=8192.)
+        # The configured context is llama.cpp's token window while GA tracks
+        # history in chars.  Reserve its maximum 8K completion and use the
+        # remainder as the explicit conservative history budget.
         self.history_char_limit = cfg.get('history_char_limit')
-        if self.history_char_limit is None:
-            # 统一口径：context_win 填模型真实 token 窗口，按 ~3字符/token
-            # 折算成本地序列化历史预算（保守方向）。隧道后端不再特殊化。
+        if self.ssh_tunnel is not None and self.history_char_limit is None:
+            self.history_char_limit = max(1, self.context_win - 8192)
+        elif self.history_char_limit is None:
+            # Non-ssh-tunnel backends: fall back to the same char-scale
+            # heuristic trim_messages_history() uses, so getattr() can
+            # never hand back None to int().
             self.history_char_limit = max(1, int(self.context_win or 35000) * 3)
         self.maxlen_multiplier = min(max(self.context_win / default_context_win * 0.75, 1.0), 3.0)
         self.cut_msg_interval = int(default_cut_msg_interval * self.maxlen_multiplier)
@@ -1285,12 +1249,12 @@ class MixinSession:
 
 THINKING_PROMPT_ZH = """
 ### 行动规范（持续有效）
-每次回复（含工具调用轮）都先在回复文字中包含一个<summary></summary> 中输出极简单行（<30字）物理快照：上次结果新信息+本次意图。此内容进入长期工作记忆。`<summary>` 必须独占一行、以裸标签输出；**严禁**包裹在 ```html 等任何代码栅栏内。
+每次回复（含工具调用轮）都先在回复文字中包含一个<summary></summary> 中输出极简单行（<30字）物理快照：上次结果新信息+本次意图。此内容进入长期工作记忆。
 \n**若用户需求未完成，必须进行工具调用！**
 """.strip()
 THINKING_PROMPT_EN = """
 ### Action Protocol (always in effect)
-The reply body should first include a minimal one-line (<30 words) physical snapshot in <summary></summary>: new info from last result + current intent. This goes into long-term working memory. `<summary>` must sit alone on its own line as a bare tag; **never** wrap it in ```html or any code fence.
+The reply body should first include a minimal one-line (<30 words) physical snapshot in <summary></summary>: new info from last result + current intent. This goes into long-term working memory.
 \n**If the user's request is not yet complete, tool calls are required!**
 """.strip()
 
