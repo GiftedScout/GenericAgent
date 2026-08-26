@@ -163,10 +163,10 @@ _SUMMARY_FENCE_RE = re.compile(
 _FENCE_BEFORE_SUMMARY_RE = re.compile(r"```[a-zA-Z]*(?=[ \t]*\n<summary>)")
 
 
-_TOOL_HEAD_RE = re.compile(r"^🛠️ Tool: `([^`]+)`\s*📥 args:\s*$")
+_TOOL_HEAD_RE = re.compile(r'^🛠️ Tool: [`\']?([^`\']+?)[`\']?\s*📥 args:\s*$')
 
 
-_TOOL_HEAD_RE = re.compile(r"^🛠️ Tool: `([^`]+)`\s*📥 args:\s*$")
+_TOOL_HEAD_RE = re.compile(r'^🛠️ Tool: [`\']?([^`\']+?)[`\']?\s*📥 args:\s*$')
 
 
 def _compact_tool_dumps(text: str) -> str:
@@ -182,19 +182,41 @@ def _compact_tool_dumps(text: str) -> str:
     while i < n:
         ln = lines[i]
         m = _TOOL_HEAD_RE.match(ln.strip()) if "🛠️ Tool:" in ln else None
-        if m and i + 2 < n and lines[i + 1] == "````text":
-            j = i + 2
-            while j < n and lines[j] != "````":
-                j += 1
-            if j < n:
-                out.append(f"🛠️ {m.group(1)} · args {j - i - 1} 行")
-                i = j + 1
+        if m:
+            # 容忍头行与开栏之间的空行（/restore 重建的文本常插入空行）
+            k = i + 1
+            while k < n and k <= i + 4 and not lines[k].strip():
+                k += 1
+            if k < n and lines[k].strip() == "````text":
+                j = k + 1
+                while j < n and lines[j].strip() != "````":
+                    j += 1
+                if j < n:
+                    out.append(f"🛠️ {m.group(1)} · args {j - k - 1} 行")
+                    i = j + 1
+                    continue
+                # 流式半截：args 开栏未见闭栏 → 立即折叠防 JSON 到达期刷屏；
+                # 每帧基于全量重算，闭合后自动转为正常计数。
+                out.append(f"🛠️ {m.group(1)} · args 接收中…")
+                i = n
                 continue
-            # 流式半截：args 开栏未见闭栏 → 立即折叠防 JSON 到达期刷屏；
-            # 每帧基于全量重算，闭合后自动转为正常计数。
-            out.append(f"🛠️ {m.group(1)} · args 接收中…")
-            i = n
-            continue
+            if k < n and k <= i + 4 and lines[k].lstrip()[:1] in ("{", "["):
+                # 无栅栏松散 JSON 块（/restore 重建时栅栏行丢失）：扫到双空行
+                # 或下一轮标记为止，整块折叠。
+                j = k
+                blanks = 0
+                while j < n:
+                    s2 = lines[j].strip()
+                    if not s2:
+                        blanks += 1
+                        if blanks >= 2: break
+                    else:
+                        blanks = 0
+                        if s2.startswith("**LLM Running") or s2.startswith("<summary>"): break
+                    j += 1
+                out.append(f"🛠️ {m.group(1)} · args {j - k} 行")
+                i = max(j, k + 1)
+                continue
         if ln.startswith("`````"):
             # 注意：llmcore/agent_loop 把开栅栏和结果首行拼在同一帧
             # （'`````' + v），所以开栏行形如 "`````[Action] ..."，
