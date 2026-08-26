@@ -7713,7 +7713,7 @@ class GenericAgentTUI(App[None]):
         # Cache final renders — Markdown re-parse on every resize is expensive over long history.
         key = (len(raw), m.done, width, self.fold_mode, frozenset(m._toggled_folds),
                sum(1 for s in fold_turns(preclean_display(_ANSI_CONTROL_RE.sub("", raw),
-                                                           compact_tools=not m.done))
+                                                           compact_tools=False))
                    if s["type"] == "fold"))
         if m.done and m._cache_key == key and m._cached_body is not None:
             return m._cached_body
@@ -7721,7 +7721,7 @@ class GenericAgentTUI(App[None]):
         # rendering (unclosed code fences, paragraph whitespace stripping) can't eat it.
         if not raw.strip():
             return [("text", Text("（空）" if m.done else " ", style=C_DIM), None)]
-        cleaned = preclean_display(_ANSI_CONTROL_RE.sub("", raw), compact_tools=not m.done)
+        cleaned = preclean_display(_ANSI_CONTROL_RE.sub("", raw), compact_tools=False)
         raw_segs = fold_turns(cleaned)
         # Drop cache entries whose width changed — content keys with stale width
         # would never be hit again and would leak memory across resizes.
@@ -8164,7 +8164,7 @@ class GenericAgentTUI(App[None]):
                 and new_sig and new_sig[-1][0] == "text"):
             width = self._messages_width()
             raw = m.content or ""
-            cleaned = preclean_display(_ANSI_CONTROL_RE.sub("", raw), compact_tools=not m.done)
+            cleaned = preclean_display(_ANSI_CONTROL_RE.sub("", raw), compact_tools=False)
             last_seg = fold_turns(cleaned)[-1]
             last_text = _TURN_MARKER_RE.sub("", last_seg.get("content", ""), count=1)
             last_widget = m._segment_widgets[-1]
