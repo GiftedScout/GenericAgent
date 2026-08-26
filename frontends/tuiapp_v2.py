@@ -166,32 +166,7 @@ _FENCE_BEFORE_SUMMARY_RE = re.compile(r"```[a-zA-Z]*(?=[ \t]*\n<summary>)")
 _TOOL_HEAD_RE = re.compile(r"^🛠️ Tool: `([^`]+)`\s*📥 args:\s*$")
 
 
-def _compact_tool_dumps(text: str) -> str:
-    """行扫描器版工具参数压缩：把
-        🛠️ Tool: `name`  📥 args:
-        ````text
-        ...（可含任意内容，包括内嵌反引号栅栏）
-        ````
-    整块替换为单行 '🛠️ name · args K 行'。逐行匹配对参数里内嵌的栅栏/反引号
-    免疫——正则版会被 JSON 内嵌的 ```` 提前闭合，残留孤儿栅栏破坏 fold_turns
-    的分轮 stash（表现为轮次箭头消失、全部平铺）。找不到闭合（流式半截）时
-    该块原样保留。"""
-    lines = text.split("\n")
-    out = []
-    i, n = 0, len(lines)
-    while i < n:
-        m = _TOOL_HEAD_RE.match(lines[i].strip())
-        if m and i + 2 < n and lines[i + 1] == "````text":
-            j = i + 2
-            while j < n and lines[j] != "````":
-                j += 1
-            if j < n:
-                out.append(f"🛠️ {m.group(1)} · args {j - i - 1} 行")
-                i = j + 1
-                continue
-        out.append(lines[i])
-        i += 1
-    return "\n".join(out)
+_TOOL_HEAD_RE = re.compile(r"^🛠️ Tool: `([^`]+)`\s*📥 args:\s*$")
 
 
 def _compact_tool_dumps(text: str) -> str:
@@ -215,6 +190,11 @@ def _compact_tool_dumps(text: str) -> str:
                 out.append(f"🛠️ {m.group(1)} · args {j - i - 1} 行")
                 i = j + 1
                 continue
+            # 流式半截：args 开栏未见闭栏 → 立即折叠防 JSON 到达期刷屏；
+            # 每帧基于全量重算，闭合后自动转为正常计数。
+            out.append(f"🛠️ {m.group(1)} · args 接收中…")
+            i = n
+            continue
         if ln.startswith("`````"):
             # 注意：llmcore/agent_loop 把开栅栏和结果首行拼在同一帧
             # （'`````' + v），所以开栏行形如 "`````[Action] ..."，
@@ -226,6 +206,11 @@ def _compact_tool_dumps(text: str) -> str:
                 out.append(f"📄 结果 {j - i} 行")
                 i = j + 1
                 continue
+            # 流式半截（开栏未见闭栏）：立即折叠，防 JSON 到达期刷屏；
+            # 每帧基于全量重算，闭合后自动转为正常计数。
+            out.append("📄 结果 接收中…")
+            i = n
+            continue
         out.append(ln)
         i += 1
     return "\n".join(out)
@@ -266,9 +251,11 @@ def _preclean_display_impl(text: str, compact_tools: bool) -> str:
             text = text[:_m_open.start()] + (
                 f"＜thinking＞\n{head}\n…（思考中，已折叠 {len(inner)} 字）\n＜/thinking＞"
             )
-    # 配对剥除后残余的孤立 thinking/think 标签（CoT 内嵌字面标签导致信封早闭的
-    # 残留）一律清除——正常流里它们不该再出现。
-    text = re.sub(r"</?(?:thinking|think)>", "", text)
+    # 配对剥除后残余的孤立 thinking/think 标签（含源头转义产生的全角变体）
+    # 一律清除。注意：此步只在"无开放信封"时执行——尾窗分支的 ＜＞ 标记
+    # 是有意保留的显示元素，不能被这里吞掉。
+    if not _m_open:
+        text = re.sub(r"[＜<]\s*/?\s*(?:thinking|think)\s*[＞>]", "", text)
     text = _SUMMARY_FENCE_RE.sub(r"\1", text)
     # 流式半截态：栅栏已开而 </summary> 未到 —— 先摘掉开栏防止其吞掉后续行
     text = _FENCE_BEFORE_SUMMARY_RE.sub("", text)
@@ -7738,13 +7725,8 @@ class GenericAgentTUI(App[None]):
             return [("text", Text("（空）" if m.done else " ", style=C_DIM), None)]
         cleaned = preclean_display(_ANSI_CONTROL_RE.sub("", raw), compact_tools=False)
         raw_segs = fold_turns(cleaned)
-        # 双通道：已完成轮次用全文（展开即看完整参数），仅最后一个尚未完成的
-        # fold 用紧凑单行（防当前轮流式刷屏）。两条 preclean 的分轮结构一致。
-        if not m.done:
-            cleaned_c = preclean_display(_ANSI_CONTROL_RE.sub("", raw), compact_tools=True)
-            segs_c = fold_turns(cleaned_c)
-        else:
-            segs_c = raw_segs
+        # 语义：fold = 已完成轮次（展开显全文）；尾部 text 段 = 当前流式轮
+        # （from_ansi 路径已接 _compact_tool_dumps 单行化）。无需双通道。
         # Drop cache entries whose width changed — content keys with stale width
         # would never be hit again and would leak memory across resizes.
         if m._seg_render_cache and any(k[1] != width for k in m._seg_render_cache):
@@ -7767,6 +7749,10 @@ class GenericAgentTUI(App[None]):
             head = Text(("▸ " if group_collapsed else "▾ ") + f"本次提问 · {n_folds} 轮", style=C_DIM)
             out.append(("group-header", head, -1))
         last_i = len(raw_segs) - 1
+        # 最后一个 fold 的索引：活跃轮的紧凑体判断必须用它，而非 last_i——
+        # 流式时尾部通常还有 text 段，last_i 永远指不到最后的 fold。
+        fold_positions = [k for k, s in enumerate(raw_segs) if s["type"] == "fold"]
+        last_fold = fold_positions[-1] if fold_positions else -1
         for i, seg in enumerate(raw_segs):
             if seg["type"] == "fold":
                 if group_collapsed:
@@ -7779,10 +7765,7 @@ class GenericAgentTUI(App[None]):
                 header = Text(); header.append(f"{arrow} ", style=C_DIM); header.append(title, style=C_MUTED)
                 out.append(("fold-header", header, i))
                 if expanded:
-                    body_seg = seg
-                    if not m.done and i == last_i and i < len(segs_c):
-                        body_seg = segs_c[i]  # 活跃末轮：紧凑形态
-                    out.append(("fold-body", cached_render(body_seg.get("content", "")), i))
+                    out.append(("fold-body", cached_render(seg.get("content", "")), i))
             else:
                 content = _TURN_MARKER_RE.sub("", seg.get("content", ""), count=1)
                 # While streaming, the tail text segment grows every chunk — Markdown
@@ -7792,7 +7775,7 @@ class GenericAgentTUI(App[None]):
                 # _stream_update_assistant swaps in the real Markdown render once
                 # m.done flips True.
                 if i == last_i and not m.done:
-                    out.append(("text", Text.from_ansi(content, style=C_FG), None))
+                    out.append(("text", Text.from_ansi(_compact_tool_dumps(content), style=C_FG), None))
                 else:
                     out.append(("text", cached_render(content), None))
         if m.done:
