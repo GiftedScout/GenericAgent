@@ -4586,15 +4586,30 @@ class GenericAgentTUI(App[None]):
             return
         # 方向：任一消息处于折叠态 → 全部展开；否则全部折叠
         collapse = not any(-1 in mm._toggled_folds for mm in msgs)
-        for mm in msgs:
-            if collapse:
-                mm._toggled_folds.add(-1)
-            else:
-                mm._toggled_folds.discard(-1)
+        # 批量模式：逐条 remount 不做各自的 scroll 恢复（互相踩踏），
+        # 全部完成后统一做一次视口锚定。
+        self._batch_remount = True
+        try:
+            for mm in msgs:
+                if collapse:
+                    mm._toggled_folds.add(-1)
+                else:
+                    mm._toggled_folds.discard(-1)
+                try:
+                    self._remount_assistant_message(mm)
+                except Exception:
+                    pass
+        finally:
+            self._batch_remount = False
+        # 锚定到最后一条助手消息（用户通常在看最新内容）
+        def _anchor():
             try:
-                self._remount_assistant_message(mm)
+                container = self.query_one("#messages", VerticalScroll)
+                if msgs and msgs[-1]._role_widget is not None:
+                    container.scroll_to_widget(msgs[-1]._role_widget, top=True)
             except Exception:
                 pass
+        self.call_after_refresh(_anchor)
         self.notify(f"Group fold: {'collapsed' if collapse else 'expanded'} ×{len(msgs)}", timeout=1)
 
     def action_escape(self) -> None:
@@ -8248,7 +8263,10 @@ class GenericAgentTUI(App[None]):
             m._spinner_widget = None
         segs = self._assistant_segments(m, self._messages_width())
         self._mount_assistant_segments(container, m, segs, after=anchor)
-        self.call_after_refresh(lambda sc=container, sy=saved_scroll: setattr(sc, 'scroll_y', sy))
+        # 批量折叠（ctrl+o）时由 action_toggle_fold 统一锚定视口；
+        # 单条 remount（鼠标点击）才做各自的 scroll 恢复。
+        if not getattr(self, '_batch_remount', False):
+            self.call_after_refresh(lambda sc=container, sy=saved_scroll: setattr(sc, 'scroll_y', sy))
 
 
 # ---------- CLI ----------
