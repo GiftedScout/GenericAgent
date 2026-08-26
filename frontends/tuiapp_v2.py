@@ -8234,7 +8234,9 @@ class GenericAgentTUI(App[None]):
         except Exception:
             return
         # Preserve scroll position across the widget teardown/rebuild cycle.
-        scroll_y = container.scroll_y
+        # Must defer restoration via call_after_refresh because Textual's
+        # async layout pass will clamp/reset scroll_y if set synchronously.
+        saved_scroll = container.scroll_y
         anchor = m._role_widget
         for w in m._segment_widgets:
             try: w.remove()
@@ -8246,7 +8248,7 @@ class GenericAgentTUI(App[None]):
             m._spinner_widget = None
         segs = self._assistant_segments(m, self._messages_width())
         self._mount_assistant_segments(container, m, segs, after=anchor)
-        container.scroll_y = scroll_y
+        self.call_after_refresh(lambda sc=container, sy=saved_scroll: setattr(sc, 'scroll_y', sy))
 
 
 # ---------- CLI ----------
