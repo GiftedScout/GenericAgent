@@ -42,6 +42,15 @@ def resolve_memory_dir(repo_dir=None):
 
 memory_dir = resolve_memory_dir()
 
+# Ponytail guidance is a prompt-level efficiency heuristic, not a replacement for
+# GA's action/verification, safety, memory, or user-request rules. Keep it here so
+# every system prompt sees the principle without requiring an SOP lookup.
+PONYTAIL_GUIDANCE = """
+[Core Engineering Heuristic — Ponytail]
+Prefer the smallest boring change that solves the user's actual problem: understand and trace the real flow first, reuse existing code and standard-library capabilities, and delete unnecessary code or abstractions instead of adding speculative features. Do not over-engineer, gold-plate, or invent boilerplate; question whether a requested component is actually needed. Keep validation at trust boundaries, error handling that prevents data loss, security, accessibility, calibration, and other explicitly requested behavior. For non-trivial changes, leave one runnable check that would fail if the logic breaks. This heuristic never overrides GA's action-first execution, verification, safety, memory, escalation, or user-authorization rules.
+"""
+
+
 def safe_print(*args, **kwargs):
     try: print(*args, **kwargs)
     except: pass
@@ -906,4 +915,4 @@ def get_global_memory():
         prompt += structure + f'\n{os.path.join(memory_dir, "global_mem_insight.txt")}:\n'
         prompt += insight.replace('../memory', memory_dir) + "\n"
     except FileNotFoundError: pass
-    return prompt
+    return prompt + PONYTAIL_GUIDANCE
