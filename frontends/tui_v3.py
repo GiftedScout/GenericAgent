@@ -154,6 +154,7 @@ _I18N: dict[str, dict[str, str]] = {
         'help.update':          '  /update [note]       Sync upstream, show conflicts, summarize changes',
         'help.autorun':         '  /autorun [seed]      Enter autonomous-operation mode',
         'help.morphling':       '  /morphling [target]  Distill / absorb an external skill',
+        'help.archify':         '  /archify [task]      Create and validate architecture / workflow / sequence diagrams',
         'help.goal':            '  /goal [goal]         Enter Goal mode (asks for budget / worker cap)',
         'help.hive':            '  /hive [target]       Enter Hive multi-worker mode',
         'help.conductor':       '  /conductor [task]    Hand task to conductor.py for multi-subagent run',
@@ -201,6 +202,8 @@ _I18N: dict[str, dict[str, str]] = {
         'cmd.autorun.desc':     'enter autonomous operation mode',
         'cmd.morphling.arg':    '[target]',
         'cmd.morphling.desc':   'distill / absorb external skills',
+        'cmd.archify.arg':      '[task]',
+        'cmd.archify.desc':     'create and validate architecture / workflow / sequence diagrams',
         'cmd.goal.arg':         '[goal]',
         'cmd.goal.desc':        'enter Goal mode (needs condition)',
         'cmd.hive.arg':         '[target]',
@@ -422,6 +425,7 @@ _I18N: dict[str, dict[str, str]] = {
         'help.update':          '  /update [备注]       同步上游；冲突时展示 diff 并请求选择；完成后简报',
         'help.autorun':         '  /autorun [seed]      进入 autonomous_operation 自主模式',
         'help.morphling':       '  /morphling [target]  启用 Morphling 蒸馏 / 吞噬外部技能',
+        'help.archify':         '  /archify [task]      生成并验证架构图 / 流程图 / 时序图',
         'help.goal':            '  /goal [goal]         进入 Goal 模式（需 condition 约束）',
         'help.hive':            '  /hive [target]       进入 Hive 多 worker 协作模式',
         'help.conductor':       '  /conductor [task]    交给 conductor.py 做多 subagent 编排',
@@ -469,6 +473,8 @@ _I18N: dict[str, dict[str, str]] = {
         'cmd.autorun.desc':     '进入 autonomous_operation 自主模式',
         'cmd.morphling.arg':    '[target]',
         'cmd.morphling.desc':   '启用 Morphling 蒸馏 / 吞噬外部技能',
+        'cmd.archify.arg':      '[任务]',
+        'cmd.archify.desc':     '生成并验证架构图 / 流程图 / 时序图',
         'cmd.goal.arg':         '[goal]',
         'cmd.goal.desc':        '进入 Goal 模式（需 condition 约束）',
         'cmd.hive.arg':         '[target]',
@@ -1919,6 +1925,7 @@ def _cmds() -> list[tuple[str, str, str]]:
         ('/update',    _t('cmd.update.arg'),     _t('cmd.update.desc')),
         ('/autorun',   _t('cmd.autorun.arg'),    _t('cmd.autorun.desc')),
         ('/morphling', _t('cmd.morphling.arg'),  _t('cmd.morphling.desc')),
+        ('/archify',   _t('cmd.archify.arg'),    _t('cmd.archify.desc')),
         ('/goal',      _t('cmd.goal.arg'),       _t('cmd.goal.desc')),
         ('/hive',      _t('cmd.hive.arg'),       _t('cmd.hive.desc')),
         ('/conductor', _t('cmd.conductor.arg'),  _t('cmd.conductor.desc')),
@@ -4745,7 +4752,7 @@ class SB:
         elif name == 'update':
             # Keep it literal: agentmain installs the deterministic backend.
             self._submit('/update' + ((' ' + arg) if arg else ''), [])
-        elif name in ('autorun', 'morphling', 'goal', 'hive', 'conductor'):
+        elif name in ('autorun', 'morphling', 'archify', 'goal', 'hive', 'conductor'):
             # slash_cmds bundle — build a long prompt and feed it back through
             # _submit so the agent sees an ordinary user turn.  Keeps the
             # frontend ignorant of SOP details; see frontends/slash_cmds.py.
@@ -5015,6 +5022,7 @@ class SB:
                          _t('help.update'),
                          _t('help.autorun'),
                          _t('help.morphling'),
+                         _t('help.archify'),
                          _t('help.goal'),
                          _t('help.hive'),
                          _t('help.conductor'),

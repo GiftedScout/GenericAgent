@@ -2313,6 +2313,7 @@ COMMANDS = [
     ("/update",    "[note]",           "同步上游和 myfork；冲突时展示 diff 并请求选择；完成后简要汇报"),
     ("/autorun",   "[seed]",           "进入 autonomous_operation 自主模式"),
     ("/morphling", "[target]",         "启用 Morphling 蒸馏 / 吞噬外部技能"),
+    ("/archify",   "[task]",           "按需生成并验证架构/流程/时序图"),
     ("/goal",      "[goal]",           "进入 Goal 模式（需 condition 约束）"),
     ("/hive",      "[target]",         "进入 Hive 多 worker 协作模式"),
     ("/conductor", "[task]",           "调用 frontends/conductor.py 多 subagent 编排"),
@@ -3863,8 +3864,9 @@ class GenericAgentTUI(App[None]):
             # thin shims that build a prompt and re-enter submit_user_message,
             # so the agent processes them as ordinary turns.
             "update": self._cmd_slash_inject, "autorun": self._cmd_slash_inject,
-            "morphling": self._cmd_slash_inject, "goal": self._cmd_slash_inject,
-            "hive": self._cmd_slash_inject, "conductor": self._cmd_slash_inject,
+            "morphling": self._cmd_slash_inject, "archify": self._cmd_slash_inject,
+            "goal": self._cmd_slash_inject, "hive": self._cmd_slash_inject,
+            "conductor": self._cmd_slash_inject,
             "scheduler": self._cmd_scheduler,
             "quit": self._cmd_quit, "exit": self._cmd_quit,
         }

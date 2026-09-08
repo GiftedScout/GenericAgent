@@ -245,6 +245,24 @@ def build_morphling_prompt(args_text: str = "") -> str:
     )
 
 
+def build_archify_prompt(args_text: str = "") -> str:
+    """Enable the cached Archify skill for this invocation only."""
+    skill_root = _ROOT / "memory" / "imported_skills" / "archify" / "archify"
+    return (
+        "仅对本次任务启用 Archify 图表技能，不将它加入全局系统提示或长期记忆。"
+        f"技能根目录为 `{skill_root}`；先读取 `{skill_root / 'SKILL.md'}`，"
+        "并按图表类型只读取一个匹配 schema、schemas/common.schema.json 和一个对应 example。"
+        f"所有 Archify 命令从 `{skill_root}` 执行（例如 `node bin/archify.mjs ...`）。"
+        "先确认用户要表达的事实；若图表反映真实代码/架构，先用仓库证据核实，禁止凭空补全。"
+        "按技能的 artifact-first 流程先写 JSON 候选，再在每次编辑后及交付前运行 validate；"
+        "默认静态 showcase，不主动 preview/open，不启用 motion。完成后使用 deliver，"
+        "需要时再对交付后的原 HTML 使用 visual-check。严格区分 artifact 验证、浏览器证据和人工/视觉审查，"
+        "没有实际证据就不要声称完成对应审查。最终返回 HTML 路径、图表类型、验证摘要、"
+        "specification/artifact receipt、browser-evidence 状态和 truthful visual-review 状态。"
+        f"{_tail(args_text, '图表任务')}"
+    )
+
+
 def build_goal_prompt(args_text: str = "") -> str:
     return (
         "请进入 Goal 模式：先读 memory/goal_mode_sop.md。"
@@ -595,6 +613,7 @@ PALETTE_ENTRIES: list[tuple[str, str, str]] = [
     ("/update",    "[note]",    "LLM 合并官方更新、同步 myfork 并生成更新账单"),
     ("/autorun",   "[seed]",    "进入 autonomous_operation 自主模式"),
     ("/morphling", "[target]",  "启用 Morphling 蒸馏 / 吞噬外部技能"),
+    ("/archify",   "[task]",    "按需生成并验证架构/流程/时序图"),
     ("/goal",      "[goal]",    "进入 Goal 模式（需 condition 约束）"),
     ("/hive",      "[target]",  "进入 Hive 多 worker 协作模式"),
     ("/conductor", "[task]",    "调用 frontends/conductor.py 多 subagent 编排"),
@@ -615,6 +634,7 @@ def prompt_for(cmd: str, args_text: str) -> Optional[str]:
         "/update":    build_update_prompt,
         "/autorun":   build_autorun_prompt,
         "/morphling": build_morphling_prompt,
+        "/archify":   build_archify_prompt,
         "/goal":      build_goal_prompt,
         "/hive":      build_hive_prompt,
         "/conductor": build_conductor_prompt,
