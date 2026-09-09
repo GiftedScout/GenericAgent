@@ -69,7 +69,7 @@ existing core contracts.
 
 ## Version and release contract
 
-Desktop package metadata is `0.2.0` across npm, Cargo, Tauri, and generated provenance. Upstream packages consume
+Desktop package metadata is `0.2.1` across npm, Cargo, Tauri, and generated provenance. Upstream packages consume
 the tracked `dist/**` tree, so an upstream maintainer can build official Windows, Linux, and macOS artifacts
 without the React source. A `desktop-portable-*` tag starts three read-only platform builders. One separate
 publisher receives write permission only after all three succeed, validates the six expected files and checksums,

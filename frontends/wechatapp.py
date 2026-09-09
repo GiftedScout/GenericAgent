@@ -312,9 +312,13 @@ def _cond_up():
 
 def _start_conductor():
     if _cond_up(): return True
-    flags = (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP |
-             getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-    kw = {'creationflags': flags} if os.name == 'nt' else {'start_new_session': True}
+    # Win-only creationflags must not be evaluated on Linux (AttributeError).
+    if os.name == 'nt':
+        flags = (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP |
+                 getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        kw = {'creationflags': flags}
+    else:
+        kw = {'start_new_session': True}
     try:
         subprocess.Popen([sys.executable, os.path.join(os.path.dirname(__file__), 'conductor.py'), '--no-browser'],
                          cwd=os.path.dirname(__file__), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kw)
@@ -334,7 +338,7 @@ def _cond_forward(bot, text, seq):
     seen = {mine['id']}
     while seq == _cond_seq:
         time.sleep(5)
-        try: items = requests.get(_COND, params={'last': 50}, timeout=10).json()['items']
+        try: items = requests.get(_COND, params={'last': 50, 'mark_read': 'false'}, timeout=10).json()['items']
         except Exception as e:
             print(f'[WX] conductor poll err: {e}', file=sys.__stdout__); continue
         for item in items:

@@ -15,6 +15,7 @@ PROTECTED_PATHS = (
     "/status",
     "/memory/export",
     "/memory/import/inspect",
+    "/services/capabilities",
     "/upload",
     "/upload/raw",
 )
@@ -127,6 +128,58 @@ def test_no_origin_cli_is_allowed_but_cross_site_navigation_is_rejected(
         )
         assert rejected.status == 403
         assert not side_effect.exists()
+
+    asyncio.run(_with_client(scenario, tmp_path))
+
+
+def test_cross_site_resource_get_is_allowed_for_upload_raw_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Subresource loads (<img>/<video>) from the webview must reach /upload/raw
+    even though the bridge origin (127.0.0.1) differs from the app origin
+    (tauri.localhost), causing browsers to send Sec-Fetch-Site: cross-site without
+    an Origin header. Other paths and non-resource destinations remain blocked."""
+    monkeypatch.delenv("GA_E2E", raising=False)
+
+    async def scenario(client: TestClient, side_effect: Path):
+        # Real <img> load: cross-site, no Origin, Sec-Fetch-Dest: image → allowed
+        response = await client.get(
+            "/upload/raw",
+            headers={"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Dest": "image"},
+        )
+        assert response.status == 200
+        assert await response.text() == "protected-secret"
+
+        # Also OK for video, audio, font
+        for dest in ("video", "audio", "font"):
+            side_effect.unlink()
+            r = await client.get(
+                "/upload/raw",
+                headers={"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Dest": dest},
+            )
+            assert r.status == 200
+
+        # But top-level cross-site navigation (Sec-Fetch-Dest: document) → blocked
+        side_effect.unlink()
+        nav = await client.get(
+            "/upload/raw",
+            headers={"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Dest": "document"},
+        )
+        assert nav.status == 403
+        assert not side_effect.exists()
+
+        # Evil Origin to /upload/raw still rejected (existing coverage)
+        for origin in ("http://evil.example", "null"):
+            rejected = await client.get("/upload/raw", headers={"Origin": origin})
+            assert rejected.status == 403
+
+        # Other protected paths remain cross-site blocked
+        for path in ("/status", "/upload", "/services/capabilities"):
+            rejected = await client.get(
+                path,
+                headers={"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Dest": "image"},
+            )
+            assert rejected.status == 403
 
     asyncio.run(_with_client(scenario, tmp_path))
 

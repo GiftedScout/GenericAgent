@@ -79,6 +79,11 @@ description = "Clear the external GA source override and fall back to the bundle
 commands.allow = ["clear_ga_source"]
 
 [[permission]]
+identifier = "allow-get-macos-titlebar-metrics"
+description = "Read native macOS traffic-light geometry for the main window."
+commands.allow = ["get_macos_titlebar_metrics"]
+
+[[permission]]
 identifier = "allow-shortcut-should-ask"
 description = "Check whether to show the first-run desktop-shortcut prompt."
 commands.allow = ["shortcut_should_ask"]

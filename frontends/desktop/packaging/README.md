@@ -16,6 +16,8 @@ The React source, issue tracker, and contribution home is
 recorded in `dist/build-provenance.json`. `frontends/desktop/static/**` remains the independent Desktop v1 and is
 unchanged by Desktop 2.0 packaging.
 
+The submitted package, bundle, qualification, and provenance version for this release is `0.2.1`.
+
 The Semi Design MIT text is tracked as `dist/THIRD_PARTY_NOTICES.txt`. Root attributes force the source notice and
 compiled notice to LF on every platform, and all three package builders verify the locked notice SHA-256 before
 building.
@@ -51,8 +53,10 @@ frontends/desktop/packaging/
   `2acf865e87e59090121369aac0575467067fdd7999923a70d785a46ceae3330f` and failing on any byte drift.
 - python-build-standalone is fixed at release `20260814`, CPython `3.12.14`, an explicit architecture, and an
   archive SHA-256 on each platform.
-- The macOS builder runs on the Apple-silicon `macos-15` host and uses host CPython `3.12.10` only for the
-  hash-locked DMG layout tools. That host interpreter is separate from the embedded `3.12.14` runtime.
+- The macOS builder runs on the Apple-silicon `macos-26` host with
+  `DEVELOPER_DIR=/Applications/Xcode_26.5.app/Contents/Developer` and hard-fails unless Xcode `26.5`
+  (build `17F42`) and the macOS `26.5` SDK are active. Host CPython `3.12.10` is used only for the hash-locked
+  DMG layout tools and remains separate from the embedded `3.12.14` runtime.
 - Windows converts `RUNNER_TEMP` with `cygpath -u` before passing its archive path to POSIX tools.
 - Linux builds on Ubuntu 22.04, uses a dedicated glibc-2.35 Rust cache prefix with target/bin caching disabled,
   and scans every packaged ELF to reject a maximum GLIBC requirement above 2.35.

@@ -23,6 +23,7 @@ HTTP API:
   POST   /services/stop         body: {"id":"frontends/qqapp.py"}
   GET    /services/logs?id=frontends/qqapp.py&tail=200
   GET    /services/panel
+  GET    /services/capabilities
   GET    /services/mykey
   POST   /services/mykey       body: {"content":"..."}
   POST   /services/stop-extras   stop conductor + scheduler (127.0.0.1 only)
@@ -724,7 +725,22 @@ class AgentManager:
     def update_model_profile(self, profile_id: int, data: dict) -> dict:
         var, existing = self._profile_at(profile_id)
         text = self._mykey_file().read_text(encoding="utf-8")
-        profiles = self._save_mykey_text(self._patch_var_block(text, var, self._build_cfg(data, existing, require_key=False)))
+
+        # Sync mixin llm_nos when name changes to avoid orphan references
+        old_name = str(existing.get("name") or existing.get("model") or "").strip()
+        new_cfg = self._build_cfg(data, existing, require_key=False)
+        new_name = str(new_cfg.get("name") or new_cfg.get("model") or "").strip()
+
+        if old_name != new_name:
+            keys, mk = self._mykey_vars()
+            mvar, mcfg = self._mixin_entry(keys, mk)
+            if mcfg and mvar is not None and old_name in [str(m) for m in (mcfg.get("llm_nos") or [])]:
+                # Replace old name with new name in mixin's llm_nos
+                updated_nos = [new_name if str(m) == old_name else str(m) for m in (mcfg.get("llm_nos") or [])]
+                mcfg = {**mcfg, "llm_nos": updated_nos}
+                text = self._patch_var_block(text, mvar, mcfg)
+
+        profiles = self._save_mykey_text(self._patch_var_block(text, var, new_cfg))
         return {"varName": var, "profileId": profile_id, "profiles": profiles}
 
     def delete_model_profile(self, profile_id: int) -> dict:
@@ -1006,7 +1022,9 @@ class AgentManager:
             sess.cancel_requested = False
             sess.active_turn_id = turn_id
             sess.last_error = ""
-            sess.partial = {"id": sess.msg_seq + 1, "role": "assistant", "content": "", "ts": time.time(), "partial": True,
+            _turn_start = time.time()
+            sess.partial = {"id": sess.msg_seq + 1, "role": "assistant", "content": "", "ts": _turn_start, "partial": True,
+                            "turn_started": _turn_start,  # stable turn-start clock (ts gets bumped on each stream chunk)
                             "curr_turn": 0, "turn_segs": []}  # turn_segs[i]=第i轮全文(权威结构化,前端按轮渲染);content保留双轮兜底
             image_paths = [m["path"] for m in (image_metas or []) if m.get("path")]
             t = threading.Thread(
@@ -1196,16 +1214,19 @@ class AgentManager:
             with self.lock:
                 if sess.active_turn_id != turn_id:
                     return
+                turn_started = sess.partial.get("turn_started") if sess.partial else None
                 sess.partial = None
                 full = strip_final_info_marker(full)
                 import plan_state
                 plan_state.sync_plan_path_from_text(sess, full, sess.cwd or self.ga_root)
                 # 轨道2: 落库时带结构化全量轮(权威turn_segs),前端按轮渲染;content保留兜底
                 _final_segs = normalize_final_turn_segs(full, done_outputs)
+                msg_extra = {}
                 if _final_segs:
-                    self.add_message(sess, "assistant", full, turn_segs=_final_segs)
-                else:
-                    self.add_message(sess, "assistant", full)
+                    msg_extra["turn_segs"] = _final_segs
+                if turn_started:
+                    msg_extra["executionMs"] = round((time.time() - turn_started) * 1000)
+                self.add_message(sess, "assistant", full, **msg_extra)
                 try: sess.llm_history = json.loads(json.dumps(agent.llmclient.backend.history, ensure_ascii=False, default=str))
                 except Exception: pass
                 sess.running_llm_no = None
@@ -1941,6 +1962,29 @@ def _allowed_request_origins() -> Set[str]:
     return origins
 
 
+# Read-only GET endpoints that are meant to be loaded as browser subresources
+# (<img>/<video>/<audio>/font). Cross-origin resource loads never carry an
+# Origin header but do set Sec-Fetch-Site: cross-site, so the generic CSRF guard
+# below would 403 them. These endpoints have no side effects and are confined to
+# a whitelisted directory, so a cross-site *resource* GET/HEAD is safe to allow.
+_RESOURCE_GET_PATHS = frozenset({"/upload/raw"})
+_RESOURCE_FETCH_DESTS = frozenset({"image", "video", "audio", "font"})
+
+
+def _is_safe_cross_site_resource_get(request) -> bool:
+    """True for a no-side-effect subresource GET the desktop webview issues for
+    a message-bubble thumbnail (bridge origin differs from the tauri app origin,
+    so the <img> request is cross-site and carries no Origin header)."""
+    if request.method not in ("GET", "HEAD"):
+        return False
+    if request.path not in _RESOURCE_GET_PATHS:
+        return False
+    dest = request.headers.get("Sec-Fetch-Dest", "").strip().lower()
+    # Only genuine subresource loads — never a cross-site top-level navigation
+    # (Sec-Fetch-Dest: document) — are exempted.
+    return dest in _RESOURCE_FETCH_DESTS
+
+
 def _request_origin_error(request) -> Optional[str]:
     origin = request.headers.get("Origin")
     if origin is not None:
@@ -1948,6 +1992,8 @@ def _request_origin_error(request) -> Optional[str]:
             return "request origin is not allowed"
         return None
     if request.headers.get("Sec-Fetch-Site", "").strip().lower() == "cross-site":
+        if _is_safe_cross_site_resource_get(request):
+            return None
         return "cross-site request without an Origin header is not allowed"
     return None
 
@@ -2399,6 +2445,49 @@ async def upload_handler(request):
     return json_ok({"ok": True, "path": str(fpath)})
 
 
+# Max bytes we will base64 back to the webview for an image preview. Larger
+# images (and all non-images) skip the read: the agent opens them by path.
+_DROP_PREVIEW_MAX = 50 * 1024 * 1024
+
+
+async def drop_stat_handler(request):
+    """Inspect a path dropped onto the window via Tauri's native drag-drop.
+
+    Body: {path: "<abs path>", preview: <bool>}
+    Native drops give absolute paths (not File objects), so the client asks the
+    bridge what the path is. Returns is_dir + size for every path; when preview
+    is truthy and the target is a readable image under the size cap, also returns
+    a base64 data payload so the composer can render a thumbnail. Files and
+    folders otherwise travel to the agent by path alone (it reads via file_read
+    / os.walk), so no bytes cross the wire for them.
+    """
+    import mimetypes
+    data = await read_json(request)
+    raw = (data.get("path") or "").strip()
+    want_preview = bool(data.get("preview"))
+    if not raw:
+        return json_ok({"ok": False, "error": "missing path"})
+    try:
+        target = Path(raw)
+        st = target.stat()
+    except FileNotFoundError:
+        return json_ok({"ok": False, "error": "not found"})
+    except OSError as e:
+        return json_ok({"ok": False, "error": str(e)})
+    is_dir = target.is_dir()
+    size = 0 if is_dir else st.st_size
+    result = {"ok": True, "is_dir": is_dir, "size": size, "name": target.name}
+    if want_preview and not is_dir and size <= _DROP_PREVIEW_MAX:
+        ctype = mimetypes.guess_type(target.name)[0] or ""
+        if ctype.startswith("image/") and ctype != "image/svg+xml":
+            try:
+                encoded = base64.b64encode(target.read_bytes()).decode("ascii")
+                result["preview"] = f"data:{ctype};base64,{encoded}"
+            except OSError:
+                pass
+    return json_ok(result)
+
+
 async def upload_delete_handler(request):
     """Delete a previously-uploaded file. Path must live under _WEB_UPLOAD_DIR."""
     data = await read_json(request)
@@ -2733,6 +2822,10 @@ async def identity_handler(request):
                     "build_id": os.environ.get("GA_BUILD_ID", "")})
 
 
+async def service_capabilities_handler(request):
+    return json_ok({"dataBackup": True})
+
+
 def _exit_bridge() -> None:
     with contextlib.suppress(Exception):
         services.stop_all_extras()
@@ -2855,6 +2948,7 @@ def create_app():
     app.router.add_post("/upload", upload_handler)
     app.router.add_delete("/upload", upload_delete_handler)
     app.router.add_get("/upload/raw", upload_raw_handler)
+    app.router.add_post("/drop/stat", drop_stat_handler)
     app.router.add_get("/token-stats", token_stats_handler)
     app.router.add_get("/token-history", get_token_history_handler)
     app.router.add_get("/subscription-portal", subscription_portal_handler)
@@ -2872,6 +2966,7 @@ def create_app():
     app.router.add_post("/services/conductor/model", conductor_model_save_handler)
     app.router.add_post("/services/stop-extras", stop_extras_handler)
     app.router.add_post("/services/start-extras", start_extras_handler)
+    app.router.add_get("/services/capabilities", service_capabilities_handler)
     app.router.add_get("/services/identity", identity_handler)
     app.router.add_post("/services/bridge/exit", bridge_exit_handler)
     if _e2e_control_token() is not None:

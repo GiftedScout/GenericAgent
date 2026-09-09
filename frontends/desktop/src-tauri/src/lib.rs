@@ -2729,6 +2729,101 @@ async fn clear_ga_source(app_handle: tauri::AppHandle) -> Result<String, String>
     apply_ga_source_with_rollback(app_handle, None, previous_override).await
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MacosTitlebarMetrics {
+    traffic_light_center_y: f64,
+    traffic_light_right_x: f64,
+}
+
+#[cfg(target_os = "macos")]
+fn measure_macos_titlebar_metrics(
+    webview: &tauri::webview::PlatformWebview,
+) -> Result<MacosTitlebarMetrics, String> {
+    use objc2_app_kit::{NSView, NSWindow, NSWindowButton};
+
+    let ns_window = webview.ns_window();
+    let webview_handle = webview.inner();
+    if ns_window.is_null() || webview_handle.is_null() {
+        return Err("macOS titlebar native handles are unavailable".to_string());
+    }
+
+    // SAFETY: Tauri documents these handles as the NSWindow and WKWebView for
+    // this callback. with_webview schedules the callback on the main thread.
+    let window = unsafe { &*ns_window.cast::<NSWindow>() };
+    let content_view = unsafe { &*webview_handle.cast::<NSView>() };
+    let bounds = content_view.bounds();
+
+    let mut min_y = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    for kind in [
+        NSWindowButton::CloseButton,
+        NSWindowButton::MiniaturizeButton,
+        NSWindowButton::ZoomButton,
+    ] {
+        let button = window
+            .standardWindowButton(kind)
+            .ok_or_else(|| "macOS titlebar button is unavailable".to_string())?;
+        // SAFETY: AppKit owns the standard button and its superview for the
+        // lifetime of this main-thread callback.
+        let superview = unsafe { button.superview() }
+            .ok_or_else(|| "macOS titlebar button has no superview".to_string())?;
+        let rect = content_view.convertRect_fromView(button.frame(), Some(&superview));
+        min_y = min_y.min(rect.origin.y);
+        max_x = max_x.max(rect.origin.x + rect.size.width);
+        max_y = max_y.max(rect.origin.y + rect.size.height);
+    }
+
+    let appkit_center_y = min_y + (max_y - min_y) / 2.0;
+    let traffic_light_center_y = if content_view.isFlipped() {
+        appkit_center_y - bounds.origin.y
+    } else {
+        bounds.origin.y + bounds.size.height - appkit_center_y
+    };
+    let metrics = MacosTitlebarMetrics {
+        traffic_light_center_y,
+        traffic_light_right_x: max_x - bounds.origin.x,
+    };
+    if !metrics.traffic_light_center_y.is_finite()
+        || !metrics.traffic_light_right_x.is_finite()
+        || metrics.traffic_light_center_y < 0.0
+        || metrics.traffic_light_right_x < 0.0
+    {
+        return Err("macOS titlebar metrics are invalid".to_string());
+    }
+    Ok(metrics)
+}
+
+#[tauri::command]
+async fn get_macos_titlebar_metrics(
+    window: tauri::WebviewWindow,
+) -> Result<Option<MacosTitlebarMetrics>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        window
+            .with_webview(move |webview| {
+                let _ = sender.send(measure_macos_titlebar_metrics(&webview));
+            })
+            .map_err(|error| format!("cannot schedule macOS titlebar measurement: {error}"))?;
+        return tauri::async_runtime::spawn_blocking(move || {
+            receiver
+                .recv_timeout(Duration::from_secs(1))
+                .map_err(|_| "macOS titlebar measurement timed out".to_string())?
+                .map(Some)
+        })
+        .await
+        .map_err(|error| format!("macOS titlebar measurement task failed: {error}"))?;
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        Ok(None)
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let args: Vec<String> = std::env::args().collect();
@@ -2783,6 +2878,7 @@ pub fn run() {
             validate_ga_source,
             set_ga_source,
             clear_ga_source,
+            get_macos_titlebar_metrics,
             shortcut_should_ask,
             shortcut_decide
         ])

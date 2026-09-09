@@ -56,8 +56,8 @@ def assert_report(name: str, report: dict[str, Any], expected_commit: str) -> li
     actual_commit = str(report.get("expectedCommit", "")).lower()
     if actual_commit != expected_commit.lower():
         failures.append(f"{name}: commit {actual_commit!r} != {expected_commit!r}")
-    if report.get("releaseVersion") != "0.2.0":
-        failures.append(f"{name}: release version is not 0.2.0")
+    if report.get("releaseVersion") != "0.2.1":
+        failures.append(f"{name}: release version is not 0.2.1")
     if report.get("success") is not True:
         failures.append(f"{name}: automated qualification did not pass")
     if not str(report.get("artifact", {}).get("sha256", "")):
@@ -152,7 +152,7 @@ def main() -> int:
     manifest = {
         "schemaVersion": 1,
         "candidateCommit": args.expected_commit,
-        "releaseVersion": "0.2.0",
+        "releaseVersion": "0.2.1",
         "platforms": {
             name: {
                 "report": report["_path"],

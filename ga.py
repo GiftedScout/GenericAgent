@@ -421,7 +421,7 @@ def web_execute_js(script, switch_tab_id=None, no_monitor=False):
                         return {"status": "error", "msg": _browser_unavailable_msg()}
                 else:
                     return {"status": "error", "msg": _browser_unavailable_msg()}
-        if switch_tab_id: driver.default_session_id = switch_tab_id
+        if switch_tab_id: driver.default_session_id = str(switch_tab_id)
         result = simphtml.execute_js_rich(script, driver, no_monitor=no_monitor)
         return result
     except Exception as e: return {"status": "error", "msg": format_error(e)}

@@ -7,8 +7,8 @@ import { fileURLToPath } from 'node:url';
 const desktopDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const repoRoot = path.resolve(desktopDir, '..', '..');
 const distDir = path.join(desktopDir, 'dist');
-const expectedVersion = '0.2.0';
-const expectedSourceCommit = '21f12f6dfe57ada8572bb21fe6604caac230b1cf';
+const expectedVersion = '0.2.1';
+const expectedSourceCommit = '4a67226e18cb003db1210357ea4a283774773acc';
 const expectedNoticeSha256 = '2acf865e87e59090121369aac0575467067fdd7999923a70d785a46ceae3330f';
 const noticeAttributeRules = [
   'frontends/desktop/public/THIRD_PARTY_NOTICES.txt text eol=lf',
@@ -141,10 +141,10 @@ async function verifyVersionsRendererAndEntry() {
   for (const sourceBuildKey of ['beforeBuildCommand', 'beforeDevCommand', 'devUrl']) {
     if (sourceBuildKey in tauriConfig.build) fail(`compiled-only Tauri config must not require ${sourceBuildKey}`);
   }
-  if (!/^\[package\][\s\S]*?^name = "ga-desktop"$[\s\S]*?^version = "0\.2\.0"$/m.test(cargoToml)) {
+  if (!/^\[package\][\s\S]*?^name = "ga-desktop"$[\s\S]*?^version = "0\.2\.1"$/m.test(cargoToml)) {
     fail(`Cargo.toml ga-desktop version must be ${expectedVersion}`);
   }
-  if (!/^\[\[package\]\][\s\S]*?^name = "ga-desktop"$\nversion = "0\.2\.0"$/m.test(cargoLock)) {
+  if (!/^\[\[package\]\][\s\S]*?^name = "ga-desktop"$\nversion = "0\.2\.1"$/m.test(cargoLock)) {
     fail(`Cargo.lock ga-desktop version must be ${expectedVersion}`);
   }
 
@@ -249,11 +249,15 @@ async function verifyReleaseContract() {
     fail('Windows packaging must convert RUNNER_TEMP with cygpath before POSIX tools use it');
   }
   const macos = workflowJob(workflow, 'build-macos');
-  if (!macos.includes('runs-on: macos-15')
+  if (!macos.includes('runs-on: macos-26')
+      || !macos.includes('DEVELOPER_DIR: /Applications/Xcode_26.5.app/Contents/Developer')
       || !macos.includes('test "$(uname -m)" = arm64')
+      || !macos.includes('test "$(xcodebuild -version | sed -n \'1p\')" = "Xcode 26.5"')
+      || !macos.includes('test "$(xcodebuild -version | sed -n \'2p\')" = "Build version 17F42"')
+      || !macos.includes('test "$(xcrun --sdk macosx --show-sdk-version)" = "26.5"')
       || !workflow.includes('MACOS_PACKAGING_PYTHON_VERSION: "3.12.10"')
       || !workflow.includes('PBS_PYTHON_VERSION: "3.12.14"')) {
-    fail('macOS packaging must use the pinned arm64 host and separate Python inputs');
+    fail('macOS packaging must pin macos-26, Xcode 26.5 build 17F42, SDK 26.5, arm64, and separate Python inputs');
   }
   const linux = workflowJob(workflow, 'build-linux');
   if (!linux.includes('runs-on: ubuntu-22.04')
@@ -347,10 +351,24 @@ async function main() {
   if (forbiddenSource.length > 0) fail(`compiled distribution contains source files: ${forbiddenSource.join(', ')}`);
 
   const searchableFiles = files.filter((file) => /\.(?:html|js|css)$/i.test(file));
+  const searchableContents = [];
   for (const file of searchableFiles) {
     const contents = await readFile(file, 'utf8');
+    searchableContents.push(contents);
     if (/(?:webdriverio|__GA_E2E__|wdio:|sourceMappingURL|webpack:\/\/|\/Users\/)/i.test(contents)) {
       fail(`compiled distribution leaks source/E2E material: ${relativeToDist(file)}`);
+    }
+  }
+  const compiledRenderer = searchableContents.join('\n');
+  for (const marker of [
+    'services/capabilities',
+    'data-import-row',
+    'data-export-row',
+    'get_macos_titlebar_metrics',
+    'titlebar-controls',
+  ]) {
+    if (!compiledRenderer.includes(marker)) {
+      fail(`compiled distribution is missing the v0.2.1 renderer contract: ${marker}`);
     }
   }
 
