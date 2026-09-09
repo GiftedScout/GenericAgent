@@ -435,6 +435,9 @@ def canonical_session_record(
     llm_history = None if llm_history_value is None else _record_list(
         llm_history_value, [], "llm history"
     )
+    llm_identity_value = item.get("llm_identity")
+    if llm_identity_value is not None and not isinstance(llm_identity_value, str):
+        raise BackupFormatError("session model identity is invalid")
     llm_no_value = item.get("llm_no")
     llm_no = None if llm_no_value is None else _non_negative_integer(
         llm_no_value, 0, "model index"
@@ -457,6 +460,7 @@ def canonical_session_record(
             item.get("plan_scan_baseline"), 0, "plan baseline"
         ),
         "plan_path": plan_path,
+        "llm_identity": llm_identity_value,
         "llm_no": llm_no,
         "llm_history": llm_history,
     }

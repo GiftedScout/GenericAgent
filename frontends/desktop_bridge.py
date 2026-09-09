@@ -251,8 +251,10 @@ class Session:
     plan_scan_baseline: int = 0
     plan_path: str = ""
     llm_history: Optional[List[dict]] = None
+    # 该会话绑定的模型路由身份（model + api_base，不含 apikey）。
+    # None = 未绑定；llm_no 仅作为旧会话/身份失配时的兼容兜底。
+    llm_identity: Optional[str] = None
     # 该会话绑定的模型下标(mykey.py 配置块顺序,== agent.llmclients 下标)。
-    # None = 未绑定,发消息时回退到全局默认 ui.llmNo,保持旧会话平滑迁移。
     llm_no: Optional[int] = None
     # 当前正在执行的 turn 使用的模型。仅运行期存在，不写入 session JSON。
     running_llm_no: Optional[int] = None
@@ -346,6 +348,7 @@ class AgentManager:
                 "pinned": s.pinned, "untitled": s.untitled,
                 "plan_scan_baseline": s.plan_scan_baseline,
                 "plan_path": s.plan_path or "",
+                "llm_identity": s.llm_identity,
                 "llm_no": s.llm_no,
                 "llm_history": llm_hist}
 
@@ -467,6 +470,7 @@ class AgentManager:
                        plan_path=_sanitize_desktop_plan_path(item["id"], item["plan_path"]),
                        status="idle", agent=None,
                        llm_history=item["llm_history"],
+                       llm_identity=item.get("llm_identity"),
                        llm_no=item["llm_no"])
 
     def _load_sessions(self):
@@ -784,6 +788,31 @@ class AgentManager:
                 os.chdir(old_cwd)
 
     @staticmethod
+    def _agent_identity(agent, client=None) -> str:
+        try:
+            return str(agent._llm_client_identity(client) or "")
+        except Exception:
+            return ""
+
+    @classmethod
+    def _select_session_client(cls, sess: Session, agent) -> int:
+        """Select persisted model+route identity; use index only for legacy data."""
+        clients = getattr(agent, "llmclients", []) or []
+        if not clients:
+            try:
+                return int(sess.llm_no) if sess.llm_no is not None else _global_default_llm_no()
+            except (TypeError, ValueError):
+                return _global_default_llm_no()
+        if sess.llm_identity:
+            for idx, client in enumerate(clients):
+                if cls._agent_identity(agent, client) == sess.llm_identity:
+                    return idx
+        try:
+            return int(sess.llm_no) if sess.llm_no is not None else _global_default_llm_no()
+        except (TypeError, ValueError):
+            return _global_default_llm_no()
+
+    @staticmethod
     def _base_display_name(var: str, cfg: Optional[dict]) -> str:
         c = cfg or {}
         return str(c.get("name") or c.get("model") or var)
@@ -806,6 +835,49 @@ class AgentManager:
             if "mixin" in k and isinstance(mk.get(k), dict):
                 return k, dict(mk[k])
         return None, None
+
+    @staticmethod
+    def _profile_identity(cfg: Optional[dict]) -> Optional[str]:
+        """Build the same non-secret identity as GenericAgent for a native profile."""
+        cfg = cfg or {}
+        model = str(cfg.get("model") or "").strip()
+        route = str(cfg.get("apibase") or cfg.get("api_base") or "").strip().rstrip("/")
+        return f"{model}@{route}" if model and route else None
+
+    def _profile_identity_for_index(self, profile_id: int) -> Optional[str]:
+        """Resolve a static native/mixin profile to the runtime identity."""
+        keys, mk = self._mykey_vars()
+        if profile_id < 0 or profile_id >= len(keys):
+            raise ValueError("profile not found")
+        var = keys[profile_id]
+        cfg = mk.get(var) if isinstance(mk.get(var), dict) else {}
+        if "mixin" not in var:
+            return self._profile_identity(cfg)
+
+        # MixinSession historically permits member names as well as indexes.
+        # Names are safe only when they resolve to exactly one native profile;
+        # an ambiguous duplicate must not be guessed. Integer references use
+        # the complete profile list, matching GenericAgent.load_llm_sessions.
+        native = []
+        for i, key in enumerate(keys):
+            item = mk.get(key) if isinstance(mk.get(key), dict) else {}
+            if "mixin" not in key:
+                native.append((i, key, item, self._base_display_name(key, item)))
+        identities = []
+        for member in cfg.get("llm_nos") or []:
+            if isinstance(member, int):
+                matches = [row for row in native if row[0] == member]
+            else:
+                ref = str(member)
+                matches = [row for row in native
+                           if ref in (row[1], row[3], str(row[2].get("model") or ""))]
+            if len(matches) != 1:
+                return None
+            identity = self._profile_identity(matches[0][2])
+            if not identity:
+                return None
+            identities.append(identity)
+        return "|".join(identities) if identities else None
 
     def list_model_profiles(self):
         """直接读 mykey.py 结构（不依赖能否成功构建出 client），这样空聚合渠道、
@@ -1114,11 +1186,13 @@ class AgentManager:
                     except Exception:
                         pass
             agent = sess.agent
-            # 模型取会话绑定 sess.llm_no,未绑定回退全局默认。切换走 set_session_model。
-            no = sess.llm_no if sess.llm_no is not None else _global_default_llm_no()
+            # 优先按 model+route 身份恢复；旧会话没有 identity 时才按下标。
+            no = self._select_session_client(sess, agent)
             if no is not None and hasattr(agent, "next_llm"):
                 with contextlib.suppress(Exception):
                     agent.next_llm(int(no))
+            sess.llm_no = getattr(agent, "llm_no", no)
+            sess.llm_identity = self._agent_identity(agent)
             with self.lock:
                 sess.running_llm_no = getattr(agent, "llm_no", no)
                 try:
@@ -1313,11 +1387,13 @@ class AgentManager:
             if sess.agent is not None:
                 return {"ok": True, "sessionId": sid, "restored": False, "reason": "agent already alive"}
         agent = self.make_agent(sess)
-        # 恢复 agent 时按会话绑定 seed 模型(未绑定则全局默认),保持显示/使用一致。
-        no = sess.llm_no if sess.llm_no is not None else _global_default_llm_no()
+        # 恢复 agent 时优先按会话绑定的 model+route identity，旧会话才按下标。
+        no = self._select_session_client(sess, agent)
         if no is not None and hasattr(agent, "next_llm"):
             with contextlib.suppress(Exception):
                 agent.next_llm(int(no))
+        sess.llm_no = getattr(agent, "llm_no", no)
+        sess.llm_identity = self._agent_identity(agent)
         if sess.llm_history:
             try:
                 agent.llmclient.backend.history = sess.llm_history
@@ -1357,6 +1433,23 @@ class AgentManager:
                     and hasattr(sess.agent, "next_llm")):
                 with contextlib.suppress(Exception):
                     sess.agent.next_llm(int(llm_no))
+            if sess.agent is not None:
+                if sess.status == "running":
+                    clients = getattr(sess.agent, "llmclients", []) or []
+                    if 0 <= sess.llm_no < len(clients):
+                        sess.llm_identity = self._agent_identity(
+                            sess.agent, clients[sess.llm_no])
+                else:
+                    sess.llm_no = getattr(sess.agent, "llm_no", sess.llm_no)
+                    sess.llm_identity = self._agent_identity(sess.agent)
+            else:
+                # No live clients are available yet; resolve the selected native
+                # profile from mykey now so a later reload cannot reinterpret the
+                # binding by its mutable list index.
+                try:
+                    sess.llm_identity = self._profile_identity_for_index(sess.llm_no)
+                except (TypeError, ValueError, ImportError, KeyError):
+                    sess.llm_identity = None
             sess.updated_at = time.time()
             self._persist_session(sess)
         return {"ok": True, "sessionId": sid, "llmNo": sess.llm_no, "model": self._live_model(sess)}

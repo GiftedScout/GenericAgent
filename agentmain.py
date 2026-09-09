@@ -68,11 +68,26 @@ class GenericAgent:
         self.extra_sys_prompts = []
         self.intervene = self.extrakeyinfo = None
 
+    def _llm_client_identity(self, client=None):
+        """Return a stable model+route identity; never include API credentials."""
+        client = self.llmclient if client is None else client
+        backend = getattr(client, 'backend', None) or client
+        sessions = getattr(backend, '_sessions', None)
+        if sessions:
+            parts = [self._llm_client_identity(s) for s in sessions]
+            return '|'.join(parts) if all(parts) else ''
+        model = str(getattr(backend, 'model', '') or '').strip()
+        route = str(getattr(backend, 'api_base', '') or '').strip().rstrip('/')
+        return f'{model}@{route}' if model and route else ''
+
     def load_llm_sessions(self):
         mykeys, changed = reload_mykeys()
         if not changed and hasattr(self, 'llmclients'): return
         try: oldhistory, oldname = self.llmclient.backend.history, self.llmclient.backend.name
         except: oldhistory = oldname = None
+        old_identity = (self._llm_client_identity()
+                        if getattr(self, 'llmclient', None) is not None else '')
+        oldno = getattr(self, 'llm_no', 0)
         llm_sessions = []
         for k, cfg in mykeys.items():
             if not any(x in k for x in ['api', 'config', 'cookie']): continue
@@ -89,8 +104,17 @@ class GenericAgent:
                 except Exception as e: print(f'\n\n\n[ERROR] Failed to init MixinSession with cfg {s["mixin_cfg"]}: {e}!!!\n\n')
         self.llmclients = llm_sessions
         if not self.llmclients: return
-        names = [c.backend.name if not isinstance(c, dict) else f'BADMIXIN_{i}' for i, c in enumerate(self.llmclients)]
-        if oldname in names: self.llm_no = names.index(oldname)
+        identities = [self._llm_client_identity(c) if not isinstance(c, dict) else ''
+                      for c in self.llmclients]
+        names = [c.backend.name if not isinstance(c, dict) else f'BADMIXIN_{i}'
+                 for i, c in enumerate(self.llmclients)]
+        if old_identity and old_identity in identities:
+            self.llm_no = identities.index(old_identity)
+        elif oldname in names:
+            # Compatibility for sessions created before stable mykey identity.
+            self.llm_no = names.index(oldname)
+        elif isinstance(oldno, int) and 0 <= oldno < len(self.llmclients):
+            self.llm_no = oldno
         self.llmclient = self.llmclients[self.llm_no%len(self.llmclients)]
         if oldhistory: self.llmclient.backend.history = oldhistory
     

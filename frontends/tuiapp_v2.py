@@ -1796,6 +1796,7 @@ def _remember_session_preference(sess: "AgentSession") -> None:
         try: model = agent.get_llm_name(model=True) or ""
         except Exception: model = ""
     row = {"name": name, "workspace": workspace, "llm_no": int(getattr(agent, "llm_no", 0)),
+           "llm_identity": str(getattr(agent, "_llm_client_identity", lambda: "")() or ""),
            "llm_name": str(getattr(agent, "get_llm_name", lambda: "")() or ""),
            "model": str(model), "effort": str(effort)}
     rows = [r for r in _session_pref_records()
@@ -4113,11 +4114,21 @@ class GenericAgentTUI(App[None]):
             return
         try:
             agent = sess.agent
+            want_identity = pref.get("llm_identity") or ""
+            # Records from the intermediate build used llm_key; accept it only
+            # as legacy data, never write or generate identities from mykey names.
+            legacy_key = pref.get("llm_key") or ""
             want_name = pref.get("llm_name") or ""
             clients = getattr(agent, "llmclients", []) or []
-            if want_name and clients:
+            if clients:
+                identities = [getattr(agent, "_llm_client_identity", lambda c: "")(c) for c in clients]
                 names = [agent.get_llm_name(c) for c in clients]
-                if want_name in names:
+                if want_identity and want_identity in identities:
+                    agent.next_llm(identities.index(want_identity))
+                elif legacy_key and legacy_key in identities:
+                    agent.next_llm(identities.index(legacy_key))
+                elif want_name and want_name in names:
+                    # Compatibility for preference records written before llm_key.
                     agent.next_llm(names.index(want_name))
                 elif isinstance(pref.get("llm_no"), int) and 0 <= pref["llm_no"] < len(clients):
                     agent.next_llm(pref["llm_no"])
@@ -5794,44 +5805,127 @@ class GenericAgentTUI(App[None]):
         msg = f"🔑 已重载 mykey.py（{n_ok} 个会话）" + (f"，{n_fail} 个失败" if n_fail else "")
         self._system(msg)
 
+    def _llm_catalog_rows(self):
+        """Return the live LLM clients enriched with mykey's display catalog.
+
+        The executable index remains the agent's flat ``llm_no``; only the UI
+        presentation is hierarchical. Missing metadata gets a deterministic
+        fallback, so old/custom mykey entries remain selectable.
+        """
+        import re
+        try:
+            import mykey
+            catalog = getattr(mykey, "LLM_CATALOG", {}) or {}
+        except Exception:
+            catalog = {}
+        agent = self.current.agent
+        agent.load_llm_sessions()
+        rows = []
+        for idx, client in enumerate(getattr(agent, "llmclients", []) or []):
+            backend = getattr(client, "backend", None)
+            key = getattr(backend, "_mykey_name", "")
+            meta = catalog.get(key, {}) if isinstance(catalog, dict) else {}
+            model = str(getattr(backend, "model", "") or getattr(backend, "name", "") or "")
+            base = str(getattr(backend, "api_base", "") or "")
+            name = str(getattr(backend, "name", "") or key or f"#{idx}")
+            if not meta:
+                # Custom configs can still participate without manual catalog work.
+                low = f"{key} {model}".lower()
+                kind = ("本地模型" if base.startswith(("http://127.", "http://localhost"))
+                        else "DeepSeek" if "deepseek" in low
+                        else "Claude" if "claude" in low
+                        else "OpenAI")
+                router = ("本地" if kind == "本地模型" else
+                          (re.sub(r"^https?://", "", base).split("/", 1)[0] or "未标注路由"))
+            else:
+                kind, router = meta.get("type", "其他模型"), meta.get("router", "未标注路由")
+            rows.append({"index": idx, "type": str(kind), "router": str(router),
+                         "model": model, "name": name, "current": idx == agent.llm_no})
+        return rows
+
+    def _open_llm_type_picker(self) -> None:
+        rows = self._llm_catalog_rows()
+        groups = {}
+        for row in rows:
+            groups.setdefault(row["type"], []).append(row)
+        choices = []
+        for kind in sorted(groups, key=str.casefold):
+            n = len(groups[kind])
+            current = any(r["current"] for r in groups[kind])
+            choices.append((("✓ " if current else "  ") + f"{kind}  ({n})", kind))
+        msg = ChatMessage(
+            role="system",
+            content="选择模型类型（↑/↓ 移动，Enter/→ 确认，Esc 取消）",
+            kind="choice", choices=choices,
+            on_select=lambda kind: self._open_llm_router_picker(kind),
+        )
+        self.current.messages.append(msg)
+        self._refresh_messages()
+
+    def _open_llm_router_picker(self, kind: str) -> str:
+        rows = [r for r in self._llm_catalog_rows() if r["type"] == kind]
+        groups = {}
+        for row in rows:
+            groups.setdefault(row["router"], []).append(row)
+        choices = []
+        for router in sorted(groups, key=str.casefold):
+            n = len(groups[router])
+            current = any(r["current"] for r in groups[router])
+            choices.append((("✓ " if current else "  ") + f"{router}  ({n})", router))
+        msg = ChatMessage(
+            role="system",
+            content=f"{kind} → 选择路由（↑/↓ 移动，Enter/→ 确认，Esc 取消）",
+            kind="choice", choices=choices,
+            on_select=lambda router, kind=kind: self._open_llm_model_picker(kind, router),
+        )
+        self.current.messages.append(msg)
+        self._refresh_messages()
+        return f"已选择类型：{kind}"
+
+    def _open_llm_model_picker(self, kind: str, router: str) -> str:
+        rows = [r for r in self._llm_catalog_rows()
+                if r["type"] == kind and r["router"] == router]
+        choices = []
+        for row in rows:
+            mark = "✓ " if row["current"] else "  "
+            # Keep the actual model as the final/most prominent component;
+            # append the config name only when the same route exposes duplicates.
+            suffix = f"  · {row['name']}" if sum(x["model"] == row["model"] for x in rows) > 1 else ""
+            choices.append((f"{mark}{row['model']}{suffix}", row["index"]))
+        msg = ChatMessage(
+            role="system",
+            content=f"{kind} → {router} → 选择具体模型（↑/↓ 移动，Enter 确认，Esc 取消）",
+            kind="choice", choices=choices,
+            on_select=lambda idx: self._do_switch_llm(idx),
+        )
+        self.current.messages.append(msg)
+        self._refresh_messages()
+        return f"已选择路由：{router}"
+
     def _cmd_llm(self, args, raw):
         sess = self.current
         if args:
             try:
                 sess.agent.next_llm(int(args[0]))
                 _remember_session_preference(sess)
-                self._system(f"Switched model to #{int(args[0])}.")
+                self._system(f"已切换到模型 #{int(args[0])}：{sess.agent.get_llm_name()}")
             except Exception as e:
-                self._system(f"Switch failed: {e}")
+                self._system(f"切换失败: {e}")
             return
         try:
-            rows = sess.agent.list_llms()
+            self._open_llm_type_picker()
         except Exception as e:
-            self._system(f"List failed: {e}")
-            return
-        if not rows:
-            self._system("没有可用模型。")
-            return
-        choices = []
-        for i, name, cur in rows:
-            mark = "✓ " if cur else "  "
-            choices.append((f"{mark}[{i}] {name}", i))
-        msg = ChatMessage(
-            role="system",
-            content="选择模型 (↑/↓ 移动，→/Enter 确认，Esc 取消)",
-            kind="choice",
-            choices=choices,
-            on_select=lambda v: self._do_switch_llm(v),
-        )
-        self.current.messages.append(msg)
-        self._refresh_messages()
+            self._system(f"模型目录读取失败: {e}")
 
     def _do_switch_llm(self, idx: int) -> str:
         try:
             self.current.agent.next_llm(int(idx))
             _remember_session_preference(self.current)
-            name = self.current.agent.get_llm_name()
-            return f"已切换到 [{idx}] {name}"
+            rows = self._llm_catalog_rows()
+            row = next((r for r in rows if r["index"] == int(idx)), None)
+            if row:
+                return f"已切换到 {row['type']} → {row['router']} → {row['model']}"
+            return f"已切换到 #{idx} {self.current.agent.get_llm_name()}"
         except Exception as e:
             return f"❌ 切换失败: {e}"
 
