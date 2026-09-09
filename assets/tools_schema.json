@@ -95,5 +95,6 @@
       "quality": {"type": "string", "default": "auto", "description": "Upstream quality parameter; defaults to auto"},
       "timeout": {"type": "integer", "default": 180}},
       "required": ["prompt"]}
-  }}
+  }},
+  {"type":"function","function":{"name":"memory_search","description":"Search the source-verified layered memory sidecar. Files remain authoritative; zvec is rebuildable and lexical fallback is automatic.","parameters":{"type":"object","properties":{"query":{"type":"string","description":"Search query; required for search/exact"},"action":{"type":"string","enum":["search","exact","rebuild","update"],"default":"search"},"k":{"type":"integer","minimum":1,"maximum":100,"default":8},"layers":{"type":"array","items":{"type":"string","enum":["L1","L2","L3","L4"]},"description":"Optional layer allow-list"},"include_l4":{"type":"boolean","default":false,"description":"Include L4 raw sessions when layers are omitted"}},"required":[]}}}
 ]

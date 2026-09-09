@@ -554,6 +554,41 @@ class GenericAgentHandler(BaseHandler):
         matches = re.findall(rf"```(?:{code_type})\n(.*?)\n```", response.content, re.DOTALL)
         return matches[-1].strip() if matches else None
 
+    def do_memory_search(self, args, response):
+        """Search source-verified layered memory through the zvec sidecar."""
+        action = str(args.get("action", "search") or "search").lower()
+        query = str(args.get("query", "") or "").strip()
+        if action not in {"search", "exact", "rebuild", "update"}:
+            return StepOutcome(f"[Error] unsupported action: {action}", next_prompt="\n")
+        if action in {"search", "exact"} and not query:
+            return StepOutcome("[Error] query is required", next_prompt="\n")
+        try:
+            from memory_search import MemorySearch
+            layers = args.get("layers")
+            if isinstance(layers, str):
+                layers = [item.strip() for item in layers.split(",") if item.strip()]
+            searcher = MemorySearch(include_l4=_arg(args, "include_l4", False, bool))
+            action = str(args.get("action", "search") or "search").lower()
+            k = _arg(args, "k", 8, int)
+            if action == "rebuild":
+                result = {"chunks": searcher.rebuild()}
+            elif action == "update":
+                result = {"chunks_replaced": searcher.update()}
+            elif action == "exact":
+                result = searcher.exact(query, k=k, layers=layers)
+            else:
+                result = searcher.search(query, k=k, layers=layers)
+            payload = json.dumps(result, ensure_ascii=False, indent=2, default=json_default)
+            maxlen = self._get_tool_maxlen(12000, args)
+            return StepOutcome(smart_format(payload, max_str_len=maxlen), next_prompt="\n")
+        except Exception as exc:
+            # Memory is an enhancement; never make the main agent unusable when
+            # an optional zvec installation or sidecar is unavailable.
+            return StepOutcome(
+                f"[Error] memory search failed: {type(exc).__name__}: {exc}",
+                next_prompt="\n",
+            )
+
     def do_ocr(self, args, response):
         """用视觉模型从本地图片提取文字；优先当前模型，失败自动轮换其他已配置视觉模型。"""
         path = args.get("image_path") or args.get("path")

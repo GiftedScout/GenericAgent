@@ -17,6 +17,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# zvec is an optional rebuildable semantic sidecar; memory_search falls back lexically.
+memory = [
+    "zvec>=0.7.0",
+]
 # select extras, not all. match current task/env.
 # examples: .[ui] for GUI, bot deps only if bot needed.
 ui = [
@@ -44,7 +48,7 @@ requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = []
+py-modules = ["memory_search"]
 packages = ["ga_cli"]
 
 [project.scripts]
