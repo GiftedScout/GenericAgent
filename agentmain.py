@@ -219,10 +219,33 @@ class GenericAgent:
             if self.force_non_stream:
                 self.llmclient.backend.stream = False
                 self.llmclient.backend.read_timeout = max(self.llmclient.backend.read_timeout, 1200)
+            # 多模态：把用户粘贴的图片以 Claude 风格图片块并入首条用户消息，让多模态
+            # 模型真正"看到"图像字节。此前 run() 丢弃 task["images"]，只把路径文本发给
+            # 模型（TUI 会把 [Image #N] 展开成路径），多模态模型收不到图像，只能靠
+            # ocr 工具兜底，结果时好时坏。仅原生多模态后端(NativeToolClient)走此路径；
+            # 纯文本协议后端保持原样（路径已在正文中）。
+            initial_content = None
+            _imgs = task.get("images") or []
+            if _imgs and isinstance(self.llmclient, NativeToolClient):
+                import base64, mimetypes
+                blocks = [{"type": "text", "text": raw_query}]
+                for _p in _imgs:
+                    try:
+                        if not (isinstance(_p, str) and os.path.isfile(_p)):
+                            continue
+                        _mime = mimetypes.guess_type(_p)[0] or 'image/png'
+                        with open(_p, 'rb') as _f:
+                            _data = base64.b64encode(_f.read()).decode()
+                        blocks.append({"type": "image", "source": {"type": "base64", "media_type": _mime, "data": _data}})
+                    except Exception as _e:
+                        blocks.append({"type": "text", "text": f"[image unreadable: {_p} ({_e})]"})
+                if len(blocks) > 1:
+                    initial_content = blocks
             gen = agent_runner_loop(self.llmclient, sys_prompt, raw_query,
                                     handler, [] if single_update_turn else TOOLS_SCHEMA,
                                     max_turns=1 if single_update_turn else 180,
-                                    verbose=self.verbose, yield_info=True)
+                                    verbose=self.verbose, yield_info=True,
+                                    initial_user_content=initial_content)
             try:
                 full_resp = ""; display_resp = ""; last_pos = 0; display_pos = 0
                 curr_turn = 0; turn_resps = self.all_outputs[-1]["outputs"]

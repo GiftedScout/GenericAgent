@@ -109,9 +109,13 @@ def trim_messages_history(history, sess):
     target = int(cap * getattr(sess, 'trim_keep_rate', 0.6))
     kp = sess.trim_keep_prefix
     def cost(ms): return sum(len(json.dumps(m, ensure_ascii=False)) for m in ms)
-    compress_history_tags(history, interval=getattr(sess, 'cut_msg_interval', 7), counter_owner=sess)
-    STATS.update(ctx=(c := cost(history)), msgs=len(history)); print(f'[Debug] Current context: {c} chars, {len(history)} messages.')
+    # 缓存前缀保护：未超限时绝不改写历史（含按节奏的旧消息截断）。前缀逐字节
+    # 稳定才能让 DeepSeek/Anthropic 的前缀缓存命中；旧逻辑每 N 轮截断旧消息，
+    # 使前缀反复变化、缓存持续失效，缓存命中价极低的模型实际成本反而更高。
+    c = cost(history)
+    STATS.update(ctx=c, msgs=len(history)); print(f'[Debug] Current context: {c} chars, {len(history)} messages.')
     if c <= cap: return
+    compress_history_tags(history, interval=getattr(sess, 'cut_msg_interval', 7), counter_owner=sess)
     compress_history_tags(history, keep_recent=4, force=True, counter_owner=sess)
     if cost(history) <= target: return
     pre, post = history[:kp], history[kp:]; costs = [len(json.dumps(m, ensure_ascii=False)) for m in post]; c = cost(pre) + sum(costs); i = 0
@@ -322,7 +326,7 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
             break
         return "".join(out)
     if api_mode == "responses":
-        seen_delta = False; fc_buf = {}; current_fc_idx = None; reasoning_text = ""
+        seen_delta = False; fc_buf = {}; current_fc_idx = None; reasoning_text = ""; think_open = False
         for line in resp_lines:
             if not line: continue
             line = line.decode('utf-8', errors='replace') if isinstance(line, bytes) else line
@@ -334,16 +338,29 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
             etype = evt.get("type", "")
             if etype == "response.output_text.delta":
                 delta = _visible_content(evt.get("delta", ""))
-                if delta: seen_delta = True; content_text += delta; yield delta
+                if delta:
+                    if think_open: yield "\n</thinking>\n"; think_open = False
+                    seen_delta = True; content_text += delta; yield delta
             elif etype == "response.output_text.done" and not seen_delta:
                 text = _visible_content(evt.get("text", ""), finish=True)
-                if text: content_text += text; yield text
+                if text:
+                    if think_open: yield "\n</thinking>\n"; think_open = False
+                    content_text += text; yield text
             elif etype == "response.reasoning_text.delta":
+                # 与 chat_completions 分支对齐：流式思考始终上屏（TUI 折叠窗口负责
+                # 防刷屏），是否入库仍由 omit_thinking 决定。此前该分支只累积不上屏，
+                # 导致 DeepSeek 等走 responses 端点的模型思考完全不回显。
                 delta = evt.get("delta", "")
-                if delta and not omit_thinking: reasoning_text += delta
+                if delta:
+                    if not omit_thinking: reasoning_text += delta
+                    if not think_open: yield "\n<thinking>\n"; think_open = True
+                    yield _disp_think_escape(delta)
             elif etype == "response.reasoning_text.done":
                 text = evt.get("text", "")
-                if text and not omit_thinking: reasoning_text = text
+                if text and not reasoning_text:
+                    if not omit_thinking: reasoning_text = text
+                    if not think_open: yield "\n<thinking>\n"; think_open = True
+                    yield _disp_think_escape(text)
             elif etype == "response.output_item.added":
                 item = evt.get("item", {})
                 if item.get("type") == "function_call":
@@ -384,6 +401,7 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
                 _raise_if_retryable_overload(emsg)
                 if emsg: content_text += f"!!!Error: {emsg}"; yield f"!!!Error: {emsg}"
                 break
+        if think_open: yield "\n</thinking>\n"
         tail = _visible_content("", finish=True)
         if tail: content_text += tail; yield tail
         blocks = []
@@ -674,6 +692,16 @@ def _to_responses_input(messages):
                 elif ptype == "image_url":
                     url = (part.get("image_url") or {}).get("url", "")
                     if url and role != "assistant": parts.append({"type": "input_image", "image_url": url})
+                elif ptype == "image" and role != "assistant":
+                    # 内部统一的 Claude 风格图片块（用户贴图经 agentmain 注入）：
+                    # 此前该分支只认 image_url，Claude 风格图片块被静默丢弃，
+                    # 导致走 responses 端点的多模态模型永远收不到图片。
+                    src = part.get("source") or {}
+                    if src.get("type") == "base64" and src.get("data"):
+                        parts.append({"type": "input_image",
+                                      "image_url": f"data:{src.get('media_type', 'image/png')};base64,{src['data']}"})
+                    elif src.get("type") == "url" and src.get("url"):
+                        parts.append({"type": "input_image", "image_url": src["url"]})
         if len(parts) == 0: parts = [{"type": text_type, "text": str(content) if not isinstance(content, list) else '[empty]'}]
         result.append({"role": role, "content": parts})
         pending = []
@@ -1346,8 +1374,10 @@ class NativeToolClient:
         for tid in self._pending_tool_ids:
             if tid not in tr_id_set: tool_result_blocks.append({"type": "tool_result", "tool_use_id": tid, "content": ""})
         self._pending_tool_ids = []
-        # Filter whitespace-only text blocks that cause 400 on strict API proxies
-        filtered_content = [c for c in combined_content if c.get("text", "").strip()]
+        # Filter whitespace-only text blocks that cause 400 on strict API proxies.
+        # 非 text 块（如图片块）必须保留：此前该过滤器会因图片块无 "text" 键而把
+        # 用户粘贴的图片静默丢弃，导致多模态模型永远收不到图像。
+        filtered_content = [c for c in combined_content if c.get("type") != "text" or str(c.get("text", "")).strip()]
         final_content = tool_result_blocks + filtered_content
         if not final_content: final_content = [{"type": "text", "text": "."}]
         merged = {"role": "user", "content": final_content}
