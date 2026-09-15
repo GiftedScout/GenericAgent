@@ -102,5 +102,38 @@ v = visible(b)
 check("answer kept", "Answer: y" in v, v)
 check("no tag leaked", O not in v and C not in v, v)
 
+print("[8] frame-safe escape: quoted OPEN tag split across SSE frames")
+# Servers emit a few chars per frame, so a tag the model merely quotes inside
+# its CoT is split mid-tag ("... `<think" + "ing>` ...").  Escaping each frame
+# on its own lets the halves re-assemble in the display stream, and the TUI's
+# non-greedy envelope regex then closes the CoT block early (CoT tail floods the
+# terminal).  The escaper must hold the partial prefix back until the tag is
+# complete, then escape it whole.
+y, b = run([O2 + "\nquote `" + O2[:6], O2[6:] + "`\n" + C2 + "\n\nA"])
+v_ = "".join(y)
+check("split quoted open tag escaped whole", "＜thinking＞" in v_, repr(v_))
+check("no half open tag left", O2[:6] not in v_.replace(O2, ""), repr(v_))
+check("answer kept", v_.rstrip().endswith("A"), repr(v_[-30:]))
+
+print("[9] frame-safe escape: quoted CLOSE tag split across SSE frames")
+# Same hazard for a quoted close tag: if the halves re-assemble un-escaped the
+# TUI pair regex closes the envelope at the quote, dumping the CoT tail.
+y, b = run([O2 + "\nthe close tag is `" + C2[:5], C2[5:] + "`\n" + C2 + "\n\nAnswer: z"])
+v_ = "".join(y)
+after = v_[v_.rfind(C2) + len(C2):]
+check("answer after envelope", "Answer: z" in after, repr(after))
+check("CoT not dumped after envelope", "close tag is" not in after, repr(after))
+check("split quoted close tag escaped", "＜/thinking＞" in v_, repr(v_))
+
+print("[10] escaper flushes a dangling partial tag verbatim (deliberate)")
+# A stream that dies mid-tag leaves a prefix in the escaper's tail.  We flush it
+# verbatim on purpose: escaping a lone "<" would corrupt legitimate text such as
+# "a < b".  The guard is that no *complete* tag is fabricated and the envelope
+# still pairs, so a truncated CoT can never leak as content.
+y, b = run([O2 + "\nbody\n" + C2[:5]])
+v_ = "".join(y)
+check("no fabricated complete close tag", v_.count(C2) == 1, repr(v_))
+check("no fabricated complete open tag", v_.count(O2) == 1, repr(v_))
+
 print(f"\n=== {PASS} passed, {FAIL} failed ===")
 sys.exit(1 if FAIL else 0)

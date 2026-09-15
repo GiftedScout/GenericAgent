@@ -262,16 +262,46 @@ def _strip_think_tags(text):
 def _disp_think_escape(s):
     """Display-only: neutralize literal think tags inside streamed CoT so the
     TUI pair-stripper cannot close the envelope early (screenshot bug: CoT that
-    quotes source code containing </thinking> split into junk folds).  Blocks /
+    quotes source code containing a close tag split into junk folds).  Blocks /
     history keep the raw text."""
-    return (s or "").replace("</thinking>", "＜/thinking＞").replace("<thinking>", "＜thinking＞") \
-                    .replace("</think>", "＜/think＞").replace("<think>", "＜think＞")
+    s = s or ""
+    for t in _DISP_TAGS: s = s.replace(t, "＜" + t[1:-1] + "＞")
+    return s
+
+_DISP_TAGS = ('</thinking>', '<thinking>', '</think>', '<think>')
+
+class _DispThinkEscaper:
+    """Frame-safe _disp_think_escape for streamed CoT.
+
+    Servers emit only a few characters per SSE delta, so a tag the model merely
+    *quotes* inside its CoT (or answer) is routinely split across two frames.
+    Escaping each frame on its own lets a half tag through ("... </think" +
+    "ing> ..."), the halves re-assemble in the display stream, and the TUI's
+    non-greedy envelope regex then closes the CoT block early -- dumping the
+    CoT tail into the terminal.  Hold a trailing partial tag prefix back until
+    the next frame (flush() at end of stream) so every tag is escaped whole."""
+    def __init__(self): self._tail = ""
+
+    def feed(self, s):
+        data = self._tail + (s or ""); self._tail = ""
+        keep = 0
+        for t in _DISP_TAGS:
+            for n in range(1, len(t)):
+                if data.endswith(t[:n]): keep = max(keep, n)
+        if keep:
+            self._tail = data[-keep:]; data = data[:-keep]
+        return _disp_think_escape(data)
+
+    def flush(self):
+        s = _disp_think_escape(self._tail); self._tail = ""
+        return s
 
 def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=False):
     """Parse OpenAI SSE stream (chat_completions or responses API).
     Yields text chunks, returns list[content_block].
     content_block: {type:'text', text:str} | {type:'tool_use', id:str, name:str, input:dict}
     """
+    _esc = _DispThinkEscaper()
     content_text = ""
     # A few OpenAI-compatible servers place CoT inside regular content deltas
     # as <think>...</think>, sometimes splitting tags across SSE frames.  Do
@@ -379,13 +409,13 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
                 if delta:
                     if not omit_thinking: reasoning_text += delta
                     if not think_open: yield "\n<thinking>\n"; think_open = True
-                    yield _disp_think_escape(delta)
+                    yield _esc.feed(delta)
             elif etype == "response.reasoning_text.done":
                 text = evt.get("text", "")
                 if text and not reasoning_text:
                     if not omit_thinking: reasoning_text = text
                     if not think_open: yield "\n<thinking>\n"; think_open = True
-                    yield _disp_think_escape(text)
+                    yield _esc.feed(text)
             elif etype == "response.output_item.added":
                 item = evt.get("item", {})
                 if item.get("type") == "function_call":
@@ -426,6 +456,8 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
                 _raise_if_retryable_overload(emsg)
                 if emsg: content_text += f"!!!Error: {emsg}"; yield f"!!!Error: {emsg}"
                 break
+        _ft = _esc.flush()
+        if _ft: yield _ft
         if think_open: yield "\n</thinking>\n"
         tail = _visible_content("", finish=True)
         if tail: content_text += tail; yield tail
@@ -461,7 +493,7 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
                 # 是否入库仍由 omit_thinking 决定。内嵌字面标签显示前全角化。
                 reasoning_text += rc
                 if not think_open: yield "\n<thinking>\n"; think_open = True
-                yield _disp_think_escape(rc)
+                yield _esc.feed(rc)
             if delta.get("content"):
                 _n = len(tag_state["think_out"])
                 text = _visible_content(delta["content"])
@@ -470,7 +502,7 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
                     # 内联 <think>（--reasoning-format none）同样全量走显示信封；
                     # 绝不进入 content_text/历史。内嵌字面标签已全角化。
                     if not think_open: yield "\n<thinking>\n"; think_open = True
-                    yield _disp_think_escape(thk)
+                    yield _esc.feed(thk)
                 if text:
                     if think_open: yield "\n</thinking>\n"; think_open = False
                     content_text += text; yield text
@@ -485,6 +517,8 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
                 if tc.get("id") and not tc_buf[idx]["id"]: tc_buf[idx]["id"] = tc["id"]
             usage = evt.get("usage")
             if usage: _record_usage(usage, api_mode)
+        _ft = _esc.flush()
+        if _ft: yield _ft
         if think_open: yield "\n</thinking>\n"
         tail = _visible_content("", finish=True)
         if tail: content_text += tail; yield tail
