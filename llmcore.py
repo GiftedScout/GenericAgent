@@ -277,8 +277,17 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
     # as <think>...</think>, sometimes splitting tags across SSE frames.  Do
     # the filtering before yielding so Qwen's private reasoning never flashes
     # in the TUI and is never accumulated in content_text/history.
-    tag_state = {"inside": False, "tail": "", "think_out": []}
+    tag_state = {"inside": False, "tail": "", "think_out": [], "last": None}
     open_tags, close_tags = ("<thinking>", "<think>"), ("</thinking>", "</think>")
+    # 锚定规则（qwen3 实测 SSE 校准）: 模型真实标签总在"干净边界"——
+    # 开标签在流首, 闭标签独占一行(前字符是换行)。正文里出现的标签串
+    # (模型在思考里用反引号引用标签、或在答案里内联写标签) 是字面量,
+    # 不得触发状态翻转: 否则思考尾段泄入可见流(刷屏), 或答案尾部被
+    # 吞进思考(截断)。last = 最后已提交的原始字符; 真实标签提交后记为
+    # 换行边界, 允许空思维块(开闭标签紧邻)也能正确闭合。
+    def _tag_anchored(pos, data):
+        prev = data[pos - 1] if pos > 0 else tag_state["last"]
+        return prev is None or prev == "\n"
     def _visible_content(delta, finish=False):
         if not omit_thinking: return delta
         data = tag_state["tail"] + (delta or "")
@@ -286,31 +295,45 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
         out = []
         while data:
             tags = close_tags if tag_state["inside"] else open_tags
-            # 非思维链态遇到孤立的关闭标签（如上游只发了 "</think>"）：
-            # 原样放行会把噪声字面量泄入 content/history，直接丢弃该 token。
+            # 非思维链态遇到孤立的闭标签（如上游只发了闭标签）：
+            # 锚定的直接丢弃, 防噪声字面量泄入 content/history；
+            # 非锚定的是模型在正文引用标签字面量, 原样放行。
             if not tag_state["inside"]:
                 hits = [(data.find(t), t) for t in close_tags if data.find(t) >= 0]
                 opos = min([p for p in (data.find(t) for t in open_tags) if p >= 0], default=-1)
                 if hits:
                     cpos, ctag = min(hits)
                     if opos == -1 or cpos < opos:
-                        out.append(data[:cpos]); data = data[cpos + len(ctag):]
+                        if _tag_anchored(cpos, data):
+                            out.append(data[:cpos]); data = data[cpos + len(ctag):]
+                        else:
+                            out.append(data[:cpos + len(ctag)]); data = data[cpos + len(ctag):]
+                        tag_state["last"] = ctag[-1]
                         continue
             positions = [(data.find(tag), tag) for tag in tags if data.find(tag) >= 0]
             if positions:
                 pos, tag = min(positions)
-                if tag_state["inside"]: tag_state["think_out"].append(data[:pos])
-                else: out.append(data[:pos])
+                if _tag_anchored(pos, data):
+                    if tag_state["inside"]: tag_state["think_out"].append(data[:pos])
+                    else: out.append(data[:pos])
+                    data = data[pos + len(tag):]
+                    tag_state["inside"] = not tag_state["inside"]
+                    tag_state["last"] = "\n"
+                    continue
+                # 非锚定: 标签字面量是正文, 原样放行且不翻转状态
+                if tag_state["inside"]: tag_state["think_out"].append(data[:pos + len(tag)])
+                else: out.append(data[:pos + len(tag)])
                 data = data[pos + len(tag):]
-                tag_state["inside"] = not tag_state["inside"]
+                tag_state["last"] = tag[-1]
                 continue
-            # Retain only a possible prefix of an opening/closing tag for the
-            # next SSE frame; every other character is safe to reveal now.
-            # 非思维链态也要为关闭标签的前缀做缓冲，防止 "</think>" 跨帧碎裂泄漏。
+            # 标签只在行首才被认可: 仅当"当前行"尾部是不完整标签前缀时
+            # 缓冲等下一帧判定; 行中前缀必是字面量, 直接放行。
             keep = 0
-            for tag in (tags if tag_state["inside"] else tags + close_tags):
-                for n in range(1, min(len(tag) - 1, len(data)) + 1):
-                    if data.endswith(tag[:n]): keep = max(keep, n)
+            if not finish:
+                partial = data[data.rfind("\n") + 1:]
+                for tag in (tags + close_tags):
+                    for n in range(1, len(tag)):
+                        if partial == tag[:n]: keep = max(keep, n)
             if finish:
                 if tag_state["inside"]: tag_state["think_out"].append(data)
                 else: out.append(data)
@@ -323,6 +346,8 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
             else:
                 # inside 态且无标签前缀可缓冲：这段是纯 CoT 正文，存入 think_out
                 tag_state["think_out"].append(data)
+            consumed = data[:-keep] if keep else data
+            if consumed: tag_state["last"] = consumed[-1]
             break
         return "".join(out)
     if api_mode == "responses":
@@ -677,6 +702,7 @@ def _openai_stream(sess, messages):
         if temperature != 1: payload["temperature"] = temperature
         if sess.max_tokens: payload["max_completion_tokens" if ml.startswith(("gpt-5", "o1", "o2", "o3", "o4")) else "max_tokens"] = sess.max_tokens
         if sess.reasoning_effort: payload["reasoning_effort"] = sess.reasoning_effort
+        if sess.reasoning_format: payload["reasoning_format"] = sess.reasoning_format
     tools = getattr(sess, 'tools', None)
     if tools: payload["tools"] = _prepare_oai_tools(tools, api_mode)
     if sess.service_tier: payload["service_tier"] = sess.service_tier
@@ -837,6 +863,10 @@ class BaseSession:
         # explicit config value remains available for users who prefer hiding
         # it, but SSH Qwen is no longer forced into that mode.
         self.omit_thinking = bool(cfg.get('omit_thinking', False))
+        # llama.cpp 服务端思考拆分开关。none=服务端不拆, 原始标签走 content,
+        # 由下方锚定式客户端拆分器处理。服务端自带拆分器对思考内引用的
+        # 字面标签串无防护, 会把思考尾段误判为正文/把正文尾部吞成思考。
+        self.reasoning_format = cfg.get('reasoning_format')
         mode = str(cfg.get('api_mode', 'chat_completions')).strip().lower().replace('-', '_')
         self.api_mode = 'responses' if mode in ('responses', 'response') else 'chat_completions'
         self.temperature = cfg.get('temperature', 1)
