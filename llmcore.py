@@ -564,6 +564,27 @@ def _stamp_oai_cache_markers(messages, model):
             c = list(c); c[-1] = dict(c[-1], cache_control={'type': 'ephemeral'})
             messages[idx] = {**messages[idx], 'content': c}
 
+# 判定"SSH 隧道/远端端点已死"的错误签名。本函数的重试循环在命中这些签名且
+# sess.ssh_tunnel 存在时，重试前先重建隧道。注：raw_ask 里原有的自愈 except 是
+# 死代码——本函数把一切异常吞掉并转成 yield 的错误字符串，异常永远到不了 raw_ask。
+_TUNNEL_DEAD_MARKS = ("Connection refused", "Connection reset", "Connection aborted",
+                      "Connection broken", "RemoteDisconnected", "Broken pipe",
+                      "Remote end closed", "ECONNREFUSED", "ECONNRESET", "EPIPE")
+
+def _tunnel_dead_err(e):
+    s = str(e)
+    return any(m in s for m in _TUNNEL_DEAD_MARKS)
+
+def _rebuild_ssh_tunnel(sess):
+    name = sess.ssh_tunnel
+    try:
+        import ssh_tunnel as _st
+        _st.close_tunnel(name)
+        _st.ensure_tunnel(name)
+        print(f"[Tunnel] rebuilt {name} before retry")
+    except Exception as re_:
+        print(f"[Tunnel] rebuild failed for {name}: {re_}")
+
 def _stream_with_retry(sess, url, headers, payload, parse_fn):
     STATS['session'] = sess.name
     _RETRYABLE = {408, 409, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526, 527, 529}
@@ -616,6 +637,9 @@ def _stream_with_retry(sess, url, headers, payload, parse_fn):
             err = f"!!!Error: {type(e).__name__}: {e}" if str(e) else f"!!!Error: {type(e).__name__}"
             if getattr(sess, 'should_stop', None) and sess.should_stop(): return []
             if attempt < sess.max_retries:
+                # 隧道死了只重试 HTTP 没有意义（重试的是同一个死端口）：先重建隧道。
+                if getattr(sess, 'ssh_tunnel', None) and _tunnel_dead_err(e):
+                    _rebuild_ssh_tunnel(sess)
                 d = _delay(None, attempt)
                 print(f"[LLM Retry] {type(e).__name__}, retry in {d:.1f}s ({attempt+1}/{sess.max_retries+1})")
                 if _sleep(d): return []
