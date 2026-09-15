@@ -11,7 +11,9 @@ import re
 from pathlib import Path
 
 
-# Vision-capable mykey config names, tried after the requested/current model.
+# Vision-capable mykey config names, used ONLY as last-resort remote fallback
+# when no local OCR tool is installed (user preference: local OCR first, no
+# blind remote rotation).
 VISION_FALLBACKS = [
     "native_oai_config_aihub1",
     "native_oai_config_aihub2",
@@ -23,6 +25,71 @@ VISION_FALLBACKS = [
     "native_oai_config_qwen3_ssh",
     "native_oai_config_lfm",
 ]
+
+_VISION_NAME_HINTS = ("vl", "vision", "omni")
+
+
+def _model_supports_vision(name):
+    """判断 mykey 配置是否支持图片输入。True/False/None(未知)。
+
+    优先级：cfg 显式 'vision' 字段 > 本地端点 /v1/models capabilities 实测
+    （llama.cpp 等会自报 multimodal）> 模型名启发式（vl/vision/omni）。
+    远程端点无显式字段时返回 None（不盲猜，交给本地 OCR）。
+    """
+    try:
+        cfg = getattr(importlib.import_module("mykey"), name)
+    except (ImportError, AttributeError):
+        return None
+    if not isinstance(cfg, dict):
+        return None
+    if "vision" in cfg:
+        return bool(cfg["vision"])
+    base = (cfg.get("apibase") or "").lower()
+    if base.startswith(("http://127.0.0.1", "http://localhost")):
+        try:
+            import requests
+            r = requests.get(base.rstrip("/") + "/models", timeout=5)
+            caps = [str(c).lower() for c in ((r.json().get("models") or [{}])[0].get("capabilities") or [])]
+            return "multimodal" in caps
+        except Exception:
+            return None
+    ml = (cfg.get("model") or "").lower()
+    if any(t in ml for t in _VISION_NAME_HINTS):
+        return True
+    return None
+
+
+# 本地 OCR 引擎单例缓存（初始化要加载模型，秒级~十秒级，不能每次调用重建）
+_LOCAL_OCR_ENGINES = {}
+
+
+def _local_ocr_rapidocr(path):
+    eng = _LOCAL_OCR_ENGINES.get("rapid")
+    if eng is None:
+        from rapidocr_onnxruntime import RapidOCR
+        eng = _LOCAL_OCR_ENGINES["rapid"] = RapidOCR()
+    res, _el = eng(str(path))
+    if not res:
+        return ""
+    return "\n".join(r[1] for r in res)
+
+
+def _local_ocr_easyocr(path):
+    eng = _LOCAL_OCR_ENGINES.get("easy")
+    if eng is None:
+        import easyocr
+        eng = _LOCAL_OCR_ENGINES["easy"] = easyocr.Reader(["ch_sim", "en"], gpu=False, verbose=False)
+    out = eng.imread(str(path))
+    return "\n".join(line for line, _score in (out or []) if line)
+
+
+def _local_ocr_tesseract(path):
+    import shutil
+    if not shutil.which("tesseract"):
+        raise RuntimeError("tesseract not installed")
+    import pytesseract
+    from PIL import Image
+    return pytesseract.image_to_string(Image.open(str(path)))
 
 _DEFAULT_OCR_PROMPT = ("Extract all readable text exactly; preserve layout where possible. "
                        "Output ONLY the extracted text; no commentary, no explanation.")
@@ -78,26 +145,33 @@ def _strip_preamble(text):
 
 
 def _raw_ask_text(sess, messages):
-    """Drive a session's raw_ask generator; return its full text output."""
+    """Drive a session's raw_ask generator; return its final clean text.
+
+    取 StopIteration 里的 MockResponse.content（干净正文），而不是显示流拼接——
+    显示流含思考信封标签等展示用包装，直接收进 OCR 结果会混入标签文本。
+    """
     gen = sess.raw_ask(messages)
-    chunks = []
     try:
         while True:
-            chunks.append(next(gen))
-    except StopIteration:
-        pass
+            next(gen)
+    except StopIteration as e:
+        resp = e.value
+        if resp is not None and getattr(resp, "content", None):
+            return (resp.content or "").strip()
+        return f"!!!Error: empty response (stop_reason={getattr(resp, 'stop_reason', '?')})"
     except Exception as e:
         return f"!!!Error: {type(e).__name__}: {e}"
-    return "".join(chunks).strip()
 
 
 def ocr(image_path, prompt=_DEFAULT_OCR_PROMPT,
         timeout=120, model=None, current=None):
-    """OCR a local image, rotating through configured vision models.
+    """OCR a local image.
 
-    Order: explicit ``model`` (mykey config name) -> ``current`` (the caller's
-    active model) -> ``VISION_FALLBACKS``. First successful extraction wins;
-    raises with per-model errors when every model fails.
+    优先级（用户偏好：能看图的模型直调，否则本地 OCR，不盲轮远程模型）：
+      1. 显式 ``model``（mykey 配置名）：单次远程调用，失败即报错。
+      2. ``current``（调用方当前模型）：支持图片输入则直调，失败落到本地。
+      3. 本地 OCR 引擎链：rapidocr -> easyocr -> tesseract（需安装）。
+      4. 本地引擎全不可用/失败：回退远程 ``VISION_FALLBACKS`` 轮换。
     """
     from llmcore import resolve_session
     mime, data = _read_image(image_path)
@@ -105,20 +179,13 @@ def ocr(image_path, prompt=_DEFAULT_OCR_PROMPT,
         {"type": "text", "text": prompt or _DEFAULT_OCR_PROMPT},
         {"type": "image", "source": {"type": "base64", "media_type": mime, "data": data}},
     ]}]
-    ordered = []
-    for name in ([model] if model else []) + ([current] if current else []) + VISION_FALLBACKS:
-        if name and name not in ordered:
-            ordered.append(name)
+
     errors = []
-    for name in ordered:
-        try:
-            sess = resolve_session(name)
-        except Exception as e:
-            errors.append(f"{name}: {type(e).__name__}: {e}")
-            continue
+
+    def _remote_once(name):
+        sess = resolve_session(name)
         if sess is None:
-            errors.append(f"{name}: not a resolvable session")
-            continue
+            raise RuntimeError(f"{name}: not a resolvable session")
         try:
             sess.read_timeout = max(int(getattr(sess, "read_timeout", 0) or 0), int(timeout))
             sess.max_retries = min(int(getattr(sess, "max_retries", 2) or 0), 2)
@@ -127,8 +194,44 @@ def ocr(image_path, prompt=_DEFAULT_OCR_PROMPT,
         text = _raw_ask_text(sess, messages)
         if text and not text.startswith(("!!!Error:", "[!!!")):
             return _strip_preamble(text)
-        errors.append(f"{name}: {(text or 'empty response')[:200]}")
-    raise RuntimeError(f"all {len(ordered)} OCR models failed: " + " | ".join(errors))
+        raise RuntimeError(f"{name}: {(text or 'empty response')[:200]}")
+
+    # 1) 显式 model：用户点名，单次
+    if model:
+        return _remote_once(model)
+
+    # 2) 当前模型能看图就直调
+    if current:
+        if _model_supports_vision(current) is True:
+            try:
+                return _remote_once(current)
+            except Exception as e:
+                errors.append(str(e))
+        else:
+            errors.append(f"{current}: no image input support (skipped)")
+
+    # 3) 本地 OCR 引擎链
+    local_errors = []
+    for fn in (_local_ocr_rapidocr, _local_ocr_easyocr, _local_ocr_tesseract):
+        try:
+            text = fn(image_path)
+            if text and text.strip():
+                return text.strip()
+            local_errors.append(f"{fn.__name__}: empty result")
+        except Exception as e:
+            local_errors.append(f"{fn.__name__}: {type(e).__name__}: {str(e)[:120]}")
+
+    # 4) 本地全失败/不可用：远程轮换兜底
+    for name in VISION_FALLBACKS:
+        if name == current:
+            continue
+        try:
+            return _remote_once(name)
+        except Exception as e:
+            errors.append(str(e))
+    raise RuntimeError(
+        f"local OCR failed ({' | '.join(local_errors)}) and all "
+        f"{len(VISION_FALLBACKS)} remote vision models failed: " + " | ".join(errors))
 
 
 def generate_image(prompt, size="1K", quality="auto", timeout=180, output_dir=None):

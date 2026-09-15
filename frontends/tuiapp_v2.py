@@ -1175,6 +1175,35 @@ def _fold_chunk_cells(chunk, width, char_width_fn, line_offset=0):
     return breaks, line_offset
 
 
+def _url_fold(word: str, width: int, cell_offset: int):
+    """URL 专属折行：只在 '/' 边界断开，返回 (breaks, final_offset) 或 None。
+
+    终端靠连续字符串识别可点链接（Ctrl+点击）；从中间折断 URL 既难看也不可点。
+    在 '/' 后断开可保留路径段完整；当前行段内无可用 '/' 时退回到普通字符级断点。
+    非 URL 词返回 None，交由常规 CJK/word 折叠处理。
+    """
+    if not re.match(r"^[A-Za-z][A-Za-z0-9+.\-]*://", word):
+        return None
+    from rich.cells import cell_len
+    breaks: list[int] = []
+    offset = cell_offset
+    last_break = 0
+    for i, ch in enumerate(word):
+        cw = cell_len(ch)
+        if offset + cw <= width:
+            offset += cw
+            continue
+        seg = word[last_break:i]
+        slash = seg.rfind("/")
+        b = last_break + slash + 1 if slash >= 3 else i
+        if b <= last_break:
+            b = i
+        breaks.append(b)
+        last_break = b
+        offset = cell_len(word[b:i])
+    return breaks, cell_len(word[last_break:])
+
+
 def _cjk_divide_line(text: str, width: int, fold: bool = True) -> list[int]:
     from rich._wrap import words as _words
     from rich.cells import cell_len as _clen
@@ -1190,6 +1219,13 @@ def _cjk_divide_line(text: str, width: int, fold: bool = True) -> list[int]:
             if cell_offset:
                 breaks.append(start)
             cell_offset = _clen(word)
+            continue
+
+        # URL 不能从中间折断：优先在 '/' 边界换行，保留路径段完整。
+        url_res = _url_fold(word, width, cell_offset)
+        if url_res is not None:
+            breaks.extend(start + b for b in url_res[0])
+            cell_offset = url_res[1]
             continue
 
         has_cjk = bool(_CJK_WRAP_RE.search(word))
@@ -1265,6 +1301,14 @@ def _cjk_compute_wrap_offsets(text, width, tab_size, fold=True,
             if cell_offset:
                 breaks.append(start)
             cell_offset = chunk_width
+            continue
+
+        # URL 专属折行：只在 '/' 边界断开，保链接连续可点（Ctrl+点击）。
+        core = chunk.rstrip()
+        url_res = _url_fold(core, width, cell_offset)
+        if url_res is not None:
+            breaks.extend(start + b for b in url_res[0])
+            cell_offset = url_res[1]
             continue
 
         if has_cjk:

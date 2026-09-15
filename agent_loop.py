@@ -134,6 +134,11 @@ def agent_runner_loop(client, system_prompt, user_input, handler, tools_schema,
             if outcome.settlement:
                 settlement_mode = True
                 handler._done_hooks.clear()
+                # 通知外层（agentmain）：进入后台记忆维护。注意结算轮的正文在拿到
+                # outcome 之前已经流出（yield from response_gen 先于 dispatch），
+                # agentmain 据此把显示缓冲回退到本轮起点并冻结显示通道——
+                # 结算/记忆维护的文本不再进入 TUI，避免"记忆吞掉答案"。
+                yield {"settlement": True, "turn": turn}
             if not outcome.next_prompt:
                 exit_reason = {'result': 'CURRENT_TASK_DONE', 'data': outcome.data}; break
             if outcome.next_prompt.startswith('未知工具'): client.last_tools = ''

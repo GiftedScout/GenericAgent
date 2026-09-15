@@ -43,6 +43,71 @@ def get_system_prompt():
     prompt += get_global_memory()
     return prompt
 
+def iter_display_events(gen, source, turn_resps, stop_check=None):
+    """Consume the agent_runner_loop chunk stream; yield UI display events.
+
+    Events:
+      {'next': piece, ...}          — append piece to the display buffer
+      {'done': text, 'outputs': ...} — final (envelope-closed) text + full history
+
+    Settlement (background memory-maintenance) text must never reach the UI.
+    agent_loop emits {'settlement': True, 'turn': n} at the END of the turn
+    that invoked the settlement tool, i.e. after that turn's answer text has
+    already streamed and before any memory-maintenance turn starts (the
+    settlement turns' headers/text follow the marker). On marker receipt we
+    freeze the display at the current position; everything after goes to
+    full_resp/turn_resps (history/audit) only.
+    """
+    full_resp = ""; display_resp = ""; display_pos = 0
+    curr_turn = 0
+    settle = None      # (full_len, disp_len): 结算（记忆维护）冻结点
+    for chunk in gen:
+        if stop_check and stop_check():
+            break
+        if isinstance(chunk, dict):
+            if 'settlement' in chunk:
+                # 结算标记在"答案轮"末尾到达（agent_loop 的 yield from response_gen
+                # 先于 tool dispatch），此时答案文本已全部显示、记忆维护文本还没
+                # 开始流。当前位置即冻结点：之后的（记忆维护）文本只进 full/history，
+                # 不再进入显示通道——避免"记忆吞掉答案"。无需回退，无需 reset 事件。
+                settle = (len(full_resp), len(display_resp))
+                continue
+            if 'turn' in chunk:
+                curr_turn = chunk['turn']
+                turn_resps.append('')
+                continue
+            if 'tool_progress' in chunk:
+                continue
+            if 'tool_result' in chunk:
+                tr = chunk['tool_result']
+                full_piece = str(tr.get('full') or '')
+                preview = str(tr.get('preview') or '')
+                full_resp += full_piece
+                turn_resps[-1] += full_piece
+                if settle is None:
+                    display_resp += preview
+                    if len(display_resp) - display_pos > 30:
+                        yield {'next': display_resp[display_pos:], 'source': source,
+                               'turn': curr_turn, 'outputs': turn_resps[-2:]}
+                        display_pos = len(display_resp)
+                continue
+        piece = str(chunk)
+        full_resp += piece
+        turn_resps[-1] += piece
+        if settle is None:
+            display_resp += piece
+            if len(display_resp) - display_pos > 30 or 'LLM Running' in piece:
+                yield {'next': display_resp[display_pos:], 'source': source,
+                       'turn': curr_turn, 'outputs': turn_resps[-2:]}
+                display_pos = len(display_resp)
+    if settle is None and display_pos < len(display_resp):
+        yield {'next': display_resp[display_pos:], 'source': source,
+               'turn': curr_turn, 'outputs': turn_resps[-2:]}
+    shown = full_resp[:settle[0]] if settle is not None else full_resp
+    yield {'done': _close_think_envelope(shown), 'source': source,
+           'turn': curr_turn, 'outputs': turn_resps.copy()}
+
+
 # SDK:
 # agent = GenericAgent(); threading.Thread(target=agent.run, daemon=True).start()
 # output1_queue = agent.put_task(prompt1)
@@ -247,46 +312,18 @@ class GenericAgent:
                                     verbose=self.verbose, yield_info=True,
                                     initial_user_content=initial_content)
             try:
-                full_resp = ""; display_resp = ""; last_pos = 0; display_pos = 0
-                curr_turn = 0; turn_resps = self.all_outputs[-1]["outputs"]
-                for chunk in gen:
-                    if consume_file(self.task_dir, '_stop'): self.abort()
-                    if self.stop_sig: break
-                    if isinstance(chunk, dict):
-                        if 'turn' in chunk:
-                            curr_turn = chunk['turn']; turn_resps.append(''); continue
-                        if 'tool_progress' in chunk:
-                            # 仅唤醒/检查停止，不向显示缓冲写入结果正文。
-                            continue
-                        if 'tool_result' in chunk:
-                            tr = chunk['tool_result']
-                            full_piece = str(tr.get('full') or '')
-                            preview = str(tr.get('preview') or '')
-                            full_resp += full_piece
-                            display_resp += preview
-                            turn_resps[-1] += full_piece
-                            if len(display_resp) - display_pos > 30:
-                                display_queue.put({'next': display_resp[display_pos:],
-                                                   'source': source, 'turn': curr_turn,
-                                                   'outputs': turn_resps[-2:]})
-                                display_pos = len(display_resp)
-                            continue
-                    piece = str(chunk)
-                    full_resp += piece; display_resp += piece; turn_resps[-1] += piece
-                    if len(display_resp) - display_pos > 30 or 'LLM Running' in piece:
-                        display_queue.put({'next': display_resp[display_pos:],
-                                           'source': source, 'turn': curr_turn,
-                                           'outputs': turn_resps[-2:]})
-                        display_pos = len(display_resp)
-                if display_pos < len(display_resp):
-                    display_queue.put({'next': display_resp[display_pos:], 'source': source,
-                                       'turn': curr_turn, 'outputs': turn_resps[-2:]})
-                display_queue.put({'done': _close_think_envelope(full_resp), 'source': source,
-                                   'turn': curr_turn, 'outputs': turn_resps.copy()})
+                turn_resps = self.all_outputs[-1]["outputs"]
+                for ev in iter_display_events(
+                        gen, source, turn_resps,
+                        stop_check=lambda: (consume_file(self.task_dir, '_stop') and self.abort()) or self.stop_sig):
+                    if 'stop' in ev:
+                        break
+                    display_queue.put(ev)
                 self.history = handler.history_info
             except Exception as e:
                 print(f"Backend Error: {format_error(e)}")
-                display_queue.put({'done': _close_think_envelope(full_resp) + f'\n```\n{format_error(e)}\n```', 'source': source, 'turn': curr_turn, 'outputs': turn_resps.copy()})
+                display_queue.put({'done': f'\n```\n{format_error(e)}\n```', 'source': source,
+                                   'turn': 0, 'outputs': list(turn_resps)})
             finally:
                 if self.stop_sig: print('User aborted the task.')
                 self.is_running = self.stop_sig = False  # keep _current_queue: its final 'done' may still be unclaimed (refreshed UI salvages it); next task overwrites it
