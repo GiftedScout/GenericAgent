@@ -30,6 +30,7 @@ model_responses.txt
 
 # Sensitive files (API keys, credentials)
 mykey.py
+mykey.py.bak-*
 
 tasks/
 
