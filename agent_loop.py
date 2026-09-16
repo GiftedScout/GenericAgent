@@ -3,6 +3,15 @@ from dataclasses import dataclass
 from typing import Any, Optional
 try: from plugins.hooks import trigger as _hook
 except ImportError: _hook = lambda *a, **k: None
+# Shown on the display channel the moment the memory-settlement sub-loop starts:
+# the answer above is already final, but the agent keeps working in the
+# background.  It also reassures a user watching a quiet terminal that the run
+# has NOT stalled, so they don't close the window and cut settlement short.
+# `continue_cmd` re-emits the very same line when replaying a log, so a restored
+# session looks exactly like it did live.
+SETTLEMENT_NOTICE = "\n\n🧠 记忆结算中（后台维护记忆，请勿关闭终端）…\n"
+
+
 @dataclass
 class StepOutcome:
     data: Any

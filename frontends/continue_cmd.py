@@ -544,6 +544,31 @@ _INJECT_MARKERS = ('### [WORKING MEMORY]', '[SYSTEM TIPS]', '[SYSTEM]', '[System
                    '[DANGER]', '### [总结提炼经验]',
                    'Continue from where you left off')
 
+# Framework auto-retries (blank / incomplete / max_tokens) arrive as an *agent*
+# turn, not typed by the user. They carry no tool_result block, so without this
+# guard `_user_text` renders them as a user bubble on /continue — text the live
+# view never showed.
+_RETRY_RE = re.compile(r'\[ERROR\]\s+(?:Blank response|Incomplete response|max_tokens limit)')
+
+# do_start_long_term_update's next_prompt marks the boundary between the
+# user-facing answer and the background memory-maintenance sub-loop. Live mode
+# freezes the display there, so replay must stop at the same place.
+_SETTLEMENT_PROMPT_MARK = '[后台记忆维护]'
+
+
+def settlement_notice() -> str:
+    """The 'memory settlement running' line, shared with the live channel.
+
+    Imported lazily: /continue runs inside several frontends and importing the
+    repo root at module scope would break this module's "no side effects at
+    import" contract (and fail where the root isn't on sys.path).
+    """
+    try:
+        from agent_loop import SETTLEMENT_NOTICE
+        return SETTLEMENT_NOTICE
+    except Exception:
+        return "\n\n🧠 记忆结算中（后台维护记忆，请勿关闭终端）…\n"
+
 # project_mode 插件把 `\n\n---\n[PROJECT MODE: <name>]\n…\n---` 追加到当轮 user
 # message(见 plugins/project_mode._build_injection)。runtime history 尊重日志真实 prompt,
 # 但 UI 预览/显示与派生 history_info 需要只取用户原话。老日志的 WORKING MEMORY 里还
@@ -575,7 +600,9 @@ def _user_text(prompt_body):
     for blk in blocks:
         if isinstance(blk, dict) and blk.get('type') == 'text':
             t = strip_project_mode(blk.get('text') or '').strip()
-            if t and not any(mk in t for mk in _INJECT_MARKERS): return t
+            if not t or any(mk in t for mk in _INJECT_MARKERS): continue
+            if _RETRY_RE.match(t): continue     # framework auto-retry, not typed
+            return t
     return ''
 
 
@@ -841,6 +868,14 @@ def extract_ui_messages(path):
 
     out, assistant, round_turn = [], None, 0
     for i, (prompt, response) in enumerate(pairs):
+        # Frozen in live mode at start_long_term_update: everything from the
+        # memory-maintenance prompt onward was never shown, so stop rebuilding
+        # this bubble and just close it with the same notice the user saw live.
+        if assistant is not None and _SETTLEMENT_PROMPT_MARK in prompt:
+            assistant['content'] = (assistant['content'] or '') + settlement_notice()
+            out.append(assistant)
+            assistant = None
+            break
         user = _user_text(prompt)
         seg = _format_response_segment(response, next_tr[i])
         if user:
