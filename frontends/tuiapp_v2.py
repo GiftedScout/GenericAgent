@@ -7125,10 +7125,13 @@ class GenericAgentTUI(App[None]):
                         except Exception: self._refresh_messages()
                     else:
                         self._refresh_messages()
-                    if refresh_chrome:
-                        self._refresh_sidebar()
-                        self._refresh_topbar()
+                    self._refresh_sidebar()
+                    self._refresh_topbar()
                     self._ensure_spinner()
+                # The ask_user hook fires at the end of *this* task, before a
+                # replay task can take over `current_task_id`; its picker must
+                # still surface.  No-op when nothing is queued.
+                self._drain_ask_user_events(s)
             return
         s.buffer = text
         if done:
