@@ -1061,28 +1061,31 @@ def generate_mykey(llm_cfgs, platform_configs):
     lines.append("")
 
     # 各模型配置
+    # Preferred shape: every provider lives in one dict, so adding a key later is
+    # one more entry (no extra top-level variable, no hand-kept LLM_CATALOG).
+    # llmcore flattens it back to the legacy names at load time.
+    lines.append("# ── 供应商（新增 key 只需在下面加一条；type/router 内联，供 TUI 分级菜单用）──")
+    lines.append("native_config = {")
     type_counts = {}
     for cfg in llm_cfgs:
         cfg_type = cfg.get('type', 'native_oai')
         type_counts[cfg_type] = type_counts.get(cfg_type, 0) + 1
 
     type_indices = {}
-    for i, cfg in enumerate(llm_cfgs):
+    for cfg in llm_cfgs:
         cfg_type = cfg.get('type', 'native_oai')
-        var_prefix, session_type = _var_type_info(cfg)
+        _var_prefix, session_type = _var_type_info(cfg)
         idx = type_indices.get(cfg_type, 0)
         type_indices[cfg_type] = idx + 1
 
-        if type_counts[cfg_type] > 1:
-            var_name = f"{var_prefix}_{idx}"
-        else:
-            var_name = var_prefix
-
-        lines.append(f"# ── {cfg['name']} ({session_type}) ─────────────────────────────────────────────")
-        lines.append(f"{var_name} = {{")
-        _write_config_fields(lines, cfg)
-        lines.append("}")
-        lines.append("")
+        stem = 'claude' if cfg_type == 'native_claude' else 'oai'
+        entry_key = f"{stem}{idx + 1}"
+        lines.append(f"    # ── {cfg['name']} ({session_type}) ──")
+        lines.append(f"    '{entry_key}': {{")
+        _write_config_fields(lines, cfg, indent=8, native_entry=True)
+        lines.append("    },")
+    lines.append("}")
+    lines.append("")
 
     # 平台配置
     if platform_configs:
@@ -1106,9 +1109,16 @@ def generate_mykey(llm_cfgs, platform_configs):
 
     return '\n'.join(lines)
 
-def _write_config_fields(lines, cfg):
-    """写入配置字典的键值对（缩进的 'key': value, 格式）"""
-    for key in ['name', 'type', 'apikey', 'apibase', 'model', 'api_mode',
+def _write_config_fields(lines, cfg, indent=4, native_entry=False):
+    """写入配置字典的键值对（缩进的 'key': value, 格式）
+
+    native_entry=True 时写在 native_config 的条目里：type 转成 llmcore 识别的
+    protocol（native_claude→claude），并补上 'type'/'router' 作为 TUI 分级菜单
+    的显示元数据（否则新增 provider 后菜单里会落到"其他模型"）。
+    """
+    pad = ' ' * indent
+    written = set()
+    for key in ['name', 'apikey', 'apibase', 'model', 'protocol', 'api_mode',
                 'fake_cc_system_prompt', 'thinking_type', 'thinking_budget_tokens',
                 'reasoning_effort', 'max_tokens', 'max_retries', 'connect_timeout',
                 'read_timeout', 'temperature', 'context_win',
@@ -1117,13 +1127,26 @@ def _write_config_fields(lines, cfg):
             continue
         val = cfg[key]
         if isinstance(val, bool):
-            lines.append(f"    '{key}': {str(val)},")
+            lines.append(f"{pad}'{key}': {str(val)},")
         elif isinstance(val, (int, float)):
-            lines.append(f"    '{key}': {val},")
+            lines.append(f"{pad}'{key}': {val},")
         elif isinstance(val, str):
-            lines.append(f"    '{key}': '{val}',")
+            lines.append(f"{pad}'{key}': '{val}',")
         else:
-            lines.append(f"    '{key}': {repr(val)},")
+            lines.append(f"{pad}'{key}': {repr(val)},")
+        written.add(key)
+    if not native_entry:
+        return
+    # `type` selects the session class in the wizard; inside native_config it is
+    # the *protocol* that decides the prefix llmcore expands to.  Keep the
+    # display metadata too, so the TUI's type/route pickers group the entry
+    # instead of falling back to "其他模型".
+    proto = 'claude' if cfg.get('type') == 'native_claude' else 'oai'
+    if 'protocol' not in written:
+        lines.append(f"{pad}'protocol': '{proto}',")
+    display_type = 'Claude' if proto == 'claude' else 'OpenAI'
+    lines.append(pad + "'type': '" + display_type + "',")
+    lines.append(pad + "'router': '" + str(cfg.get('name', 'native')) + "',")
 
 def _write_platform_value(lines, key, val):
     """写入顶级变量（平台配置等）"""
@@ -1207,6 +1230,32 @@ def _parse_existing_llm_cfgs():
         content = f.read()
 
     cfgs = []
+    # Preferred layout: one dict holding every provider.  Expand it first, then
+    # the legacy top-level scan below skips the container (its entries carry no
+    # top-level 'name') and picks up any still-flat variables.
+    nc_m = re.search(r'^native_config\s*=\s*\{', content, re.MULTILINE)
+    if nc_m:
+        depth, i = 0, nc_m.end() - 1
+        while i < len(content) and depth >= 0:
+            if content[i] == '{':
+                depth += 1
+            elif content[i] == '}':
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        try:
+            nc = ast.literal_eval(content[nc_m.end() - 1:i + 1])
+        except (ValueError, SyntaxError):
+            nc = {}
+        if isinstance(nc, dict):
+            for entry in nc.values():
+                if not isinstance(entry, dict) or 'name' not in entry:
+                    continue
+                d = dict(entry)
+                d['type'] = 'native_claude' if d.get('protocol') == 'claude' else 'native_oai'
+                cfgs.append(d)
+
     # 匹配所有 `xxx = {  ...  }` 顶层字典赋值
     # 用简单状态机: 找 `\w+ = {` 然后匹配花括号
     pattern = re.compile(r'^(\w+)\s*=\s*\{', re.MULTILINE)

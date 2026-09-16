@@ -126,6 +126,36 @@ mixin_config = {
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  ★ 推荐：供应商集中写在一个 native_config 里 ★
+# ══════════════════════════════════════════════════════════════════════════════
+#  每个渠道 = 一条 entry；新增 key 只要往下加一条，不用再动别的地方，
+#  TUI 的「类型 → 路由」分级菜单会按 entry 里的 type/router 自动分组。
+#
+#  native_config = {
+#      'aihub1': {
+#          'name': 'gpt5-sol', 'apikey': 'sk-xxx',
+#          'apibase': 'https://aihub.top', 'model': 'gpt-5.6-sol',
+#          'protocol': 'oai',            # 'oai' → NativeOAISession
+#          'type': 'OpenAI',             # 菜单分组显示名（可自定义）
+#          'router': 'aihub',            # 菜单二级分组（可自定义）
+#      },
+#      'opus5': {
+#          'name': 'opus5', 'apikey': 'sk-yyy',
+#          'apibase': 'https://4router.net', 'model': 'claude-opus-5',
+#          'protocol': 'claude',         # 'claude' → NativeClaudeSession
+#          'type': 'Claude', 'router': '4router',
+#      },
+#  }
+#
+#  说明：
+#   · protocol 决定用哪个 session 类；省略时按 model 名里有没有 'claude' 推断。
+#   · type/router 只影响 UI 分组，不写也能用（会落到「其他模型」）。
+#   · 旧的顶层写法（native_oai_config_xxx = {...} / native_claude_config_xxx = {...}）
+#     仍然完全兼容，两种写法可以共存。下面的 1./2. 小节是旧写法示例。
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  1. NativeClaudeSession — Anthropic 原生协议 + 原生工具（推荐首选）
 # ══════════════════════════════════════════════════════════════════════════════
 #

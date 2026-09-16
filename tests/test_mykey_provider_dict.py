@@ -20,6 +20,7 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, 'frontends'))
 
 import desktop_bridge as db
+import llmcore
 
 PASS = FAIL = 0
 
@@ -147,6 +148,48 @@ check("file still parses", parses(text))
 check("legacy var appended as before", 'native_oai_config_oai1' in text or res['varName'] in text)
 check("legacy entry preserved", 'native_oai_config_old1' in text)
 shutil.rmtree(tmp)
+
+print("[6] configure_mykey writes the single-dict layout, and can read it back")
+import importlib.util
+_spec = importlib.util.spec_from_file_location('cm', os.path.join(ROOT, 'assets', 'configure_mykey.py'))
+cm = importlib.util.module_from_spec(_spec)
+try:
+    _spec.loader.exec_module(cm)
+except SystemExit:
+    pass
+wiz_cfgs = [
+    {'name': 'gpt-sol', 'type': 'native_oai', 'apikey': 'sk-x',
+     'apibase': 'https://aihub.top', 'model': 'gpt-5.6', 'api_mode': 'responses'},
+    {'name': 'opus5', 'type': 'native_claude', 'apikey': 'sk-y',
+     'apibase': 'https://4router.net', 'model': 'claude-opus-5'},
+]
+wiz_out = cm.generate_mykey(wiz_cfgs, [])
+check("wizard output parses", parses(wiz_out), wiz_out[:200])
+check("wizard emits one native_config dict", wiz_out.count('native_config = {') == 1)
+check("no top-level provider vars", 'native_oai_config_' not in wiz_out and 'native_claude_config_' not in wiz_out)
+check("protocol recorded", "'protocol': 'oai'" in wiz_out and "'protocol': 'claude'" in wiz_out)
+check("display metadata recorded", "'type': 'OpenAI'" in wiz_out and "'router':" in wiz_out)
+wiz_mk = {'native_config': ast.literal_eval(
+    wiz_out[wiz_out.index('{', wiz_out.index('native_config')):wiz_out.index('\n}\n', wiz_out.index('native_config')) + 2])}
+wiz_exp = llmcore._expand_native_config(wiz_mk)
+check("expansion yields both providers",
+      [k for k in wiz_exp if 'native_' in k and 'config' in k] ==
+      ['native_oai_config_oai1', 'native_claude_config_claude1'], wiz_exp.keys())
+check("expansion carries picker catalog", isinstance(wiz_exp.get('LLM_CATALOG'), dict) and wiz_exp['LLM_CATALOG'])
+_tmp = tempfile.mkdtemp(prefix='ga_wiz_')
+_wiz_path = os.path.join(_tmp, 'mykey.py')
+open(_wiz_path, 'w').write(wiz_out)
+_old_path = cm.MYKPY_PATH
+cm.MYKPY_PATH = _wiz_path
+try:
+    back = cm._parse_existing_llm_cfgs()
+finally:
+    cm.MYKPY_PATH = _old_path
+    shutil.rmtree(_tmp)
+check("wizard can re-read its own output", len(back) == 2, back)
+check("re-read keeps name/model/type",
+      [(c.get('name'), c.get('type')) for c in back] ==
+      [('gpt-sol', 'native_oai'), ('opus5', 'native_claude')], back)
 
 print(f"\n=== {PASS} passed, {FAIL} failed ===")
 sys.exit(1 if FAIL else 0)
