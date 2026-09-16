@@ -931,7 +931,11 @@ class BaseSession:
         self.verify = cfg.get('verify', True)
         self.stream = cfg.get('stream', True)
         default_ct, default_rt = (5, 40) if self.stream else (10, 240)
-        self.connect_timeout = max(1, int(cfg.get('timeout', default_ct)))
+        # `connect_timeout` is the documented/desktop/wizard name; `timeout` is
+        # the older spelling still found in hand-written mykey.py files.  Both
+        # are honoured — reading only `timeout` silently ignored the value the
+        # GUI and the wizard wrote.
+        self.connect_timeout = max(1, int(cfg.get('connect_timeout', cfg.get('timeout', default_ct))))
         self.read_timeout = max(5, int(cfg.get('read_timeout', default_rt)))
         def _enum(key, valid):
             v = cfg.get(key); v = None if v is None else str(v).strip().lower()

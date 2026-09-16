@@ -96,5 +96,16 @@ try:
 except Exception as exc:
     check("mykey.py loads", False, repr(exc))
 
+print("[7] connect_timeout is actually honoured (and the old 'timeout' still is)")
+_base = {'apikey': 'k', 'apibase': 'https://x.example', 'model': 'm'}
+check("connect_timeout wins",
+      llmcore.BaseSession({**_base, 'connect_timeout': 10}).connect_timeout == 10)
+check("legacy 'timeout' still works",
+      llmcore.BaseSession({**_base, 'timeout': 7}).connect_timeout == 7)
+check("connect_timeout takes precedence over timeout",
+      llmcore.BaseSession({**_base, 'connect_timeout': 3, 'timeout': 7}).connect_timeout == 3)
+check("default when neither is set",
+      llmcore.BaseSession(_base).connect_timeout == 5)
+
 print(f"\n=== {PASS} passed, {FAIL} failed ===")
 sys.exit(1 if FAIL else 0)

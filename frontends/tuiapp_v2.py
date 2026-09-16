@@ -2193,6 +2193,17 @@ ChoiceList {
 """
 
 
+def _mask_secret(key: str, value) -> str:
+    """Mask credentials for the /addkey confirmation card.
+
+    The card is a ChatMessage, i.e. it lives in the transcript — so the key
+    itself must never be rendered there."""
+    s = str(value)
+    if any(t in key.lower() for t in ("key", "token", "secret", "cookie", "password")):
+        return (s[:4] + "…" + s[-4:]) if len(s) > 12 else "***"
+    return s
+
+
 @dataclass
 class ChatMessage:
     role: str            # 'user' | 'assistant' | 'system'
@@ -2303,6 +2314,10 @@ class AgentSession:
     # Pending `{question:str}` after the user picks free-text in an ask_user
     # picker; next submission becomes a 2-step "Ready to submit?" confirm.
     free_text_pending: Optional[dict] = None
+    # Set while `/addkey` waits for the provider form.  Kept off the message
+    # log on purpose: the draft holds a live API key, and messages are replayed
+    # to the LLM and written to the session log.
+    addkey_pending: Optional[dict] = None
     # Plan state: items + grace-period timers (3s farewell, 1.5s lost-grace).
     plan_items: list = field(default_factory=list)
     plan_complete_since: Optional[float] = None
@@ -2371,6 +2386,7 @@ COMMANDS = [
     ("/export",   "clip|<file>|all",  "导出最后回复"),
     ("/restore",  "",                 "恢复上次模型响应日志"),
     ("/reload-keys", "",              "重新加载mykey.py（不重启）"),
+    ("/addkey",    "[字段…]",          "交互式新增模型渠道（写 mykey.py 后热重载）"),
     ("/quit",     "",                 "退出"),
 ]
 
@@ -3904,6 +3920,7 @@ class GenericAgentTUI(App[None]):
             "workspace": self._cmd_workspace,
             "todo": self._cmd_todo,
             "reload-keys": self._cmd_reload_keys,
+            "addkey": self._cmd_addkey,
             # slash_cmds bundle — see frontends/slash_cmds.py for the prompt
             # bodies + reflect/scheduler discovery.  All but /scheduler are
             # thin shims that build a prompt and re-enter submit_user_message,
@@ -4679,6 +4696,19 @@ class GenericAgentTUI(App[None]):
         self.notify(f"Group fold: {'collapsed' if collapse else 'expanded'} ×{len(msgs)}", timeout=1)
 
     def action_escape(self) -> None:
+        # `/addkey` form: Esc abandons the draft (the typed line may still be
+        # in the input box, so clear it as well) and keeps it out of history.
+        sess_now = self.sessions.get(self.current_id) if self.current_id is not None else None
+        if sess_now is not None and getattr(sess_now, "addkey_pending", None):
+            sess_now.addkey_pending = None
+            try:
+                inp = self.query_one("#input", InputArea)
+                inp.text = ""
+            except Exception:
+                pass
+            self._system("已取消 /addkey（未写入 mykey.py）")
+            self._disarm_rewind()
+            return
         # Back out of free-text-input mode → restore the picker the user was
         # answering. Takes priority over the normal Esc path so the InputArea
         # doesn't eat the press.
@@ -5078,6 +5108,14 @@ class GenericAgentTUI(App[None]):
             return
         text = inp.expand_placeholders(event.value).rstrip()
         images = re.findall(r"\[Image #\d+: (.*?)\]", text)
+        # `/addkey` form: consume the draft before it can reach history, the
+        # scrollback or the agent.  The draft carries a live API key, and input
+        # history is replayed into the input box (Ctrl+S/↑) and the log.
+        if self._take_addkey_draft(text):
+            inp.reset()
+            self._resize_input(inp)
+            self._hide_palette()
+            return
         inp.record_history(event.value)
         inp.reset()
         self._hide_palette()
@@ -5824,6 +5862,88 @@ class GenericAgentTUI(App[None]):
             except Exception:
                 pass
         self._refresh_all()
+
+    # ── /addkey — add a provider without opening mykey.py ────────────────
+    #
+    # Deliberately a local, two-step flow (type → masked confirm card) rather
+    # than the ask_user picker: the draft holds a live API key, and everything
+    # reachable from the agent's message log is replayed to the LLM and written
+    # to the session log.  The draft lives on the session, never in a message.
+
+    def _cmd_addkey(self, args, raw):
+        sess = self.current
+        if raw.split(maxsplit=1)[1:] and raw.split(maxsplit=1)[1].strip():
+            # `/addkey name: x apikey: y …` — skip the form for power users.
+            self._submit_addkey_draft(raw.split(maxsplit=1)[1], sess)
+            return
+        try:
+            import mykey_admin
+            shown = ", ".join(k for k, _ in mykey_admin.FIELD_HINTS)
+            path = mykey_admin.mykey_path()
+        except Exception as e:
+            self._system(f"❌ 无法载入 mykey_admin: {type(e).__name__}: {e}")
+            return
+        sess.addkey_pending = {"root": self._at_root()}
+        hint = Text()
+        hint.append("新增渠道", style=C_PURPLE)
+        hint.append(f"   目标文件 {path}\n", style=C_MUTED)
+        hint.append("一行一个字段，格式 ", style=C_MUTED)
+        hint.append("key: value", style=C_GREEN)
+        hint.append("（也可空格分隔写在一行）。必填 ", style=C_MUTED)
+        hint.append("apikey / apibase / model", style=C_GREEN)
+        hint.append("；常用 ", style=C_MUTED)
+        hint.append(shown, style=C_GREEN)
+        hint.append("。\nEsc", style=C_MUTED)
+        hint.append(" 取消 · 提交后会先显示脱敏预览再写入。", style=C_MUTED)
+        self.current.messages.append(ChatMessage("system", hint.plain))
+        self._refresh_messages()
+        try:
+            self.query_one("#input", InputArea).focus()
+        except Exception:
+            pass
+
+    def _take_addkey_draft(self, text: str) -> bool:
+        """Consume an input submission while `/addkey` is armed.  Returns True
+        iff this submission belonged to the form (so it must NOT be recorded in
+        input history, echoed, or forwarded to the agent)."""
+        sess = self.sessions.get(self.current_id) if self.current_id is not None else None
+        if sess is None or not getattr(sess, "addkey_pending", None):
+            return False
+        if not (text or "").strip():
+            return False
+        self._submit_addkey_draft(text, sess)
+        return True
+
+    def _submit_addkey_draft(self, draft: str, sess) -> None:
+        try:
+            import mykey_admin
+            cfg = mykey_admin.parse_entry(draft)
+        except Exception as e:
+            self._system(f"❌ {e}\n（可重新输入；Esc/Ctrl+C 放弃后用 /addkey 重来）")
+            return
+        pending = getattr(sess, "addkey_pending", None) or {}
+        sess.addkey_pending = None
+        head = ("即将写入 mykey.py（请核对，密钥已脱敏）\n"
+                + "\n".join(f"  {k}: {_mask_secret(k, v)}" for k, v in cfg.items())
+                + "\n\n写入后会自动重载并生效。")
+        msg = ChatMessage(
+            role="system", content=head, kind="choice",
+            choices=[("写入并重载", "yes"), ("取消", "no")],
+            on_select=lambda v, c=cfg, r=pending.get("root", ""): self._do_addkey(c, v, r),
+        )
+        sess.messages.append(msg)
+        self._refresh_messages()
+
+    def _do_addkey(self, cfg: dict, choice: str, root: str = "") -> str:
+        if choice != "yes":
+            return "已取消，未写入 mykey.py"
+        try:
+            import mykey_admin
+            key, path = mykey_admin.add_provider(cfg, root=root)
+        except Exception as e:
+            return f"❌ 写入失败: {type(e).__name__}: {e}"
+        self._cmd_reload_keys([], raw="/reload-keys")
+        return f"✅ 已写入 {path} 的 native_config['{key}']（备份在同目录 .bak-*）"
 
     def _cmd_reload_keys(self, args, raw):
         # Force rebuild of every session's llmclients from a fresh mykey.py.
