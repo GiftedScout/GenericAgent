@@ -595,9 +595,114 @@ class AgentManager:
         return prefix if n == 1 and not re.search(rf"^{prefix}\s*=", text, re.M) else f"{prefix}{n}"
 
     @staticmethod
-    def _format_py_dict(d: dict) -> str:
-        lines = [f"    '{k}': {json.dumps(v, ensure_ascii=False)}," if isinstance(v, str) else f"    '{k}': {v}," for k, v in d.items()]
-        return "{\n" + "\n".join(lines) + "\n}"
+    def _format_py_dict(d: dict, indent: int = 4) -> str:
+        pad = " " * indent
+        lines = [f"{pad}'{k}': {json.dumps(v, ensure_ascii=False)}," if isinstance(v, str) else f"{pad}'{k}': {v},"
+                 for k, v in d.items()]
+        return "{\n" + "\n".join(lines) + "\n" + " " * (indent - 4) + "}"
+
+    # ── native_config layout ────────────────────────────────────────────────
+    # Preferred shape: every provider lives inside one dict, so adding a model
+    # is one entry there instead of another top-level variable plus a hand-kept
+    # LLM_CATALOG.  llmcore._expand_native_config flattens it back into the
+    # legacy `native_oai_config_<key>` variables at load time, so the GUI, the
+    # TUI picker and the runtime all keep working off the same names.
+    NATIVE_CONFIG_VAR = "native_config"
+
+    @staticmethod
+    def _native_var_parts(var: str) -> Optional[tuple[str, str]]:
+        """('oai' | 'claude', entry_key) for an expanded native_config key."""
+        for proto, prefix in (("claude", "native_claude_config_"), ("oai", "native_oai_config_")):
+            if var.startswith(prefix) and len(var) > len(prefix):
+                return proto, var[len(prefix):]
+        return None
+
+    @staticmethod
+    def _protocol_for(cfg: dict, fallback: str = "oai") -> str:
+        proto = str(cfg.get("protocol") or "").strip().lower()
+        if proto:
+            return proto
+        model = str(cfg.get("model") or "").lower()
+        return "claude" if "claude" in model else fallback
+
+    def _find_entry_span(self, text: str, dict_var: str, key: str) -> Optional[tuple[int, int]]:
+        """Span of one `'key': {...},` entry inside a top-level dict literal."""
+        span = self._find_var_block_span(text, dict_var)
+        if not span:
+            return None
+        s, e = span
+        m = re.search(rf"^[ \t]*{re.escape(repr(key))}[ \t]*:", text[s:e], re.M)
+        if not m:
+            return None
+        start = s + m.start()
+        try:
+            j = text.index("{", s + m.end())
+        except ValueError:
+            return None
+        depth, i = 0, j
+        while i < e:
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    while end < len(text) and text[end] in " \t":
+                        end += 1
+                    if end < len(text) and text[end] == ",":
+                        end += 1          # the entry owns its separator, so
+                                          # deleting it leaves no dangling comma
+                    while end < len(text) and text[end] in "\r\n":
+                        end += 1
+                    return start, end
+            i += 1
+        return None
+
+    def _insert_entry_into_dict(self, text: str, dict_var: str, key: str, cfg: dict) -> str:
+        span = self._find_var_block_span(text, dict_var)
+        if not span:
+            raise ValueError(f"config block not found: {dict_var}")
+        s, e = span
+        body = text[s:e]
+        close = body.rstrip().rfind("}")
+        if close < 0:
+            raise ValueError(f"malformed dict block: {dict_var}")
+        entry = f"    {repr(key)}: {self._format_py_dict(cfg, 8)},\n"
+        at = s + close
+        head = text[:at].rstrip("\n")
+        if not head.endswith("{"):
+            head += "\n"
+        return head + entry + text[at:]
+
+    def _write_native_entry(self, text: str, key: str, cfg: dict,
+                            old_var: Optional[str] = None) -> str:
+        """Add/replace a provider inside native_config (renaming on protocol change)."""
+        entry = dict(cfg)
+        proto = self._protocol_for(entry)
+        entry["protocol"] = proto
+        if old_var:
+            parts = self._native_var_parts(old_var)
+            if parts:
+                old_proto, old_key = parts
+                if (old_proto, old_key) != (proto, key):
+                    if (span := self._find_entry_span(text, self.NATIVE_CONFIG_VAR, old_key)):
+                        text = text[:span[0]] + text[span[1]:]
+        if (span := self._find_entry_span(text, self.NATIVE_CONFIG_VAR, key)):
+            new_entry = f"    {repr(key)}: {self._format_py_dict(entry, 8)},\n"
+            return text[:span[0]] + new_entry + text[span[1]:]
+        return self._insert_entry_into_dict(text, self.NATIVE_CONFIG_VAR, key, entry)
+
+    def _next_entry_key(self, keys, cfg: dict) -> str:
+        proto = self._protocol_for(cfg)
+        stem = "claude" if proto == "claude" else "oai"
+        taken = {k for k in keys}
+        n = 1
+        while f"{stem}{n}" in taken:
+            n += 1
+        return f"{stem}{n}"
+
+    def _has_native_config(self, text: str) -> bool:
+        return bool(re.search(rf"^{re.escape(self.NATIVE_CONFIG_VAR)}\s*=\s*\{{", text, re.M))
 
     def _invalidate_mykey_cache(self) -> None:
         self.ensure_ga_import_path()
@@ -715,6 +820,18 @@ class AgentManager:
     def add_model_profile(self, data: dict) -> dict:
         cfg = self._build_cfg(data)
         text = self._mykey_file().read_text(encoding="utf-8")
+        if self._has_native_config(text):
+            # One entry in the provider dict instead of another top-level variable
+            # plus a hand-kept LLM_CATALOG (the old add-a-model chore).
+            keys, _mk = self._mykey_vars()
+            key = self._next_entry_key(keys, cfg)
+            text = self._write_native_entry(text, key, cfg)
+            profiles = self._save_mykey_text(text)
+            proto = self._protocol_for(cfg)
+            var = f"native_{'claude' if proto == 'claude' else 'oai'}_config_{key}"
+            pid = next((p["id"] for p in profiles if p.get("varName") == var), 0)
+            return {"varName": var, "profileId": pid or (profiles[-1]["id"] if profiles else 0),
+                    "profiles": profiles}
         var = self._next_native_var(text, data.get("protocol", ""))
         profiles = self._save_mykey_text(text.rstrip() + f"\n{var} = {self._format_py_dict(cfg)}\n")
         return {"varName": var, "profileId": profiles[-1]["id"] if profiles else 0, "profiles": profiles}
@@ -744,14 +861,30 @@ class AgentManager:
                 mcfg = {**mcfg, "llm_nos": updated_nos}
                 text = self._patch_var_block(text, mvar, mcfg)
 
-        profiles = self._save_mykey_text(self._patch_var_block(text, var, new_cfg))
+        profiles = self._save_mykey_text(self._write_profile_var(text, var, new_cfg))
         return {"varName": var, "profileId": profile_id, "profiles": profiles}
+
+    def _write_profile_var(self, text: str, var: str, cfg: dict) -> str:
+        """Rewrite one provider, following whichever layout the file uses."""
+        parts = self._native_var_parts(var)
+        if parts and self._has_native_config(text):
+            proto, key = parts
+            return self._write_native_entry(text, key, cfg, old_var=var)
+        return self._patch_var_block(text, var, cfg)
+
+    def _delete_profile_var(self, text: str, var: str) -> str:
+        parts = self._native_var_parts(var)
+        if parts and self._has_native_config(text):
+            if (span := self._find_entry_span(text, self.NATIVE_CONFIG_VAR, parts[1])):
+                return text[:span[0]] + text[span[1]:]
+        return self._patch_var_block(text, var)
 
     def delete_model_profile(self, profile_id: int) -> dict:
         if len(self._profile_keys()) <= 1:
             raise ValueError("cannot delete the last profile")
         var, cfg = self._profile_at(profile_id)
-        text = self._patch_var_block(self._mykey_file().read_text(encoding="utf-8"), var).rstrip() + "\n"
+        text = self._delete_profile_var(
+            self._mykey_file().read_text(encoding="utf-8"), var).rstrip() + "\n"
         # 顺手把它从聚合渠道里摘掉，避免 llm_nos 残留指向已删除的模型（会让 Mixin 构建失败）
         name = str(cfg.get("name") or cfg.get("model") or "").strip()
         keys, mk = self._mykey_vars()

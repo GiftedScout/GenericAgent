@@ -5858,8 +5858,15 @@ class GenericAgentTUI(App[None]):
         """
         import re
         try:
-            import mykey
-            catalog = getattr(mykey, "LLM_CATALOG", {}) or {}
+            # reload_mykeys() expands the single-dict `native_config` layout and
+            # synthesises LLM_CATALOG from each entry's inline type/router, so a
+            # new-format mykey.py needs no hand-written catalog.
+            import llmcore
+            mk = llmcore.reload_mykeys()[0]
+            catalog = mk.get("LLM_CATALOG") or {}
+            if not catalog:
+                import mykey
+                catalog = getattr(mykey, "LLM_CATALOG", {}) or {}
         except Exception:
             catalog = {}
         agent = self.current.agent

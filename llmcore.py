@@ -5,12 +5,59 @@ _RESP_CACHE_KEY = str(uuid.uuid4()); _RESP_CODEX_KEY = str(uuid.uuid4())
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 if _ROOT not in sys.path: sys.path.append(_ROOT)
 
+def _expand_native_config(mk):
+    """Expand the single-dict provider layout into the legacy flat keys.
+
+    Preferred mykey.py shape (one place per provider — add a key by adding one
+    entry, no second catalog edit):
+
+        native_config = {
+            'aihub1': {'name': 'gpt5.6-sol', 'apikey': '…', 'apibase': '…',
+                       'model': 'gpt-5.6-sol', 'api_mode': 'responses',
+                       'type': 'OpenAI', 'router': 'aihub'},          # UI labels
+            'opus5':  {..., 'protocol': 'claude', 'type': 'Claude', 'router': '4router'},
+        }
+
+    Each entry becomes the flat variable the rest of the framework already
+    consumes (``native_oai_config_aihub1`` / ``native_claude_config_opus5``), and
+    ``type``/``router`` are lifted into a synthesized ``LLM_CATALOG`` so the TUI
+    picker keeps working.  A file that still uses top-level variables — or
+    carries both — passes through unchanged.
+    """
+    if not isinstance(mk, dict):
+        return mk
+    nc = mk.get('native_config')
+    if not isinstance(nc, dict) or not nc:
+        return mk
+    out = dict(mk)
+    out.pop('native_config', None)   # raw container would otherwise match the
+                                     # 'config' substring filter in load_llm_sessions
+                                     # and show up as a bogus model profile
+    catalog = dict(out.get('LLM_CATALOG') or {})
+    for key, cfg in nc.items():
+        if not isinstance(cfg, dict):
+            continue
+        entry = dict(cfg)
+        proto = str(entry.pop('protocol', '') or '').strip().lower()
+        if not proto:
+            proto = 'claude' if 'claude' in str(entry.get('model', '')).lower() else 'oai'
+        prefix = 'native_claude_config' if proto.startswith('claude') else 'native_oai_config'
+        var = f'{prefix}_{key}'
+        meta = {k: entry.pop(k) for k in ('type', 'router') if entry.get(k)}
+        out[var] = entry
+        if meta:
+            catalog[var] = meta
+    if catalog:
+        out['LLM_CATALOG'] = catalog
+    return out
+
+
 def _load_mykeys():
     global _mykey_path
     try:
         sys.modules.pop('mykey', None)
         import mykey; _mykey_path = mykey.__file__
-        return {k: v for k, v in vars(mykey).items() if not k.startswith('_')}
+        return _expand_native_config({k: v for k, v in vars(mykey).items() if not k.startswith('_')})
     except ImportError as e:
         if getattr(e, 'name', None) != 'mykey':
             raise Exception(f'[ERROR] mykey.py found but failed to import: {e}') from e
@@ -19,8 +66,8 @@ def _load_mykeys():
     p = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mykey.json')
     if not os.path.exists(p): raise Exception('[ERROR] mykey.py not found in sys.path and mykey.json not found. Run "python configure_mykey.py" or copy mykey_template.py to mykey.py and fill in your keys.')
     with open(_mykey_path := p, encoding='utf-8') as f: mk = json.load(f)
-    if isinstance(mk, dict) and 'remote_url' in mk: return requests.get(mk['remote_url'], timeout=10).json()
-    return mk
+    if isinstance(mk, dict) and 'remote_url' in mk: return _expand_native_config(requests.get(mk['remote_url'], timeout=10).json())
+    return _expand_native_config(mk)
 
 _mykey_lock = threading.Lock()
 _mykey_path = _mykey_mtime = None
