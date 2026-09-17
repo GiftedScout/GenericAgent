@@ -3285,6 +3285,23 @@ class InputArea(TextArea):
             text = pat.sub(repl, text)
         return text
 
+    def collect_image_paths(self, raw_text: str) -> list[str]:
+        """Image paths for the image placeholders present in the *raw* draft.
+
+        Called before `expand_placeholders` (which destroys the markers), so
+        that pasted images can be attached to the outgoing message.
+        """
+        seen, out = set(), []
+        for m in self._IMAGE_RE.finditer(raw_text):
+            sid = int(m.group(1))
+            if sid in seen:
+                continue
+            seen.add(sid)
+            path = self._pastes.get(sid)
+            if path and os.path.isfile(path):
+                out.append(path)
+        return out
+
     # ---- history public API ----
     def record_history(self, raw_text: str) -> None:
         stripped = raw_text.strip()
@@ -5106,8 +5123,14 @@ class GenericAgentTUI(App[None]):
         inp = event.input_area
         if inp.id != "input":
             return
-        text = inp.expand_placeholders(event.value).rstrip()
-        images = re.findall(r"\[Image #\d+: (.*?)\]", text)
+        value = event.value
+        text = inp.expand_placeholders(value).rstrip()
+        # Image paths MUST be resolved from the *unexpanded* draft: after
+        # expand_placeholders the `[Image #N]` markers are bare paths, so a
+        # regex over `text` finds nothing and the model never receives the
+        # picture.  `collect_image_paths` lives on the InputArea, which owns
+        # the id→path store.
+        images = inp.collect_image_paths(value)
         # `/addkey` form: consume the draft before it can reach history, the
         # scrollback or the agent.  The draft carries a live API key, and input
         # history is replayed into the input box (Ctrl+S/↑) and the log.
@@ -7201,7 +7224,7 @@ class GenericAgentTUI(App[None]):
         except Exception:
             pass
         try:
-            dq = sess.agent.put_task(text, source="user")
+            dq = sess.agent.put_task(text, source="user", images=image_paths or None)
         except Exception as e:
             sess.status = "error"
             self._update_assistant(sess.agent_id, f"[ERROR] put_task: {e}", task_id=tid, refresh_chrome=True)

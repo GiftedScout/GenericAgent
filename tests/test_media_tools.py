@@ -41,12 +41,11 @@ class MediaToolTests(unittest.TestCase):
         with patch("media_api.ocr", return_value="recognized") as mocked:
             outcome = exhaust(self.handler.dispatch(
                 "ocr",
-                {"image_path": "sample.png", "prompt": "tables only", "timeout": 7},
+                {"image_path": "sample.png", "timeout": 7},
                 self.response,
             ))
         self.assertEqual(outcome.data, "recognized")
-        mocked.assert_called_once_with(expected_path, prompt="tables only", timeout=7,
-                                       model=None, current=None)
+        mocked.assert_called_once_with(expected_path, timeout=7)
 
     def test_generate_image_dispatch_uses_agent_working_directory(self):
         target = str(Path(self.tmp.name, "image", "generated.png"))
