@@ -141,5 +141,41 @@ if continue_cmd is not None:
           not any(m['role'] == 'user' and '[ERROR]' in (m.get('content') or '')
                   for m in retry_msgs))
 
+    # Two regressions found on the real 708190 log (2026-09-17):
+    #  (a) a settlement block in the MIDDLE of a log used to `break`, silently
+    #      dropping every real user task that came after it;
+    #  (b) the start_long_term_update turn rendered the FULL L0 SOP (its tool
+    #      result) into the answer bubble, though the live view only ever
+    #      showed the "📄 结果 N 行" preview before the settlement freeze.
+    SECRET = "SECRET_L0_CORE_AXIOM_CONTENT"
+    MARK = "[后台记忆维护]"
+    with tempfile.NamedTemporaryFile('w', suffix='.txt', delete=False, encoding='utf-8') as fh:
+        fh.write("=== Prompt === 2026-01-01 00:00:00\n"
+                 + json.dumps({"role": "user", "content": [{"type": "text", "text": "task one"}]}, ensure_ascii=False) + "\n"
+                 + "=== Response === 2026-01-01 00:00:01 model=m\n"
+                 + repr([{'type': 'text', 'text': 'answer one'},
+                         {'type': 'tool_use', 'id': 'sltu1', 'name': 'start_long_term_update', 'input': {}}]) + "\n"
+                 + "=== Prompt === 2026-01-01 00:00:02\n"
+                 + json.dumps({"role": "user", "content": [
+                     {"type": "tool_result", "tool_use_id": "sltu1", "content": SECRET},
+                     {"type": "text", "text": "### " + MARK + " internal settlement stage"}]}, ensure_ascii=False) + "\n"
+                 + "=== Response === 2026-01-01 00:00:03 model=m\n"
+                 + repr([{'type': 'text', 'text': 'memory chatter'}]) + "\n"
+                 + "=== Prompt === 2026-01-01 00:00:04\n"
+                 + json.dumps({"role": "user", "content": [{"type": "text", "text": "task two"}]}, ensure_ascii=False) + "\n"
+                 + "=== Response === 2026-01-01 00:00:05 model=m\n"
+                 + repr([{'type': 'text', 'text': 'answer two'}]) + "\n")
+        fixture = fh.name
+    both = continue_cmd.extract_ui_messages(fixture)
+    os.unlink(fixture)
+    joined = '\n'.join(m['content'] for m in both)
+    check("middle settlement does not swallow later user tasks",
+          any(m['role'] == 'user' and m['content'] == 'task two' for m in both),
+          repr([m['content'][:20] for m in both]))
+    check("later task's answer is rebuilt", 'answer two' in joined)
+    check("first answer survives the settlement boundary", 'answer one' in joined)
+    check("SLTU full L0 result is not rendered (preview only)", SECRET not in joined)
+    check("settlement turn text is not rendered", 'memory chatter' not in joined)
+
 print(f"\n=== {PASS} passed, {FAIL} failed ===")
 sys.exit(1 if FAIL else 0)

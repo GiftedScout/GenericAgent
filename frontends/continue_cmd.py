@@ -670,7 +670,20 @@ def _format_response_segment(response_body, tool_results):
         elif t == 'tool_use':
             tool_parts.append(_format_tool_use(b))
             tid = b.get('id') or ''
-            if tid and tid in tool_results: tool_parts.append(tool_results[tid])
+            if tid and tid in tool_results:
+                # start_long_term_update triggers the background settlement sub-loop.
+                # In the live view (agent_runner_loop) only its *preview*
+                # ("📄 结果 N 行") reached the display channel; the full result is
+                # the L0 memory SOP and went to history only, after which the
+                # settlement event froze the display.  Rendering the full fence
+                # here would dump the L0 SOP into the answer bubble, so mirror the
+                # live preview for this one tool.
+                if b.get('name') == 'start_long_term_update':
+                    body = tool_results[tid]
+                    n = body.count('\n') + 1 if body else 1
+                    tool_parts.append(f"📄 结果 {n} 行\n")
+                else:
+                    tool_parts.append(tool_results[tid])
     return '\n\n'.join(p for p in ['\n\n'.join(texts), '\n'.join(tool_parts)] if p)
 
 
@@ -854,13 +867,17 @@ def extract_ui_messages(path):
 
     out, assistant, round_turn = [], None, 0
     for i, (prompt, response) in enumerate(pairs):
-        # Frozen in live mode at start_long_term_update: everything from the
-        # memory-maintenance prompt onward was never shown, so stop rebuilding
-        # this bubble. Settlement is transient UI state, not persisted answer text.
-        if assistant is not None and _SETTLEMENT_PROMPT_MARK in prompt:
-            out.append(assistant)
-            assistant = None
-            break
+        # Settlement (memory-maintenance) turns were never shown in the live view,
+        # so they must not be rebuilt into a bubble.  Crucially this is a *skip*,
+        # not a `break`: a log can hold several user tasks, each followed by its
+        # own settlement block, and a `break` at the first mark would silently drop
+        # every real task that came after it.  Close the in-flight bubble and keep
+        # going so the next real user task still renders.
+        if _SETTLEMENT_PROMPT_MARK in prompt:
+            if assistant is not None:
+                out.append(assistant)
+                assistant = None
+            continue
         user = _user_text(prompt)
         seg = _format_response_segment(response, next_tr[i])
         if user:
