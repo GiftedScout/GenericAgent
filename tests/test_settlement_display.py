@@ -87,8 +87,7 @@ def stop_after_first():
 ev4 = list(agentmain.iter_display_events(iter([{'turn': 1}, HDR1, "a\n", "b\n", "c\n", "d\n"]), "s", [], stop_check=stop_after_first))
 check("stopped early (not all pieces)", len([e for e in ev4 if 'next' in e]) < 4)
 
-print("[5] settlement notice reaches display AND final text (live side)")
-notice = agent_loop.SETTLEMENT_NOTICE
+print("[5] settlement is an independent event, never answer text")
 events5, history5 = collect([
     {'turn': 1}, HDR1, ANSWER + "\n", TOOL, TOOLR,
     {'settlement': True, 'turn': 1},
@@ -96,12 +95,13 @@ events5, history5 = collect([
 ])
 streamed5 = "".join(e.get('next', '') for e in events5 if 'done' not in e)
 done5 = next((e['done'] for e in events5 if 'done' in e), '')
-check("notice streamed to display", notice.strip() in streamed5)
-check("notice in final done text", notice.strip() in done5)
+check("one settlement state event emitted", sum('settlement' in e for e in events5) == 1)
+check("settlement notice not mixed into stream", agent_loop.SETTLEMENT_NOTICE.strip() not in streamed5)
+check("settlement notice not mixed into done", agent_loop.SETTLEMENT_NOTICE.strip() not in done5)
 check("memory text still hidden from display", MEMORY not in streamed5)
 check("memory text still absent from done text", MEMORY not in done5)
 
-print("[6] /continue replay drops settlement turn and mirrors the same notice")
+print("[6] /continue replay drops settlement turn without persisting transient state")
 sys.path.insert(0, os.path.join(agentmain.script_dir, 'frontends'))
 try:
     import continue_cmd
@@ -124,7 +124,7 @@ if continue_cmd is not None:
     os.unlink(fixture)
     tail = restored[-1]['content'] if restored else ''
     check("restored bubble keeps the answer", 'the answer' in tail)
-    check("restored bubble carries the same notice", notice.strip() in tail)
+    check("restored bubble has no transient notice", agent_loop.SETTLEMENT_NOTICE.strip() not in tail)
     check("restored bubble hides memory chatter", 'memory chatter' not in tail)
 
     # Framework auto-retries must not be replayed as user bubbles.

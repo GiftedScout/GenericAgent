@@ -7,7 +7,7 @@ elif hasattr(sys.stderr, 'reconfigure'): sys.stderr.reconfigure(errors='replace'
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from llmcore import reload_mykeys, ToolClient, MixinSession, NativeToolClient, NativeClaudeSession, NativeOAISession, resolve_client
-from agent_loop import agent_runner_loop, SETTLEMENT_NOTICE
+from agent_loop import agent_runner_loop
 try:
     from plugins.hooks import discover_and_load; discover_and_load()
 except Exception: pass
@@ -66,21 +66,13 @@ def iter_display_events(gen, source, turn_resps, stop_check=None):
             break
         if isinstance(chunk, dict):
             if 'settlement' in chunk:
-                # 结算标记在"答案轮"末尾到达（agent_loop 的 yield from response_gen
-                # 先于 tool dispatch），此时答案文本已全部显示、记忆维护文本还没
-                # 开始流。当前位置即冻结点：之后的（记忆维护）文本只进 full/history，
-                # 不再进入显示通道——避免"记忆吞掉答案"。无需回退，无需 reset 事件。
-                # 冻结前给显示通道补一条"后台记忆维护中"的提示：结算可能跑几分钟，
-                # 终端此刻是安静的，用户容易以为已结束而关窗，结算就被截断了。
-                # 提示同时写进 full_resp/turn_resps，于是它也出现在最终 done 文本里
-                # （滚动仍由 spinner 维持动态）——/continue 重放同一条日志时补同一条
-                # 提示（见 continue_cmd.SETTLEMENT_BREAK），两边看到的收尾完全一致。
-                full_resp += SETTLEMENT_NOTICE
-                turn_resps[-1] += SETTLEMENT_NOTICE
-                display_resp += SETTLEMENT_NOTICE
+                # 结算状态是 UI 独立事件：答案正文和历史不得混入提示文本。
+                # 结算前的内容已经完整流出；之后的维护轮次仅保留在审计历史，
+                # display_resp 冻结在这里，done 只返回用户真正看到的答案。
                 settle = (len(full_resp), len(display_resp))
-                yield {'next': SETTLEMENT_NOTICE, 'source': source,
-                       'turn': curr_turn, 'outputs': turn_resps[-2:]}
+                yield {'settlement': True, 'source': source,
+                       'turn': chunk.get('turn', curr_turn),
+                       'outputs': turn_resps[-2:]}
                 continue
             if 'turn' in chunk:
                 curr_turn = chunk['turn']

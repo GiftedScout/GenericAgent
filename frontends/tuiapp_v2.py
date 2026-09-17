@@ -2269,6 +2269,11 @@ class ChatMessage:
     _segment_sig: tuple = field(default=(), repr=False)
     _spinner_widget: Any = field(default=None, repr=False)
     # Stream start + token baselines so the spinner shows *this turn's* deltas.
+    # True while the answer is frozen on screen but the bounded memory
+    # settlement loop is still running.  It is UI state, never answer content.
+    settling: bool = False
+    _settlement_turn: int = field(default=0, repr=False)
+    _settlement_started_at: Optional[float] = field(default=None, repr=False)
     _stream_started_at: Optional[float] = field(default=None, repr=False)
     _stream_baseline_input: int = field(default=0, repr=False)
     _stream_baseline_output: int = field(default=0, repr=False)
@@ -7247,10 +7252,42 @@ class GenericAgentTUI(App[None]):
                 piece = str(item.get("next") or "")
                 buf += piece
                 self.call_from_thread(self._on_stream, agent_id, task_id, buf, False)
+            if "settlement" in item:
+                self.call_from_thread(self._on_settlement, agent_id, task_id,
+                                      item.get("turn", 0))
             if "done" in item:
                 done_text = str(item.get("done") or buf)
                 self.call_from_thread(self._on_stream, agent_id, task_id, done_text, True)
                 return
+
+    def _on_settlement(self, agent_id, task_id, turn=0):
+        """Mark the answer as in background memory settlement.
+
+        This is deliberately separate from the answer text: the existing spinner
+        timer keeps repainting the card while the settlement model is quiet.
+        """
+        s = self.sessions.get(agent_id)
+        if not s:
+            return
+        found = next((m for m in reversed(s.messages)
+                      if m.role == "assistant" and m.task_id == task_id), None)
+        if found is None:
+            return
+        found.settling = True
+        found._settlement_turn = turn
+        found._settlement_started_at = time.time()
+        if found._stream_started_at is None:
+            found._stream_started_at = found._settlement_started_at
+        if agent_id == self.current_id:
+            if found._segment_widgets:
+                try:
+                    self._stream_update_assistant(found)
+                except Exception:
+                    self._refresh_messages()
+            else:
+                self._refresh_messages()
+            self._refresh_topbar()
+            self._ensure_spinner()
 
     def _on_stream(self, agent_id, task_id, text, done):
         s = self.sessions.get(agent_id)
@@ -7267,6 +7304,7 @@ class GenericAgentTUI(App[None]):
                     if m.role == "assistant" and m.task_id == task_id:
                         m.content = text
                         m.done = True
+                        m.settling = False
                         found = m
                         break
                 if found and agent_id == self.current_id:
@@ -7287,6 +7325,10 @@ class GenericAgentTUI(App[None]):
         if done:
             s.status = "idle"
             s.current_display_queue = None
+            for m in reversed(s.messages):
+                if m.role == "assistant" and m.task_id == task_id:
+                    m.settling = False
+                    break
         self._update_assistant(agent_id, text, task_id=task_id, done=done, refresh_chrome=True)
         if done:
             self._rw_commit(s)   # 落 checkpoint 节点(文件改动已由 tool_before 钩子追踪)
@@ -8147,6 +8189,13 @@ class GenericAgentTUI(App[None]):
         """
         if m._stop_summary is not None:
             return self._stopping_annotation(m)
+        if m.settling:
+            elapsed = int(time.time() - m._settlement_started_at) if m._settlement_started_at else 0
+            out = Text()
+            out.append(self._spinner_glyph(), style=C_YELLOW)
+            out.append(" 记忆结算中…", style=C_YELLOW)
+            out.append(f"  ({_fmt_elapsed(elapsed)} · 第 {m._settlement_turn} 轮)", style=C_DIM)
+            return out
         out = Text()
         elapsed = int(time.time() - m._stream_started_at) if m._stream_started_at else 0
         last_in, last_out, last_cache = self._live_call_tokens(m)
@@ -8278,7 +8327,10 @@ class GenericAgentTUI(App[None]):
     def _ensure_spinner(self) -> None:
         # Independent timer keeps frames advancing between chunks (chunks may stall on the
         # network). Self-stops once no assistant message in the current session is streaming.
-        running = self._has_streaming()
+        running = self._has_streaming() or any(
+            m.role == "assistant" and m.settling
+            for m in (self.current.messages if self.current_id is not None else [])
+        )
         if running and self._spinner_timer is None:
             self._spinner_timer = self.set_interval(0.1, self._spinner_tick)
         elif not running and self._spinner_timer is not None:
@@ -8291,7 +8343,7 @@ class GenericAgentTUI(App[None]):
         if self.current_id is None:
             self._ensure_spinner(); return
         for m in self.current.messages:
-            if m.role == "assistant" and not m.done and m._spinner_widget is not None:
+            if m.role == "assistant" and (not m.done or m.settling) and m._spinner_widget is not None:
                 if m._stream_started_at is None:
                     self._mark_stream_start(m)
                 try: m._spinner_widget.update(self._spinner_annotation(m))

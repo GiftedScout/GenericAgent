@@ -83,6 +83,8 @@ def agent_runner_loop(client, system_prompt, user_input, handler, tools_schema,
             exit_reason = {'result': 'MEMORY_SETTLEMENT_LIMIT'}
             break
         turn += 1
+        if settlement_mode:
+            settlement_turns += 1
         turnstr = f'LLM Running (Turn {turn}) ...'
         if handler.parent.task_dir:
             turnstr = f'Turn {turn} ...'
