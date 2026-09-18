@@ -8198,8 +8198,8 @@ class GenericAgentTUI(App[None]):
         if m.settling:
             elapsed = int(time.time() - m._settlement_started_at) if m._settlement_started_at else 0
             out = Text()
-            out.append(self._spinner_glyph(), style=C_YELLOW)
-            out.append(" 记忆结算中…", style=C_YELLOW)
+            out.append(self._spinner_glyph(), style=C_AMBER)
+            out.append(" 记忆结算中…", style=C_AMBER)
             out.append(f"  ({_fmt_elapsed(elapsed)} · 第 {m._settlement_turn} 轮)", style=C_DIM)
             return out
         out = Text()
