@@ -7271,6 +7271,12 @@ class GenericAgentTUI(App[None]):
             return
         found = next((m for m in reversed(s.messages)
                       if m.role == "assistant" and m.task_id == task_id), None)
+        if os.environ.get("GA_DEBUG_SETTLE"):
+            import os as _os
+            with open(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "temp", "settle_debug.log"), "a") as _f:
+                _f.write(f"[{time.strftime('%H:%M:%S')}] tui _on_settlement agent={agent_id} task_id={task_id} "
+                         f"matched={found is not None} n_msgs={len(s.messages)} "
+                         f"ids={[m.task_id for m in s.messages if m.role == 'assistant']}\n")
         if found is None:
             return
         found.settling = True

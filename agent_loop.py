@@ -150,6 +150,10 @@ def agent_runner_loop(client, system_prompt, user_input, handler, tools_schema,
                 # agentmain 据此把显示缓冲回退到本轮起点并冻结显示通道——
                 # 结算/记忆维护的文本不再进入 TUI，避免"记忆吞掉答案"。
                 yield {"settlement": True, "turn": turn}
+                if os.environ.get("GA_DEBUG_SETTLE"):
+                    import time as _t
+                    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp", "settle_debug.log"), "a") as _f:
+                        _f.write(f"[{_t.strftime('%H:%M:%S')}] agent_loop EMIT settlement turn={turn} current_turn={handler.current_turn}\n")
             if not outcome.next_prompt:
                 exit_reason = {'result': 'CURRENT_TASK_DONE', 'data': outcome.data}; break
             if outcome.next_prompt.startswith('未知工具'): client.last_tools = ''

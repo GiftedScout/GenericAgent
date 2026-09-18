@@ -70,6 +70,9 @@ def iter_display_events(gen, source, turn_resps, stop_check=None):
                 # 结算前的内容已经完整流出；之后的维护轮次仅保留在审计历史，
                 # display_resp 冻结在这里，done 只返回用户真正看到的答案。
                 settle = (len(full_resp), len(display_resp))
+                if os.environ.get("GA_DEBUG_SETTLE"):
+                    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp", "settle_debug.log"), "a") as _f:
+                        _f.write(f"[{time.strftime('%H:%M:%S')}] agentmain QUEUE settlement turn={chunk.get('turn', curr_turn)}\n")
                 yield {'settlement': True, 'source': source,
                        'turn': chunk.get('turn', curr_turn),
                        'outputs': turn_resps[-2:]}
