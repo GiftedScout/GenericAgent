@@ -11,7 +11,7 @@ from agent_loop import agent_runner_loop
 try:
     from plugins.hooks import discover_and_load; discover_and_load()
 except Exception: pass
-from ga import GenericAgentHandler, smart_format, get_global_memory, format_error, consume_file, memory_dir
+from ga import GenericAgentHandler, smart_format, get_global_memory, format_error, consume_file, memory_dir, resolve_task_anchor
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 BANNED_TOOLS = (['ask_user', 'start_long_term_update'] if '--no-user-tools' in sys.argv else [])
@@ -137,6 +137,10 @@ class GenericAgent:
         self.load_llm_sessions()
         self.extra_sys_prompts = []
         self.intervene = self.extrakeyinfo = None
+        # 任务锚点（铆钉）：agent 级持久化，跨"继续"/ask_user回答保留；/continue 恢复时由
+        # continue_cmd 从日志回填；reset_conversation 清空。见 ga.resolve_task_anchor。
+        self.task_anchor = ''
+        self._prev_exit = None
 
     def _llm_client_identity(self, client=None):
         """Return a stable model+route identity; never include API credentials."""
@@ -277,7 +281,9 @@ class GenericAgent:
             self.history.append(f"[USER]: {rquery}")
             sys_prompt = get_system_prompt() + '\n'.join(self.extra_sys_prompts) + getattr(self.llmclient.backend, 'extra_sys_prompt', '')
             if self.peer_hint: sys_prompt += f"\n[Peer] 用户提及其他会话/后台任务状态时: temp/model_responses/ (只找近期修改的文件尾部)\n"
-            handler = GenericAgentHandler(self, self.history, os.path.join(script_dir, 'temp'), original_task=raw_query)
+            # 任务锚点：继续类输入/ask_user回答继承上一锚点，实质新任务覆盖（见 ga.resolve_task_anchor）
+            new_anchor = resolve_task_anchor(raw_query, self.task_anchor, self._prev_exit)
+            handler = GenericAgentHandler(self, self.history, os.path.join(script_dir, 'temp'), original_task=new_anchor)
             if getattr(self, 'no_print', False): handler.print = lambda *a, **k: None
             if self.handler and 'key_info' in self.handler.working: 
                 ki = re.sub(r'\n\[SYSTEM\] 此为.*?工作记忆[。\n]*', '', self.handler.working['key_info'])  # 去旧
@@ -330,6 +336,8 @@ class GenericAgent:
                 display_queue.put({'done': f'\n```\n{format_error(e)}\n```', 'source': source,
                                    'turn': 0, 'outputs': list(turn_resps)})
             finally:
+                self.task_anchor = new_anchor  # 锚点已提交给本轮；继续/回答类输入会继承它
+                self._prev_exit = getattr(handler, '_last_exit', None)  # 正常退出(含ask_user)才有
                 if self.stop_sig: print('User aborted the task.')
                 self.is_running = self.stop_sig = False  # keep _current_queue: its final 'done' may still be unclaimed (refreshed UI salvages it); next task overwrites it
                 self.task_queue.task_done()

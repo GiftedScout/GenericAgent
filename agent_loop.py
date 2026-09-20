@@ -175,7 +175,8 @@ def agent_runner_loop(client, system_prompt, user_input, handler, tools_schema,
         messages = [{"role": "user", "content": next_prompt, "tool_results": tool_results}]   # just new message, history is kept in *Session
     if exit_reason: handler.turn_end_callback(response, tool_calls, tool_results, turn, '', exit_reason)
     _hook('agent_after', locals())
-    return exit_reason or {'result': 'MAX_TURNS_EXCEEDED'}
+    handler._last_exit = exit_reason or {'result': 'MAX_TURNS_EXCEEDED'}
+    return handler._last_exit
 
 def _clean_content(text):
     if not text: return ''

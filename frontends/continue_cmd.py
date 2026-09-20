@@ -437,6 +437,36 @@ def _agent_clients(agent):
     return clients
 
 
+def _task_anchor_from_log(content):
+    """从 model_responses 日志提取锚点：最后一个实质用户 prompt（跳过"继续"类指令与
+    框架注入文本），供 /continue 恢复后铆钉延续。找不到时返回 ''。"""
+    from ga import is_continuation_input
+    for label, body in reversed(_BLOCK_RE.findall(content or '')):
+        if label != 'Prompt':
+            continue
+        t = _user_text(body)
+        if t and not is_continuation_input(t):
+            return t
+    return ''
+
+
+def _restore_task_anchor(agent, content):
+    """/continue 恢复后回填任务锚点，使续接会话的铆钉指向恢复日志中的最近实质任务。"""
+    try:
+        anchor = _task_anchor_from_log(content)
+    except Exception:
+        anchor = ''
+    if anchor:
+        agent.task_anchor = anchor
+        agent._prev_exit = None
+
+
+def _clear_task_anchor(agent):
+    if hasattr(agent, 'task_anchor'):
+        agent.task_anchor = ''
+        agent._prev_exit = None
+
+
 def _replace_backend_history(agent, history):
     backend = getattr(getattr(agent, 'llmclient', None), 'backend', None)
     if backend is not None and hasattr(backend, 'history'):
@@ -488,6 +518,7 @@ def reset_conversation(agent, message='🆕 已开启新对话，当前上下文
             client.last_tools = ''
     if hasattr(agent, 'handler'):
         agent.handler = None
+    _clear_task_anchor(agent)
     return message
 
 def format_list(sessions, limit=20):
@@ -511,12 +542,14 @@ def restore(agent, path):
     if history is not None:
         agent.abort()
         _replace_backend_history(agent, history)
+        _restore_task_anchor(agent, content)
         return f'✅ 已恢复 {len(pairs)} 轮完整对话（{name}）\n(已写入 backend.history，可直接继续)', True
     from chatapp_common import _restore_native_history, _restore_text_pairs
     summary = _restore_text_pairs(content) or _restore_native_history(content)
     if not summary: return f'❌ {name} 无法解析（非 native 且无摘要可提取）', False
     agent.abort()
     agent.history.extend(summary)
+    _restore_task_anchor(agent, content)
     n = sum(1 for l in summary if l.startswith('[USER]: '))
     return f'⚠️ 非 native 格式，已降级恢复 {n} 轮摘要（{name}）\n(请输入新问题继续)', False
 
@@ -1094,6 +1127,7 @@ def _clear_conversation_state(agent):
             client.last_tools = ''
     if hasattr(agent, 'handler'):
         agent.handler = None
+    _clear_task_anchor(agent)
 
 
 def acquire_birth_lock(agent, agent_id=None):
@@ -1142,6 +1176,7 @@ def _load_history_into(agent, path, restore_wm=False):
     name = os.path.basename(path)
     if history is not None:
         _replace_backend_history(agent, history)
+        _restore_task_anchor(agent, content)
         if restore_wm and hasattr(agent, 'history'):
             agent.history = _derive_hist_info(history)   # 续接恢复工作记忆(opt-in)
         return f'✅ 已恢复 {len(pairs)} 轮完整对话（{name}）', True
@@ -1151,6 +1186,7 @@ def _load_history_into(agent, path, restore_wm=False):
         return f'❌ {name} 无法解析（非 native 且无摘要可提取）', False
     if hasattr(agent, 'history'):
         agent.history.extend(summary)
+    _restore_task_anchor(agent, content)
     n = sum(1 for l in summary if l.startswith('[USER]: '))
     return f'⚠️ 非 native 格式，降级恢复 {n} 轮摘要（{name}）', False
 
