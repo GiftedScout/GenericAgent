@@ -118,14 +118,13 @@ class ContextContinuityTests(unittest.TestCase):
         self.assertEqual(resolve_task_anchor("继续", task, None), task)
         self.assertEqual(resolve_task_anchor("继续执行", task, None), task)
         self.assertEqual(resolve_task_anchor("continue", task, None), task)
-        # ask_user 退出后的短回答
+        # ask_user 退出后的回答 = 对提问的独立回复，无论长短都不覆盖锚点
         human = {'result': 'EXITED', 'data': {'status': 'INTERRUPT', 'intent': 'HUMAN_INTERVENTION'}}
         self.assertEqual(resolve_task_anchor("选A", task, human), task)
         self.assertEqual(resolve_task_anchor("可以", task, human), task)
-        # ask_user 的长回答 = 改派任务 → 覆盖
-        new_task = "改为部署到自建 k8s 集群并写回滚脚本和文档"
-        self.assertEqual(resolve_task_anchor(new_task, task, human), new_task)
+        self.assertEqual(resolve_task_anchor("选方案B，但注意保留回滚脚本", task, human), task)
         # 正常完成后的新实质任务 → 覆盖（锚点跟随最近实质任务，而非会话首条）
+        new_task = "改为部署到自建 k8s 集群并写回滚脚本和文档"
         self.assertEqual(resolve_task_anchor(new_task, task, {'result': 'CURRENT_TASK_DONE'}), new_task)
         # 异常退出(_last_exit缺失)时"继续"仍继承
         self.assertEqual(resolve_task_anchor("继续", task, None), task)

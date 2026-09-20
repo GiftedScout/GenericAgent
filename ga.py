@@ -552,14 +552,14 @@ def is_continuation_input(text):
     return bool(_CONTINUATION_RE.match(t))
 
 def resolve_task_anchor(raw_query, prev_anchor, prev_exit=None):
-    """解析本轮任务锚点：继续类输入与 ask_user 的短回答继承上一锚点；实质性新输入覆盖锚点。
-    ask_user 的长回答视为新指令（用户在回答中改派任务）。短回答阈值取 15 字：
-    典型回答（选A/可以/方案B/继续吧）远短于此；超过 15 字基本是完整新指令。"""
+    """解析本轮任务锚点：继续类输入与 ask_user 的回答继承上一锚点；实质性新输入覆盖锚点。
+    ask_user 的回答（HUMAN_INTERVENTION 退出后的下一条输入）是对提问的独立回复，
+    不携带新任务信息，无论长短都不覆盖锚点。"""
     prev_exit = prev_exit or {}
     prev_data = prev_exit.get('data') or {}
     human_reply = prev_exit.get('result') == 'EXITED' and prev_data.get('intent') == 'HUMAN_INTERVENTION'
     t = str(raw_query or '').strip()
-    if prev_anchor and (is_continuation_input(t) or (human_reply and len(t) <= 15)):
+    if prev_anchor and (is_continuation_input(t) or human_reply):
         return prev_anchor
     return smart_format(t, max_str_len=1195)[:1200]
 
