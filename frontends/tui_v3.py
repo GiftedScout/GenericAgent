@@ -175,6 +175,7 @@ _I18N: dict[str, dict[str, str]] = {
         'cmd.review.desc':      'In-session code review',
         'cmd.rewind.desc':      'Rewind the last n rounds',
         'cmd.continue.desc':    'List / restore historical sessions',
+        'cmd.retry.desc':       'Retry the interrupted request (anchor & context unchanged)',
         'cmd.new.desc':         'Start a new session',
         'cmd.rename.desc':      'Rename the current session',
         'cmd.clear.desc':       'Clear display (LLM history untouched)',
@@ -446,6 +447,7 @@ _I18N: dict[str, dict[str, str]] = {
         'cmd.review.desc':      'in-session 代码审查',
         'cmd.rewind.desc':      '回退最近 n 轮',
         'cmd.continue.desc':    '列出 / 恢复历史会话',
+        'cmd.retry.desc':       '重发中断的请求（锚点与上下文不变）',
         'cmd.new.desc':         '新建会话',
         'cmd.rename.desc':      '重命名当前会话',
         'cmd.clear.desc':       '清空显示（不动 LLM 历史）',
@@ -1933,6 +1935,7 @@ def _cmds() -> list[tuple[str, str, str]]:
         ('/rewind',   _t('cmd.rewind.arg'),     _t('cmd.rewind.desc')),
         ('/todo',     'add|ls|run|del',         _t('cmd.todo.desc')),
         ('/continue', _t('cmd.continue.arg'),   _t('cmd.continue.desc')),
+        ('/retry',    '',                       _t('cmd.retry.desc', default='Retry the interrupted request (anchor & context unchanged)')),
         ('/workspace', _t('cmd.workspace.arg', default='[path|off]'),
                        _t('cmd.workspace.desc', default='设定工作目录(绝对路径)并进入项目模式')),
         ('/new',      _t('cmd.new.arg'),        _t('cmd.new.desc')),
@@ -4479,7 +4482,7 @@ class SB:
         ag = self._bridge.agent
         # /btw is deliberately NOT idle-only — a side question must be fireable
         # while the main agent runs (that's its whole purpose).
-        idle_only = {'clear', 'export', 'review', 'rewind', 'continue'}
+        idle_only = {'clear', 'export', 'review', 'rewind', 'continue', 'retry'}
         if name in idle_only and self._running:
             self.commit([_t('err.running_blocked')]); return
         if name in ('q', 'quit', 'exit'):
@@ -4550,6 +4553,10 @@ class SB:
         # /switch /close /branch — 多会话后端尚未接入，命令未实现，先注释掉。
         # elif name in ('switch', 'close', 'branch'):
         #     self.commit([_t('err.multi_session', name=name)])
+        elif name == 'retry':
+            # /retry: agent 端 _prepare_retry 弹出后端历史里未响应的 user 消息
+            # 并原样重发（锚点与上下文不变），处理网络中断等故障后的续跑。
+            self._submit('/retry', [])
         elif name == 'continue':
             from frontends import continue_cmd
             sess = continue_cmd.list_sessions(exclude_log=os.path.basename(getattr(ag, "log_path", "") or ""))

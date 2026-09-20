@@ -254,6 +254,47 @@ class GenericAgent:
             return r'帮我看看最近有哪些会话可以恢复。读model_responses/目录，按修改时间取最近10个文件，从每个文件里找最后一个<history>...</history>块，用一句话总结每个会话在聊什么，列表给我选。注意读文件后要把字面的\n替换成真换行才能正确匹配。'
         return raw_query
 
+    def _prepare_retry(self, display_queue):
+        """/retry: 意外中断（网络断连/Ctrl+C//continue 恢复）后续跑，锚点与上下文不变。
+        两种形态（视 history 尾部状态而定）：
+        - 尾=未响应的 user 消息（live 中断，NativeSession.ask 在网络调用前 append）：
+          弹出并重组为 str 原样重发 —— 就好像错误没有发生。
+        - 尾=assistant（/continue 恢复、或 Ctrl+C 打断在工具执行中，中断的 user
+          消息已不在 history）：发一条系统续跑 nudge，不引入新用户指令。
+        返回重发的 raw_query（str，保持 agent_loop 的 user 消息格式），不可重试时返回 None。"""
+        be = self.llmclient.backend
+        hist = getattr(be, 'history', None)
+        if not hist or not isinstance(hist[-1], dict):
+            display_queue.put({'done': '❌ /retry: 当前没有可续跑的会话上下文', 'source': 'system'})
+            return None
+        if hist[-1].get('role') == 'assistant':
+            # 中断的 user 消息已不在 history（/continue 只恢复完整轮次 / Ctrl+C 打断
+            # 在工具执行中）。发续跑提示，模型靠 <task_anchor>+key_info 续接。
+            display_queue.put({'done': '🔁 刚才是意外中断，请模型从断点继续（锚点与上下文不变）…', 'source': 'system'})
+            return '[retry] 上一轮执行因网络中断/意外退出而中断，请从断点继续原任务。不要重新询问用户，直接接着做。'
+        if hist[-1].get('role') != 'user':
+            display_queue.put({'done': '❌ /retry: 没有可重试的中断请求（上一轮不是未响应就中断的）', 'source': 'system'})
+            return None
+        msg = hist.pop()
+        c = msg.get('content')
+        if isinstance(c, str):
+            t = c.strip()
+            return t or '[retry] 继续上次中断的任务'
+        # blocks: tool_result 包 <tool_result> 标签 + 文本块，与 NativeToolClient.chat 的重组规则一致
+        parts = []
+        for b in c or []:
+            if not isinstance(b, dict):
+                continue
+            if b.get('type') == 'tool_result':
+                parts.append(f'<tool_result>{b.get("content", "")}</tool_result>')
+            elif b.get('type') == 'text' and str(b.get('text', '')).strip():
+                parts.append(str(b['text']))
+        t = '\n'.join(parts).strip()
+        if not t:
+            display_queue.put({'done': '❌ /retry: 上一条中断消息无可重发的内容', 'source': 'system'})
+            return None
+        return t
+
     def run(self):
         while True:
             task = self.task_queue.get()
@@ -262,6 +303,11 @@ class GenericAgent:
             raw_query = self._handle_slash_cmd(raw_query, display_queue)
             if raw_query is None:
                 self.task_queue.task_done(); continue
+            retrying = raw_query.strip() == '/retry'
+            if retrying:
+                raw_query = self._prepare_retry(display_queue)
+                if raw_query is None:
+                    self.task_queue.task_done(); continue
             pending_update = getattr(self, '_pending_update_prompt', None)
             conflict_just_shown = bool(getattr(self, '_update_conflict_just_shown', False))
             self._update_conflict_just_shown = False
@@ -281,9 +327,10 @@ class GenericAgent:
             self.history.append(f"[USER]: {rquery}")
             sys_prompt = get_system_prompt() + '\n'.join(self.extra_sys_prompts) + getattr(self.llmclient.backend, 'extra_sys_prompt', '')
             if self.peer_hint: sys_prompt += f"\n[Peer] 用户提及其他会话/后台任务状态时: temp/model_responses/ (只找近期修改的文件尾部)\n"
-            # 任务锚点：继续类输入/ask_user回答继承上一锚点，实质新任务覆盖（见 ga.resolve_task_anchor）
-            new_anchor = resolve_task_anchor(raw_query, self.task_anchor, self._prev_exit)
+            # 任务锚点：/retry 与 ask_user 回答继承上一锚点，实质新任务覆盖（见 ga.resolve_task_anchor）
+            new_anchor = self.task_anchor if retrying else resolve_task_anchor(raw_query, self.task_anchor, self._prev_exit)
             handler = GenericAgentHandler(self, self.history, os.path.join(script_dir, 'temp'), original_task=new_anchor)
+            if retrying: handler._empty_ct = 0  # 上次中断已耗尽的自动重试额度不复用
             if getattr(self, 'no_print', False): handler.print = lambda *a, **k: None
             if self.handler and 'key_info' in self.handler.working: 
                 ki = re.sub(r'\n\[SYSTEM\] 此为.*?工作记忆[。\n]*', '', self.handler.working['key_info'])  # 去旧

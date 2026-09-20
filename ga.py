@@ -528,38 +528,19 @@ def consume_file(dr, file):
         return content
 
 # ---------------------------------------------------------------------------
-# 任务锚点（铆钉）：锚点跟随「最近一次实质任务」。"继续"类指令与 ask_user 的
-# 回答不携带新任务信息，不能覆盖锚点 —— 否则网络中断/断点续跑/ask_user 回答
-# 之后模型会忘记最初的用户请求（d29c3c9 只解决了工具轮内的锚点保留）。
+# 任务锚点（铆钉）：锚点跟随「最近一次实质任务」。/retry（网络中断等故障后
+# 原样重试）与 ask_user 的回答不携带新任务信息，不能覆盖锚点 —— 否则
+# 故障重试/ask_user 回答之后模型会忘记最初的用户请求。
 # ---------------------------------------------------------------------------
-_CONTINUATION_RE = re.compile(
-    r'^(?:请|帮我|麻烦你?|帮忙)?(?:'
-    r'继续(?:执行|下去|完成|任务|上次|之前|未完成的(?:任务|部分)|跑|写|做|处理|修复|部署|重试|提交|测试|清理|验证|吧|吗)?(?:一下)?$'
-    r'|continue(?:ing)?\b[^。！？!?]{0,30}$'
-    r'|go\s+on$|proceed(?:ing)?\b[^。！？!?]{0,10}$|resume\b[^。！？!?]{0,10}$|carry\s+on$|keep\s+(?:going|working)$'
-    r'|yes$|y$|yeah$|yep$|ok$|okay$|sure$|fine$'
-    r'|好的?$|嗯$|对$|是$|可以$|行$|没问题$|同意$|确认$|知道了$|收到$|明白$|了解$'
-    r'|就(这个|它|选它|按这个)$|按(?:这个|此|上述|推荐|建议|方案)$'
-    r'|方案[A-Ha-h]$|选(?:择)?\s?[A-Ha-h1-9]$|[A-Ha-h1-9]$'
-    r')\s*[。！!？?~.…]*$',
-    re.IGNORECASE)
-
-def is_continuation_input(text):
-    """输入是"继续"类指令或对 ask_user 的短确认/选择时为 True（不携带新任务信息）。"""
-    t = str(text or '').strip()
-    if not t or len(t) > 40:
-        return False
-    return bool(_CONTINUATION_RE.match(t))
-
 def resolve_task_anchor(raw_query, prev_anchor, prev_exit=None):
-    """解析本轮任务锚点：继续类输入与 ask_user 的回答继承上一锚点；实质性新输入覆盖锚点。
+    """解析本轮任务锚点：/retry 与 ask_user 的回答继承上一锚点；实质性新输入覆盖锚点。
     ask_user 的回答（HUMAN_INTERVENTION 退出后的下一条输入）是对提问的独立回复，
     不携带新任务信息，无论长短都不覆盖锚点。"""
     prev_exit = prev_exit or {}
     prev_data = prev_exit.get('data') or {}
     human_reply = prev_exit.get('result') == 'EXITED' and prev_data.get('intent') == 'HUMAN_INTERVENTION'
     t = str(raw_query or '').strip()
-    if prev_anchor and (is_continuation_input(t) or human_reply):
+    if prev_anchor and (t == '/retry' or human_reply):
         return prev_anchor
     return smart_format(t, max_str_len=1195)[:1200]
 

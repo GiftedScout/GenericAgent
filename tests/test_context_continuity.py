@@ -3,7 +3,7 @@ import unittest
 from types import SimpleNamespace
 
 import llmcore
-from ga import GenericAgentHandler, resolve_task_anchor, is_continuation_input
+from ga import GenericAgentHandler, resolve_task_anchor
 
 
 class _Parent:
@@ -111,13 +111,11 @@ class ContextContinuityTests(unittest.TestCase):
         self.assertEqual(replay[-1]["reasoning_content"], "inspect files")
 
 
-    def test_task_anchor_survives_continue_and_ask_user_answer(self):
-        """继续/ask_user回答继承锚点；实质新指令覆盖锚点。"""
+    def test_task_anchor_survives_retry_and_ask_user_answer(self):
+        """/retry 与 ask_user 回答继承锚点；实质新指令覆盖锚点。"""
         task = "部署 pde2 到云端并验证 ACR 推送"
-        # 网络中断后输入"继续"
-        self.assertEqual(resolve_task_anchor("继续", task, None), task)
-        self.assertEqual(resolve_task_anchor("继续执行", task, None), task)
-        self.assertEqual(resolve_task_anchor("continue", task, None), task)
+        # /retry（网络中断后原样重发）继承锚点
+        self.assertEqual(resolve_task_anchor("/retry", task, None), task)
         # ask_user 退出后的回答 = 对提问的独立回复，无论长短都不覆盖锚点
         human = {'result': 'EXITED', 'data': {'status': 'INTERRUPT', 'intent': 'HUMAN_INTERVENTION'}}
         self.assertEqual(resolve_task_anchor("选A", task, human), task)
@@ -126,17 +124,44 @@ class ContextContinuityTests(unittest.TestCase):
         # 正常完成后的新实质任务 → 覆盖（锚点跟随最近实质任务，而非会话首条）
         new_task = "改为部署到自建 k8s 集群并写回滚脚本和文档"
         self.assertEqual(resolve_task_anchor(new_task, task, {'result': 'CURRENT_TASK_DONE'}), new_task)
-        # 异常退出(_last_exit缺失)时"继续"仍继承
-        self.assertEqual(resolve_task_anchor("继续", task, None), task)
-        # 空锚点时"继续"成为新锚点（会话首条即"继续"，无锚可继承）
-        self.assertEqual(resolve_task_anchor("继续", "", None), "继续")
+        # 异常退出(_last_exit缺失)时的实质输入 → 覆盖（"继续"不再是特判，普通文本即新任务）
+        self.assertEqual(resolve_task_anchor("换个话题", task, None), "换个话题")
 
-    def test_is_continuation_input_boundaries(self):
-        for t in ["继续", "继续吧", "请继续", "continue", "go on", "A", "选B", "好的", "嗯", "ok"]:
-            self.assertTrue(is_continuation_input(t), t)
-        for t in ["", "继续修复 login 接口的 500 错误并补充单测", "x" * 41,
-                  "把刚才的方案改成异步实现，注意线程安全"]:
-            self.assertFalse(is_continuation_input(t), t)
+    def test_prepare_retry_pops_interrupted_user_message(self):
+        """/retry: 尾部是未响应的 user 消息→弹出原样重发(str)；
+        尾部是 assistant（/continue 恢复 / Ctrl+C 打断在工具中）→ nudge 兜底；空历史→拒绝。"""
+        from types import SimpleNamespace
+        import agentmain
+        agent = object.__new__(agentmain.GenericAgent)
+        dq = []
+        display_queue = SimpleNamespace(put=dq.append)
+        hist = [
+            {"role": "user", "content": [{"type": "text", "text": "原始任务"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
+        ]
+        agent.llmclient = SimpleNamespace(backend=SimpleNamespace(history=hist))
+        # 中断残留：尾部是未响应的 user 消息（文本）→ 重发原文
+        hist.append({"role": "user", "content": [{"type": "text", "text": "[ERROR] 继续上次"}]})
+        r = agent._prepare_retry(display_queue)
+        self.assertEqual(r, "[ERROR] 继续上次")
+        self.assertEqual(len(hist), 2)                     # 中断消息已弹出
+        # 上一轮正常结束（尾部是 assistant，如 /continue 恢复）→ nudge 兜底，不 pop
+        hist.append({"role": "assistant", "content": [{"type": "text", "text": "done"}]})
+        r = agent._prepare_retry(display_queue)
+        self.assertIsInstance(r, str)
+        self.assertIn("断点", r)
+        self.assertEqual(len(hist), 3)                     # 未被弹出
+        # 尾部 user 为 blocks（tool_result + text）→ 重组为 str 重发
+        hist.append({"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "OUT"},
+            {"type": "text", "text": "next step"}]})
+        r = agent._prepare_retry(display_queue)
+        self.assertIn("OUT", r)
+        self.assertIn("next step", r)
+        self.assertEqual(len(hist), 3)
+        # 空历史 → 拒绝
+        hist.clear()
+        self.assertIsNone(agent._prepare_retry(display_queue))
 
     def test_compress_history_tags_protects_task_anchor_block(self):
         """task_anchor 标签整体保护（替换为[...]），不被 800 字符截断成孤儿标签。"""

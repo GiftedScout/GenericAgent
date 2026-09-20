@@ -3938,7 +3938,7 @@ class GenericAgentTUI(App[None]):
             "effort": self._cmd_effort,
             "export": self._cmd_export,
             "restore": self._cmd_restore, "btw": self._cmd_btw, "review": self._cmd_review,
-            "continue": self._cmd_continue, "cost": self._cmd_cost,
+            "continue": self._cmd_continue, "retry": self._cmd_retry, "cost": self._cmd_cost,
             "workspace": self._cmd_workspace,
             "todo": self._cmd_todo,
             "reload-keys": self._cmd_reload_keys,
@@ -6278,6 +6278,14 @@ class GenericAgentTUI(App[None]):
     def _rw_rewind_root(self):
         """世界线树根目录(temp/.ga_rewind),供 continue_list 树感知发现"已回退至起点"的空会话。"""
         return os.path.join(os.path.normpath(os.path.join(FRONTENDS_DIR, '..', 'temp')), '.ga_rewind')
+
+    def _cmd_retry(self, args, raw):
+        # /retry: agent 端 _prepare_retry 弹出后端历史里未响应的 user 消息
+        # 并原样重发（锚点与上下文不变），处理网络中断等故障后的续跑。
+        sess = self.current
+        if sess.status == "running":
+            self._system("❌ 任务运行中，无法 /retry"); return
+        self.submit_user_message('/retry', display_text='/retry')
 
     def _cmd_continue(self, args, raw):
         sess = self.current

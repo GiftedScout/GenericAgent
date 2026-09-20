@@ -438,14 +438,13 @@ def _agent_clients(agent):
 
 
 def _task_anchor_from_log(content):
-    """从 model_responses 日志提取锚点：最后一个实质用户 prompt（跳过"继续"类指令与
+    """从 model_responses 日志提取锚点：最后一个实质用户 prompt（跳过 /retry 与
     框架注入文本），供 /continue 恢复后铆钉延续。找不到时返回 ''。"""
-    from ga import is_continuation_input
     for label, body in reversed(_BLOCK_RE.findall(content or '')):
         if label != 'Prompt':
             continue
         t = _user_text(body)
-        if t and not is_continuation_input(t):
+        if t and t.strip() != '/retry' and not t.strip().startswith('[retry]'):
             return t
     return ''
 
