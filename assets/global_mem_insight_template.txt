@@ -2,7 +2,7 @@
 需要时read L2 或 ls ../memory/ 查L3
 L0(META-SOP): memory_management_sop
 L2: 现空
-L3: memory_cleanup_sop(记忆整理) | ui_detect.py | ocr_utils.py | subagent | web_setup_sop
+L3: memory_cleanup_sop(记忆整理) | ui_detect.py | ocr_utils.py | subagent
 L4: L4_raw_sessions/ 历史会话
 
 键鼠: ljqCtrl_sop(禁pyautogui/先activate)
@@ -17,5 +17,4 @@ UI操作/截图/视觉: computer_use.md | vision_sop | 窗口截图必用ljqCtrl
 4. 闭环: 物理模拟后确认; 3次失败请求干预
 5. 进程: 禁无条件杀python(杀自己), 精确PID, 禁os.kill判活
 6. 窗口: GUI状态先枚举当前平台窗口/进程标题，必要时用对应平台工具验证
-7. web JS: 输入用原生setter+事件链, 点击前检disabled, 注意引号转义; scan空/不全先稍等再scan, 禁首扫定论
-8. SOP: 读SOP禁凭印象,有utils必用
+7. SOP: 读SOP禁凭印象,有utils必用

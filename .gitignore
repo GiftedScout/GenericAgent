@@ -41,7 +41,6 @@ memory/*
 !memory/memory_management_sop.md
 
 # Allow tracking of specific SOPs
-!memory/web_setup_sop.md
 !memory/autonomous_operation_sop.md
 !memory/autonomous_operation_sop/
 !memory/autonomous_operation_sop/**

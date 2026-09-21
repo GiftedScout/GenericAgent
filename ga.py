@@ -301,6 +301,26 @@ def web_scan(query, max_results=5, search_depth='basic', topic='general', time_r
     return result
 
 
+
+def format_error(e):
+    exc_type, exc_value, exc_traceback = sys.exc_info()
+    tb = traceback.extract_tb(exc_traceback)
+    if tb:
+        f = tb[-1]
+        fname = os.path.basename(f.filename)
+        return f"{exc_type.__name__}: {str(e)} @ {fname}:{f.lineno}, {f.name} -> `{f.line}`"
+    return f"{exc_type.__name__}: {str(e)}"
+
+def log_memory_access(path):
+    if 'memory' not in path: return
+    stats_file = os.path.join(memory_dir, 'file_access_stats.json')
+    try:
+        with open(stats_file, 'r', encoding='utf-8') as f: stats = json.load(f)
+    except: stats = {}
+    fname = os.path.basename(path)
+    stats[fname] = {'count': stats.get(fname, {}).get('count', 0) + 1, 'last': datetime.now().strftime('%Y-%m-%d')}
+    with open(stats_file, 'w', encoding='utf-8') as f: json.dump(stats, f, indent=2, ensure_ascii=False)
+
 def expand_file_refs(text, base_dir=None):
     """展开文本中的 {{file:路径:起始行:结束行}} 引用为实际文件内容。
     可与普通文本混排。展开失败抛 ValueError。

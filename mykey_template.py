@@ -335,7 +335,7 @@ mixin_config = {
 # ══════════════════════════════════════════════════════════════════════════════
 # `web_scan` 通过这些 API 搜索网页。任意顶层字典只要 `provider` 为
 # `tavily` 或 `exa` 都会被识别（变量名可任意）。默认使用 Tavily；
-# Exa 仅在显式指定，或默认 Tavily 超时/连接失败时才会使用。浏览器页面读取和交互改用
+# Exa 仅在显式指定，或默认 Tavily 超时/连接失败时才会使用。
 # web_search_config_tavily = {
 #     'provider': 'tavily',                 # 默认供应商
 #     'api_key': 'tvly-your-api-key',       # 也可改用相应环境变量，避免写入本文件
