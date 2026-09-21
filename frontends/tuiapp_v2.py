@@ -2384,6 +2384,7 @@ COMMANDS = [
     ("/conductor", "[task]",           "调用 frontends/conductor.py 多 subagent 编排"),
     ("/scheduler", "",                 "多选启动/停止 reflect 任务（cron 由 reflect/scheduler.py 驱动）"),
     ("/continue", "[n|name]",         "列出 / 恢复历史会话"),
+    ("/retry",    "",                  "重发中断的请求（锚点与上下文不变）"),
     ("/workspace","[path|off]",       "设定工作目录(绝对路径)并进入项目模式"),
     ("/todo",     "add|ls|run|del",  "个人 TODO 列表（持久化，run 自动清除）"),
     ("/resume",   "",                 "列出最近会话并恢复其中一个"),
