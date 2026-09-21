@@ -151,6 +151,8 @@ class ContextContinuityTests(unittest.TestCase):
         self.assertIsInstance(r, str)
         self.assertIn("断点", r)
         self.assertEqual(len(hist), 3)                     # 未被弹出
+        self.assertTrue(dq and "next" in dq[-1])          # 进度事件，不得提前终止 TUI 消费线程
+        self.assertNotIn("done", dq[-1])
         # 尾部 user 为 blocks（tool_result + text）→ 重组为 str 重发
         hist.append({"role": "user", "content": [
             {"type": "tool_result", "tool_use_id": "t1", "content": "OUT"},

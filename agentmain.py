@@ -270,7 +270,8 @@ class GenericAgent:
         if hist[-1].get('role') == 'assistant':
             # 中断的 user 消息已不在 history（/continue 只恢复完整轮次 / Ctrl+C 打断
             # 在工具执行中）。发续跑提示，模型靠 <task_anchor>+key_info 续接。
-            display_queue.put({'done': '🔁 刚才是意外中断，请模型从断点继续（锚点与上下文不变）…', 'source': 'system'})
+            # 这是进度提示而非任务完成；用 next 保持 TUI 消费线程存活，等待真正响应。
+            display_queue.put({'next': '🔁 刚才是意外中断，请模型从断点继续（锚点与上下文不变）…\n', 'source': 'system'})
             return '[retry] 上一轮执行因网络中断/意外退出而中断，请从断点继续原任务。不要重新询问用户，直接接着做。'
         if hist[-1].get('role') != 'user':
             display_queue.put({'done': '❌ /retry: 没有可重试的中断请求（上一轮不是未响应就中断的）', 'source': 'system'})
