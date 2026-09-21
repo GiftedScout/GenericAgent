@@ -41,7 +41,7 @@ git clone https://github.com/nianyucatfish/GAnet "~/.genericagent/components/GAn
 
 组件的轻量 Python 依赖安装进当前 GA 解释器，用当前进程的 `<sys.executable> -m pip install "cryptography>=42" "Pillow>=10" "qrcode>=7.4"` 做最小安装；不得调用裸 `pip`、猜测虚拟环境或安装到其他 Python。GA 解释器缺少 `pip` 模块时，先运行 `<sys.executable> -m ensurepip --upgrade` 补齐再安装。
 
-GA 根目录是本 SOP 所在 `memory\` 目录的上一级，按你读取本 SOP 时实际使用的绝对路径计算，并在传参前确认该目录下 `ga.py`、`agent_loop.py`、`TMWebDriver.py` 和 `assets/tools_schema.json` 齐全；不要用临时脚本的 `__file__`、工作目录或相对层级推算（临时脚本不一定位于 GA 根目录下）。由当前 GA runtime 确定 `sys.executable` 的绝对路径；不要猜测路径，不让用户填写，也不要直接编辑 GAnet 配置文件。以组件目录为工作目录，用当前 GA 解释器准备设备访问环境：
+GA 根目录是本 SOP 所在 `memory\` 目录的上一级，按你读取本 SOP 时实际使用的绝对路径计算，并在传参前确认该目录下 `ga.py`、`agent_loop.py` 和 `assets/tools_schema.json` 齐全；不要用临时脚本的 `__file__`、工作目录或相对层级推算（临时脚本不一定位于 GA 根目录下）。由当前 GA runtime 确定 `sys.executable` 的绝对路径；不要猜测路径，不让用户填写，也不要直接编辑 GAnet 配置文件。以组件目录为工作目录，用当前 GA 解释器准备设备访问环境：
 
 ```text
 <sys.executable> -m ganet configure-host --ga-root "<GA 根目录绝对路径>" --ga-python "<当前 sys.executable 绝对路径>"

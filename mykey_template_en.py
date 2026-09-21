@@ -71,7 +71,6 @@ native_oai_config = {
 # `tavily` or `exa` is discovered (the variable name is arbitrary).
 # By default it uses Tavily; Exa is only used when explicitly requested or if
 # default Tavily has a timeout/connection failure. For browser page inspection or
-# interaction, use `web_execute_js(scan=true)` or pass JavaScript.
 # web_search_config_tavily = {
 #     'provider': 'tavily',                  # Default provider
 #     'api_key': 'tvly-your-api-key',        # Or use the provider environment variable below

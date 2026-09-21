@@ -149,54 +149,6 @@ def ask_user(question, candidates=None):
     return {"status": "INTERRUPT", "intent": "HUMAN_INTERVENTION",
         "data": {"question": question, "candidates": candidates or []}}
 
-import simphtml
-driver = None
-
-def _auto_firefox_bridge_enabled():
-    return os.environ.get('GA_AUTO_FIREFOX_BRIDGE', '1').lower() not in ('0', 'false', 'no', 'off')
-
-def _browser_unavailable_msg():
-    return ("没有可用的浏览器标签页，已尝试自动启动 Firefox Bridge 但未连接成功；"
-            "可手动执行 scripts/start_firefox_bridge.sh 查看日志，或设置 GA_AUTO_FIREFOX_BRIDGE=0 禁用自动启动。")
-
-def _run_firefox_bridge():
-    """运行 Firefox Bridge 启动脚本（start_firefox_bridge.sh），优先复用现有 bridge；必要时后台/headless 启动。"""
-    print("[WebScan] ⚠️ 浏览器未连接，正在运行 Firefox Bridge 恢复脚本（优先复用/后台启动）...")
-    script_path = os.path.join(script_dir, 'scripts/start_firefox_bridge.sh')
-    ret = subprocess.run(['bash', script_path], capture_output=True, text=True, timeout=120)
-    out = (ret.stdout or '')[:500] + ('...' if len(ret.stdout or '') > 500 else '')
-    err = (ret.stderr or '')[:200] + ('...' if len(ret.stderr or '') > 200 else '')
-    if out.strip(): print(f"[FirefoxBridge] {out}")
-    if err.strip(): print(f"[FirefoxBridge] stderr: {err}")
-    if ret.returncode != 0:
-        print(f"[WebScan] ❌ 恢复脚本返回错误码 {ret.returncode}")
-        return False
-    # 等待连接建立
-    for i in range(10):
-        time.sleep(1)
-        if len(driver.get_all_sessions()) > 0:
-            print(f"[WebScan] ✅ 浏览器已连接！现在可以用了")
-            return True
-    print("[WebScan] ❌ 脚本执行成功但浏览器仍未连接")
-    return False
-
-def first_init_driver():
-    global driver
-    from TMWebDriver import TMWebDriver
-    driver = TMWebDriver()
-    for i in range(7):
-        time.sleep(2)
-        sess = driver.get_all_sessions()
-        if len(sess) > 0:
-            break
-        if i == 4:
-            # 无已有后台标签时，静默启动独立 Firefox Bridge；不要调用
-            # webbrowser.open，否则会唤起用户当前的可见浏览器窗口。
-            if _auto_firefox_bridge_enabled():
-                if _run_firefox_bridge():
-                    break
-                return
-            return
 
 _WEB_SEARCH_PROVIDERS = ('tavily', 'exa')
 _WEB_SEARCH_ENV_KEYS = {
@@ -324,7 +276,6 @@ def web_scan(query, max_results=5, search_depth='basic', topic='general', time_r
     Set ``provider='exa'`` only for specialised or unusually obscure scientific
     research.  In automatic mode Exa is used only after Tavily times out or its
     connection fails; API errors and empty results never consume Exa quota.
-    Browser interaction lives in ``web_execute_js(scan=True)``.
     """
     query = str(query or '').strip()
     if not query:
@@ -349,82 +300,6 @@ def web_scan(query, max_results=5, search_depth='basic', topic='general', time_r
             result['fallback_from'] = 'tavily'
     return result
 
-
-def web_browser_scan(tabs_only=False, switch_tab_id=None, text_only=False, maxlen=35000):
-    """Get simplified browser HTML and tab metadata for ``web_execute_js(scan=True)``."""
-    global driver
-    try:
-        if driver is None:
-            first_init_driver()
-            if driver is None or len(driver.get_all_sessions()) == 0:
-                return {"status": "error", "msg": _browser_unavailable_msg()}
-        else:
-            # driver 已存在但无会话：默认自动启动独立 Firefox Bridge 窗口恢复连接。
-            if len(driver.get_all_sessions()) == 0:
-                if _auto_firefox_bridge_enabled():
-                    if not _run_firefox_bridge():
-                        return {"status": "error", "msg": _browser_unavailable_msg()}
-                else:
-                    return {"status": "error", "msg": _browser_unavailable_msg()}
-        tabs = []
-        for sess in driver.get_all_sessions(): 
-            sess.pop('connected_at', None)
-            sess.pop('type', None)
-            sess['url'] = sess.get('url', '')[:50] + ("..." if len(sess.get('url', '')) > 50 else "")
-            tabs.append(sess)
-        if switch_tab_id: driver.default_session_id = switch_tab_id
-        result = {
-            "status": "success",
-            "metadata": {
-                "tabs_count": len(tabs), "tabs": tabs,
-                "active_tab": driver.default_session_id
-            }
-        }
-        if not tabs_only: 
-            importlib.reload(simphtml); result["content"] = simphtml.get_html(driver, cutlist=True, maxchars=maxlen, text_only=text_only)
-            if text_only: result['content'] = smart_format(result['content'], max_str_len=maxlen//3, omit_str='\n\n[omitted long content]\n\n')
-        return result
-    except Exception as e:
-        return {"status": "error", "msg": format_error(e)}
-    
-def format_error(e):
-    exc_type, exc_value, exc_traceback = sys.exc_info()
-    tb = traceback.extract_tb(exc_traceback)
-    if tb:
-        f = tb[-1]
-        fname = os.path.basename(f.filename)
-        return f"{exc_type.__name__}: {str(e)} @ {fname}:{f.lineno}, {f.name} -> `{f.line}`"
-    return f"{exc_type.__name__}: {str(e)}"
-
-def log_memory_access(path):
-    if 'memory' not in path: return
-    stats_file = os.path.join(memory_dir, 'file_access_stats.json')
-    try:
-        with open(stats_file, 'r', encoding='utf-8') as f: stats = json.load(f)
-    except: stats = {}
-    fname = os.path.basename(path)
-    stats[fname] = {'count': stats.get(fname, {}).get('count', 0) + 1, 'last': datetime.now().strftime('%Y-%m-%d')}
-    with open(stats_file, 'w', encoding='utf-8') as f: json.dump(stats, f, indent=2, ensure_ascii=False)
-
-def web_execute_js(script, switch_tab_id=None, no_monitor=False):
-    """执行 JS 脚本来控制浏览器，并捕获结果和页面变化"""
-    global driver
-    try:
-        if driver is None:
-            first_init_driver()
-            if driver is None or len(driver.get_all_sessions()) == 0:
-                return {"status": "error", "msg": _browser_unavailable_msg()}
-        else:
-            if len(driver.get_all_sessions()) == 0:
-                if _auto_firefox_bridge_enabled():
-                    if not _run_firefox_bridge():
-                        return {"status": "error", "msg": _browser_unavailable_msg()}
-                else:
-                    return {"status": "error", "msg": _browser_unavailable_msg()}
-        if switch_tab_id: driver.default_session_id = str(switch_tab_id)
-        result = simphtml.execute_js_rich(script, driver, no_monitor=no_monitor)
-        return result
-    except Exception as e: return {"status": "error", "msg": format_error(e)}
 
 def expand_file_refs(text, base_dir=None):
     """展开文本中的 {{file:路径:起始行:结束行}} 引用为实际文件内容。
@@ -683,46 +558,6 @@ class GenericAgentHandler(BaseHandler):
         yield f"Web search result:\n{show}\n"
         maxlen = self._get_tool_maxlen(8000, args)
         return StepOutcome(smart_format(json.dumps(result, ensure_ascii=False, default=json_default), max_str_len=maxlen), next_prompt="\n")
-    
-    def do_web_execute_js(self, args, response):
-        '''Control the browser with JavaScript, or inspect its active page with scan=true.'''
-        scan = _arg(args, "scan", False, bool)
-        save_to_file = args.get("save_to_file", "")
-        switch_tab_id = args.get("switch_tab_id") or args.get("tab_id")
-        if scan:
-            maxlen = self._get_tool_maxlen(35000, args, growth_rate=0.5)
-            result = web_browser_scan(tabs_only=_arg(args, "tabs_only", False, bool),
-                                      switch_tab_id=switch_tab_id,
-                                      text_only=_arg(args, "text_only", False, bool), maxlen=maxlen)
-            content = result.pop("content", None)
-            if content is not None:
-                result["scan_content"] = content
-            result_key = "scan_content"
-        else:
-            script = args.get("script", "") or self._extract_code_block(response, "javascript")
-            if not script: return StepOutcome("[Error] Script missing. Use `scan=true`, a ```javascript block, or the 'script' arg.", next_prompt="\n")
-            abs_path = self._get_abs_path(script.strip())
-            if os.path.isfile(abs_path):
-                with open(abs_path, 'r', encoding='utf-8') as f: script = f.read()
-            no_monitor = _arg(args, "no_monitor", False, bool)
-            result = web_execute_js(script, switch_tab_id=switch_tab_id, no_monitor=no_monitor)
-            result_key = "js_return"
-        if save_to_file and result_key in result:
-            content = str(result[result_key] or '')
-            abs_path = self._get_abs_path(save_to_file)
-            result[result_key] = smart_format(content, max_str_len=170)
-            try:
-                with open(abs_path, 'w', encoding='utf-8') as f: f.write(content)
-                result[result_key] += f"\n\n[Saved complete content to {abs_path}]"
-            except Exception:
-                result[result_key] += f"\n\n[Could not save complete content to {abs_path}]"
-        show = smart_format(json.dumps(result, ensure_ascii=False, indent=2, default=json_default), max_str_len=300)
-        self.print("Web Browser Result:", show)
-        yield f"Web browser result:\n{show}\n"
-        next_prompt = self._get_anchor_prompt(skip=args.get('_index', 0) > 0)
-        result = json.dumps(result, ensure_ascii=False, default=json_default)
-        maxlen = self._get_tool_maxlen(8000, args)
-        return StepOutcome(smart_format(result, max_str_len=maxlen), next_prompt=next_prompt)
     
     def do_file_patch(self, args, response):
         path = self._get_abs_path(args.get("path", ""))

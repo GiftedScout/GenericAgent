@@ -641,7 +641,7 @@ def _format_tool_use(block):
 
     MUST use agent_loop's `get_pretty_json`, not a plain `json.dumps`: the
     former rewrites a `script` arg's `"; "` into `";\\n  "`, so for tools
-    carrying `script` (code_run, web_execute_js) a plain dumps produces a
+    carrying `script` (code_run) a plain dumps produces a
     *different* fence body. The TUI's write/read/code cards content-address
     their captures by `hash(get_pretty_json(args))`; a mismatched fence here
     means the hash misses and the card silently falls back to the raw block."""

@@ -33,7 +33,7 @@
 
 ## 🌟 Overview
 
-**GenericAgent** is a minimal, self-evolving autonomous agent framework. Its core is just **~3K lines of code**. Through **9 atomic tools + a ~100-line Agent Loop**, it grants any LLM system-level control over a local computer — covering browser, terminal, filesystem, keyboard/mouse input, screen vision, and mobile devices (ADB).
+**GenericAgent** is a minimal, self-evolving autonomous agent framework. Its core is just **~3K lines of code**. Through **9 atomic tools + a ~100-line Agent Loop**, it grants any LLM system-level control over a local computer — covering terminal, filesystem, keyboard/mouse input, screen vision, and mobile devices (ADB).
 
 > Design philosophy — **don't preload skills, evolve them.**
 
@@ -64,7 +64,6 @@ Every time GenericAgent solves a new task, it automatically crystallizes the exe
 | :--- | :--- |
 | 🧬 **Self-Evolving** | Automatically crystallizes each task into a Skill. Capabilities grow with every use, forming your personal skill tree. |
 | 🪶 **Minimal Architecture** | ~3K lines of core code. Agent Loop is ~100 lines. No complex dependencies, zero deployment overhead. |
-| ⚡ **Strong Execution** | **TMWebdriver** injects into a real browser (preserving login sessions). 9 atomic tools take direct control of the system. |
 | 🔌 **High Compatibility** | Supports Claude / Gemini / Kimi / MiniMax and other major models. Cross-platform. |
 | 💰 **Token Efficient** | <30K context window — a fraction of the 200K–1M other agents consume. Less noise, fewer hallucinations, higher success rate, lower cost. |
 
@@ -74,15 +73,12 @@ Every time GenericAgent solves a new task, it automatically crystallizes the exe
 
 <table>
   <tr>
-    <td align="center" width="50%"><b>🛡️ Real-Browser CAPTCHA Survival</b></td>
     <td align="center" width="50%"><b>🌐 Autonomous Web Exploration</b></td>
   </tr>
   <tr>
-    <td><img src="assets/demo/discord_hcaptcha_real_browser.gif" width="100%" alt="Discord hCaptcha passed in real browser"></td>
     <td><img src="assets/demo/autonomous_explore.png" width="100%" alt="Web Exploration"></td>
   </tr>
   <tr>
-    <td><sub>While configuring a Discord bot, an hCaptcha <i>"Are you human?"</i> challenge pops up mid-task — GA's real browser session passes it and the task continues. See <a href="#browser-realness-of-ga-web-tools">Browser Realness</a>.</sub></td>
     <td><sub>Autonomously browses and periodically summarizes web content.</sub></td>
   </tr>
   <tr>
@@ -137,7 +133,7 @@ uv venv && uv pip install -e ".[ui]"
 cp mykey_template_en.py mykey.py   # fill in your LLM API key
 ```
 
-Dependencies are deliberately tiered: the agent core needs only `requests`, plus four lightweight packages (`beautifulsoup4`, `bottle`, `simple-websocket-server`, `aiohttp`) for TMWebdriver's local server. The `[ui]` extra pulls in frontend libraries (Streamlit, `prompt_toolkit`/`rich` for the TUI, …) — install it for the bundled UIs, or skip it entirely and drive the agent headless. No Playwright, no LangChain, no browser binaries to download.
+Dependencies are deliberately tiered: the agent core needs only `requests`. The `[ui]` extra pulls in frontend libraries (Streamlit, `prompt_toolkit`/`rich` for the TUI, …) — install it for the bundled UIs, or skip it entirely and drive the agent headless.
 
 Then launch:
 
@@ -269,7 +265,6 @@ The entire core loop is just **~100 lines of code** ([`agent_loop.py`](agent_loo
 | `file_write` | Write / create / overwrite files |
 | `file_patch` | Patch / modify files |
 | `web_scan` | Search the web through a configured Tavily, Brave, or Exa API |
-| `web_execute_js` | Inspect (`scan=true`) or control browser behavior |
 | `ask_user` | Human-in-the-loop confirmation |
 | `update_working_checkpoint` | *(memory)* Short-term working notepad |
 | `start_long_term_update` | *(memory)* Distill long-term memory |
@@ -321,7 +316,6 @@ After a few weeks, your agent instance will have a skill tree no one else in the
 | :--- | :---: | :---: | :---: |
 | **Codebase** | ~3K lines | ~530,000 lines | Open-sourced (large) |
 | **Deployment** | `pip install` + API Key | Multi-service orchestration | CLI + subscription |
-| **Browser Control** | Real browser (session preserved) | Sandbox / headless browser | Via MCP plugin |
 | **OS Control** | Mouse/kbd, vision, ADB | Multi-agent delegation | File + terminal |
 | **Self-Evolution** | Autonomous skill growth | Plugin ecosystem | Stateless between sessions |
 | **Out of the Box** | Few core files + starter skills | Hundreds of modules | Rich CLI toolset |
@@ -357,22 +351,6 @@ Baselines across these dimensions include **Claude Code**, **OpenAI CodeX**, and
   </tr>
 </table>
 
-### Browser Realness of GA Web Tools (TMWebdriver)
-
-GA web tools are powered by **TMWebdriver** — a local WebSocket server plus a Chrome extension — running through a **real, persistent Chrome/Chromium session** rather than a disposable headless sandbox, preserving cookies, login state, extensions, GPU/WebGL behavior, and normal browser-session fingerprints.
-
-| Detection Service / Signal | Vanilla Headless Automation | GA Web Tools | Notes |
-| :--- | :---: | :---: | :--- |
-| SannySoft headless test | Often detected | ✅ 56/56 passed | `bot.sannysoft.com` |
-| bot.incolumitas.com | Commonly fails webdriver / CDP checks | ✅ 36/36 passed | `WEBDRIVER`, `SELENIUM_DRIVER`, `webDriverAdvanced` all OK |
-| BrowserScan bot detection | Often abnormal | ✅ Normal | `browserscan.net` |
-| Device & Browser Info bot test | Multiple bot flags | ✅ Human / `isBot=false` | `deviceandbrowserinfo.com` |
-| FingerprintJS bot detection demo | Often detected | ✅ Passed | Demo flow completed without bot verdict |
-| reCAPTCHA v3 demo | Low bot-like score | ✅ 0.9 human-like score | Score-based risk signal; 0.9 is above typical production thresholds |
-
-For reCAPTCHA v3, `0.9` is not a "checkbox solved" result; it is the high-confidence human-like score returned by the risk model, typically sufficient to avoid extra challenges in production flows.
-
----
 
 ## 📅 Roadmap & News
 
@@ -408,7 +386,6 @@ Thanks to the **LinuxDo** community for the support!
 - [chilishark27/ga-manager](https://github.com/chilishark27/ga-manager)
 - [wangjc683/galley](https://github.com/wangjc683/galley) — Out-of-the-box local agent workbench with a bundled GA runtime (CPython 3.11 + deps), native GUI/CLI, multi-session + Project orchestration, local-first.
 - [FroStorM/A3Agent](https://github.com/FroStorM/A3Agent/tree/workbench)
-- [Fwind43/GenericAgent-Admin](https://github.com/Fwind43/GenericAgent-Admin) — Go + React desktop admin panel: service lifecycle management, native chat, Goal mode, BBS team board, file editor, model config wizard, TMWebDriver monitor, self-update, and Windows tray/desktop-pet integration.
 
 ---
 
@@ -424,7 +401,7 @@ Distributed under the **MIT License**. See [`LICENSE`](LICENSE) for full text.
 
 ## 🌟 项目简介
 
-**GenericAgent** 是一个极简、可自我进化的自主 Agent 框架。核心仅 **~3K 行代码**，通过 **9 个原子工具 + ~100 行 Agent Loop**，赋予任意 LLM 对本地计算机的系统级控制能力，覆盖浏览器、终端、文件系统、键鼠输入、屏幕视觉及移动设备（ADB）。
+**GenericAgent** 是一个极简、可自我进化的自主 Agent 框架。核心仅 **~3K 行代码**，通过 **9 个原子工具 + ~100 行 Agent Loop**，赋予任意 LLM 对本地计算机的系统级控制能力，覆盖终端、文件系统、键鼠输入、屏幕视觉及移动设备（ADB）。
 
 > 设计哲学 —— **不预设技能，靠进化获得能力。**
 
@@ -454,7 +431,6 @@ Distributed under the **MIT License**. See [`LICENSE`](LICENSE) for full text.
 | :--- | :--- |
 | 🧬 **自我进化** | 每次任务自动沉淀 Skill，能力随使用持续增长，形成专属技能树 |
 | 🪶 **极简架构** | ~3K 行核心代码，Agent Loop 约百行，无复杂依赖，部署零负担 |
-| ⚡ **强执行力** | 注入真实浏览器（保留登录态），9 个原子工具直接接管系统 |
 | 🔌 **高兼容性** | 支持 Claude / Gemini / Kimi / MiniMax 等主流模型，跨平台运行 |
 | 💰 **极致省 Token** | 上下文窗口不到 30K，是其他 Agent（200K–1M）的零头；噪声更少、幻觉更低、成功率更高，成本低一个数量级 |
 
@@ -643,7 +619,6 @@ GenericAgent 通过 **分层记忆 × 最小工具集 × 自主执行循环** �
 | `file_write` | 写入 / 创建 / 覆盖文件 |
 | `file_patch` | 修改文件 |
 | `web_scan` | 通过已配置的 Tavily、Brave 或 Exa API 搜索网页 |
-| `web_execute_js` | 读取（`scan=true`）或控制浏览器行为 |
 | `ask_user` | 人机协作确认 |
 | `update_working_checkpoint` | *（记忆）* 短期工作记事板 |
 | `start_long_term_update` | *（记忆）* 提炼长期记忆 |
@@ -693,7 +668,6 @@ GenericAgent 通过 **分层记忆 × 最小工具集 × 自主执行循环** �
 | :--- | :---: | :---: | :---: |
 | **代码量** | ~3K 行 | ~530,000 行 | 已开源（体量大） |
 | **部署方式** | `pip install` + API Key | 多服务编排 | CLI + 订阅 |
-| **浏览器控制** | 注入真实浏览器（保留登录态） | 沙箱 / 无头浏览器 | 通过 MCP 插件 |
 | **OS 控制** | 键鼠、视觉、ADB | 多 Agent 委派 | 文件 + 终端 |
 | **自我进化** | 自主生长 Skill 和工具 | 插件生态 | 会话间无状态 |
 | **出厂配置** | 几个核心文件 + 少量初始 Skills | 数百模块 | 丰富 CLI 工具集 |
@@ -729,22 +703,6 @@ GenericAgent 通过 **分层记忆 × 最小工具集 × 自主执行循环** �
   </tr>
 </table>
 
-### GA Web 工具的浏览器真实性
-
-GA Web 工具运行在**真实、持久化的 Chrome/Chromium 会话**中，而不是一次性的 headless 沙箱，因此可以保留 Cookie、登录态、扩展、GPU/WebGL 行为以及正常浏览器会话指纹。
-
-| 检测服务 / 信号 | 普通 Headless 自动化 | GA Web 工具 | 说明 |
-| :--- | :---: | :---: | :--- |
-| SannySoft headless test | 常被识别 | ✅ 56/56 通过 | `bot.sannysoft.com` |
-| bot.incolumitas.com | 常在 webdriver / CDP 项异常 | ✅ 36/36 通过 | `WEBDRIVER`、`SELENIUM_DRIVER`、`webDriverAdvanced` 全部 OK |
-| BrowserScan bot detection | 常显示异常 | ✅ Normal | `browserscan.net` |
-| Device & Browser Info bot test | 多个 bot 标记 | ✅ Human / `isBot=false` | `deviceandbrowserinfo.com` |
-| FingerprintJS bot detection demo | 常被识别 | ✅ 通过 | Demo 流程完成，未给出 bot 判定 |
-| reCAPTCHA v3 demo | 低分 / bot-like | ✅ 0.9 真人相似分 | v3 是基于分数的风险信号；0.9 高于常见生产阈值 |
-
-对于 reCAPTCHA v3，`0.9` 不是“点过验证码”的结果，而是风控模型返回的高置信真人相似分，通常足以通过生产环境中的常见阈值，避免进入更严格挑战。
-
----
 
 ## 📅 路线图与最新动态
 
@@ -790,7 +748,6 @@ GA Web 工具运行在**真实、持久化的 Chrome/Chromium 会话**中，而�
 - [chilishark27/ga-manager](https://github.com/chilishark27/ga-manager)
 - [wangjc683/galley](https://github.com/wangjc683/galley) —— 开箱即用的本地 Agent 工作台，自带 GA 内核（内置 CPython 3.11 + 运行依赖），GUI/CLI 双原生、多 session + Project 编排、本地优先。
 - [FroStorM/A3Agent](https://github.com/FroStorM/A3Agent/tree/workbench)
-- [Fwind43/GenericAgent-Admin](https://github.com/Fwind43/GenericAgent-Admin) —— Go + React 桌面管理面板：服务生命周期管理、原生 Chat、Goal 模式、BBS 团队看板、文件编辑器、模型配置向导、TMWebDriver 监控、自更新，以及 Windows 托盘/桌面宠物集成。
 
 ---
 

@@ -64,8 +64,6 @@ memory/L4_raw_sessions/*
 !memory/procmem_scanner.py
 !memory/procmem_scanner_sop.md
 
-# TMWebDriver SOP
-!memory/tmwebdriver_sop.md
 
 # Vue3 Component SOP
 !memory/vue3_component_sop.md

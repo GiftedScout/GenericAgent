@@ -1657,7 +1657,7 @@ def _sweep_stale_task_dirs() -> None:
             _rmdir_if_empty(d)
 
 # Side-effect imports activate /btw + /continue monkey-patches.
-import chatapp_common  # noqa: F401
+#import chatapp_common  # noqa: F401
 from chatapp_common import format_restore
 from btw_cmd import handle_frontend_command as btw_handle
 from review_cmd import handle as review_handle

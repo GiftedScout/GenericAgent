@@ -12,7 +12,7 @@ L1两类内容，统一ROI评估：
 ROI = (不放这几个词的犯错概率 × 代价) / 每轮词数成本
 
 ## 快速判断
-**该留**：反直觉触发词——没提示就想不到去查SOP的场景词。如`tmwebdriver_sop(httponly cookie)`：没有`httponly cookie`这个词，你不会想到取cookie要查tmwebdriver
+**该留**：反直觉触发词——没提示就想不到去查SOP的场景词。如`specialized_sop(trigger)`：反直觉触发词能避免遗漏对应知识
 **该删**：
 - 名字翻译：`proxy-pool/(代理池)` → 名字自解释，括号是废词，直接`proxy-pool`即可
 - 内容描述：`opencli_sop(66站点CLI,复用Chrome session)` → 实现细节属于SOP内部，不是触发场景

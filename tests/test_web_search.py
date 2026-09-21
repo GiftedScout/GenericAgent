@@ -155,15 +155,6 @@ class WebSearchTests(unittest.TestCase):
         self.assertEqual(empty["provider"], "tavily")
         self.assertEqual(post.call_count, 2)
 
-    def test_browser_scan_remains_available_via_web_execute_js(self):
-        browser_result = {"status": "success", "tabs": [], "content": "page"}
-        with patch("ga.web_browser_scan", return_value=browser_result) as scan:
-            outcome = exhaust(self.handler.dispatch("web_execute_js", {
-                "scan": True, "tabs_only": True, "text_only": False, "switch_tab_id": "tab-1",
-            }, self.response))
-
-        self.assertEqual(json.loads(outcome.data), {"status": "success", "tabs": [], "scan_content": "page"})
-        scan.assert_called_once_with(tabs_only=True, switch_tab_id="tab-1", text_only=False, maxlen=35000)
 
 
 if __name__ == "__main__":
