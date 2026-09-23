@@ -4,7 +4,7 @@
 - 坑(rapid): result[i][2] conf 是 str 不是 float
 - 坑(rapid): 无文字时 result 返回 None 而非空列表
 - 坑: enhance 放大+高对比度处理，对清晰文字有害，默认关闭
-- 坑(远程桌面): ImageGrab/mss 在 RDP 断开后截图全黑，用 ocr_window(hwnd) 代替
+- 坑(远程桌面/Wayland): 截图可能全黑(像素通道不可用)。Windows 可用 ocr_window(hwnd); Linux(Wayland) 无此通道, 让用户手动截屏传路径, 或 xdotool 枚举窗口
 """
 import re
 from PIL import ImageGrab, Image, ImageEnhance
@@ -67,10 +67,14 @@ def ocr_screen(bbox=None, lang=_LANG, enhance=False, engine=None):
 
 def ocr_window(hwnd, lang=_LANG, enhance=False, engine=None):
     """
-    截取窗口并 OCR (使用 PrintWindow API，支持远程桌面断开场景)
+    截取窗口并 OCR (Windows PrintWindow API, 支持远程桌面断开场景)
+    仅 Windows 可用; 其他平台抛 NotImplementedError
     :param hwnd: 窗口句柄(int)
     :return: dict {'text': 全文, 'lines': [行文本], 'details': [bbox+conf](仅rapid)}
     """
+    import sys
+    if sys.platform != 'win32':
+        raise NotImplementedError("ocr_window 仅 Windows 可用; 本机请用 ocr_screen/ocr_image, 或让用户手动截屏传路径")
     import win32gui, win32ui
     from ctypes import windll
     l, t, r, b = win32gui.GetWindowRect(hwnd)

@@ -2,6 +2,13 @@
 
 > **must call update working ckp**：`一律使用物理坐标｜禁pyautogui｜操作前先激活窗口`
 
+## 平台说明
+- **Windows**: 本 SOP 主体（DPI 换算/win32gui 物理坐标），ljqCtrl_win.py 后端
+- **macOS**: §1 环境载入
+- **Linux**: 键鼠走 xdotool、窗口枚举走 `ListWindows`(xdotool)、截图 mss(X11)。
+  ⚠️ 纯 GNOME/KDE Wayland 会话不向 X11 客户端共享像素 → 截图全黑，ljqCtrl.GrabWindow 会主动报错。
+  此时截图通道 = 让用户手动截屏后传路径（或 GNOME 远程桌面分享授权）；键鼠/窗口操作仍可用。
+
 ## 0. API 快速参考 (Signatures)
 - `ljqCtrl.dpi_scale`: float (缩放系数 = 逻辑宽度 / 物理宽度)
 - `ljqCtrl.Click(x, y=None)`: 模拟点击。支持 `Click((x, y))` 或 `Click(x, y)`
@@ -15,7 +22,7 @@
 ## 1. 环境载入
 import ljqCtrl
 
-> **macOS**: 改 `import macljqCtrl as ljqCtrl`（API 镜像，Quartz/screencapture 实现）。依赖 `pyobjc-framework-Quartz`/`-Cocoa`，首次用前 `macljqCtrl.check_permissions()` 自检辅助功能/录屏授权。
+> **macOS**: 本 fork 已移除 macOS 后端（原 macljqCtrl.py，Quartz/screencapture 实现，需 pyobjc）。macOS 用户请从 tag pre-win-cleanup-20260923 恢复该文件。
 
 ## 2. 核心：High-DPI 物理坐标换算
 `ljqCtrl` 的 `Click/MoveTo` 接口接收的是**物理像素坐标**。
@@ -33,7 +40,7 @@ ljqCtrl.Click(ox + (bbox[0]+bbox[2])//2, oy + (bbox[1]+bbox[3])//2)
 ```
 禁止全屏ImageGrab（必须针对窗口），所有逻辑坐标都要转物理。
 
-**macOS (`macljqCtrl`)**：`GrabScreen(bbox)` 区域截图后，图内点转屏幕物理坐标用 `CropToScreen(bbox, px, py)`，别手搓 `screencapture -R`（它吃逻辑点，会点歪）。
+**macOS**: 本 fork 已移除 macOS 后端（原 macljqCtrl.py，API: `GrabScreen(bbox)`/`CropToScreen`，需 pyobjc）。从 tag pre-win-cleanup-20260923 恢复。
 
 ## 4. 避坑指南
 - **⚠️ 一律使用物理坐标**：传给 ljqCtrl.Click/SetCursorPos 的坐标必须是物理坐标（=截图像素坐标）。禁止传入逻辑坐标。

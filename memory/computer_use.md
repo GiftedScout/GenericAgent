@@ -1,6 +1,6 @@
 # computer_use
 
-相关L3 memory: **ui_detect.py** ljqCtrl.py/ljqCtrlBg.py ljqCtrl_sop.md
+相关L3 memory: **ui_detect.py** ljqCtrl.py ljqCtrl_sop.md（⚠ 探测链主体为 Windows API；本机 Linux/Wayland 见 ljqCtrl_sop 平台说明）
 
 ## 0. GUI操作节奏建议
 进入新界面时，建议先只探测不操作：枚举窗口 + UIA + ljqCtrl截图 + ui_detect，读完实际输出再决定下一步
@@ -28,14 +28,14 @@ ljqCtrl 失效或目标为网络游戏时，必须使用硬件键鼠 Xbananakb /
 网络游戏除非用户明确允许，严禁普通键鼠事件，必须硬件执行。
 
 临时截图/可视化文件用后清理，或固定文件名覆盖，避免堆积。
-ui_detect 可跨端复用；手机端沿用本原则时，UIA 换成 ui dump/adb_ui，ljqCtrl 控制换成 adb
+ui_detect 可跨端复用
 
 ### 重要必坑
 坑1-遮盖/失焦：混乱时枚举窗口确认前台；
 坑2-DPI：必须先import ljqCtrl，之后一律使用物理坐标；
 
 
-## macOS 平台
+## macOS 平台（⚠ 本 fork 已移除 macljqCtrl.py，从 tag pre-win-cleanup-20260923 恢复后适用）
 macOS 定位链与 §1 一致，工具映射如下：
 - 控制层：`import macljqCtrl as ljqCtrl`（替代 Windows ljqCtrl）
 - 窗口枚举：`ListWindows()` → 返回 id/app/title/bbox/pid（替代 win32gui）

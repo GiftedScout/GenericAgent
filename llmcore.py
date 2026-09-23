@@ -1090,7 +1090,8 @@ class NativeClaudeSession(BaseSession):
         headers = {"Content-Type": "application/json", "anthropic-version": "2023-06-01",
             "anthropic-beta": ",".join(beta_parts), "anthropic-dangerous-direct-browser-access": "true",
             "user-agent": self.user_agent, "x-app": "cli"}
-        headers.update({"Accept": "application/json", "X-Claude-Code-Session-Id": self._session_id, "X-Stainless-Arch": "x64", "X-Stainless-Lang": "js", "X-Stainless-OS": "Windows", "X-Stainless-Package-Version": "0.94.0", "X-Stainless-Retry-Count": "0", "X-Stainless-Runtime": "node", "X-Stainless-Runtime-Version": "v24.3.0", "X-Stainless-Timeout": "600"})
+        _st_os = {"darwin": "Mac OS", "win32": "Windows", "linux": "Linux"}.get(sys.platform, "Linux")
+        headers.update({"Accept": "application/json", "X-Claude-Code-Session-Id": self._session_id, "X-Stainless-Arch": "x64", "X-Stainless-Lang": "js", "X-Stainless-OS": _st_os, "X-Stainless-Package-Version": "0.94.0", "X-Stainless-Retry-Count": "0", "X-Stainless-Runtime": "node", "X-Stainless-Runtime-Version": "v24.3.0", "X-Stainless-Timeout": "600"})
         if self.api_key_header == 'x-api-key': headers["x-api-key"] = self.api_key
         elif self.api_key_header == 'bearer': headers["authorization"] = f"Bearer {self.api_key}"
         elif self.api_key.startswith("sk-ant-"): headers["x-api-key"] = self.api_key
@@ -1163,7 +1164,7 @@ class NativeClaudeSession(BaseSession):
         return MockResponse(thinking, content, tool_calls, raw)
 
 class NativeOAISession(NativeClaudeSession):
-    native_ua = "codex_exec/0.139.0 (Windows 10.0.26200; x86_64) unknown (codex_exec; 0.139.0)"
+    native_ua = "codex_exec/0.139.0 ({os}; x86_64) unknown (codex_exec; 0.139.0)".format(os={"darwin": "macOS 14", "win32": "Windows 10.0.26200", "linux": "Linux 6.8"}.get(sys.platform, "Linux 6.8"))
     def raw_ask(self, messages):
         tunnel = None
         if self.ssh_tunnel:
