@@ -27,6 +27,13 @@ TUNNELS = {
     "ornith1.5-35B-A3B": ("ga-ornith1.5", 18081),
 }
 
+# All remote models live on this one box.  A mykey entry that has
+# 'ssh_tunnel' + 'ssh_port' but no TUNNELS registration is auto-configured
+# against this host: local port == remote port == ssh_port.
+_REMOTE_HOST = "124.16.75.152"
+_REMOTE_PORT = 50041
+_REMOTE_USER = "root"
+
 _lock = threading.RLock()
 _procs = {}
 _idle_timers = {}
@@ -41,10 +48,24 @@ def _healthy(port, timeout=1.5):
         return False
 
 
-def _require(name):
-    if name not in TUNNELS:
-        raise ValueError(f"Unknown ssh tunnel {name!r}; registered: {sorted(TUNNELS)}")
-    return TUNNELS[name]
+def _require(name, port=None):
+    """Resolve a tunnel to (local_port, ssh argv tail).
+
+    Registered names use their ssh-config Host (which carries the
+    LocalForward rule).  Unregistered names with an explicit `port` are
+    auto-forwarded on the fixed _REMOTE_HOST box.
+    """
+    if name in TUNNELS:
+        host, p = TUNNELS[name]
+        return int(p), [host]
+    if port:
+        p = int(port)
+        return p, (["-p", str(_REMOTE_PORT),
+                    "-o", f"HostKeyAlias [{_REMOTE_HOST}]:{_REMOTE_PORT}",
+                    "-L", f"{p}:127.0.0.1:{p}",
+                    f"{_REMOTE_USER}@{_REMOTE_HOST}"])
+    raise ValueError(f"Unknown ssh tunnel {name!r}; registered: {sorted(TUNNELS)}"
+                     f" (unregistered names need an ssh_port in the mykey entry)")
 
 
 def _terminate(proc):
@@ -58,13 +79,13 @@ def _terminate(proc):
         proc.wait()
 
 
-def ensure_tunnel(name, idle_seconds=_IDLE_SECONDS):
+def ensure_tunnel(name, port=None, idle_seconds=_IDLE_SECONDS):
     """Return once the endpoint for ``name`` is healthy locally.
 
     Never takes ownership of an already-healthy port; otherwise (re)starts
     the ssh -N process and waits up to 20s for health.
     """
-    host, port = _require(name)
+    port, argv = _require(name, port)
     with _lock:
         timer = _idle_timers.pop(name, None)
         if timer:
@@ -78,7 +99,7 @@ def ensure_tunnel(name, idle_seconds=_IDLE_SECONDS):
         proc = subprocess.Popen(
             ["ssh", "-N", "-T", "-o", "BatchMode=no", "-o", "NumberOfPasswordPrompts=1",
              "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=30",
-             "-o", "ServerAliveCountMax=3", host],
+             "-o", "ServerAliveCountMax=3"] + argv,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
             text=True, env=env, start_new_session=True,
         )
@@ -97,9 +118,9 @@ def ensure_tunnel(name, idle_seconds=_IDLE_SECONDS):
         raise RuntimeError(f"{name} SSH tunnel did not become healthy within {_STARTUP_TIMEOUT} seconds")
 
 
-def release_tunnel(name, idle_seconds=_IDLE_SECONDS):
+def release_tunnel(name, port=None, idle_seconds=_IDLE_SECONDS):
     """Keep a GA-owned tunnel for the idle interval, then close it."""
-    host, port = _require(name)
+    _require(name, port)
     with _lock:
         proc = _procs.get(name)
         if proc is None or proc.poll() is not None:

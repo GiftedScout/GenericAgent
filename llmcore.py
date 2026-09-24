@@ -785,7 +785,7 @@ def _rebuild_ssh_tunnel(sess):
     try:
         import ssh_tunnel as _st
         _st.close_tunnel(name)
-        _st.ensure_tunnel(name)
+        _st.ensure_tunnel(name, getattr(sess, 'ssh_port', None))
         print(f"[Tunnel] rebuilt {name} before retry")
     except Exception as re_:
         print(f"[Tunnel] rebuild failed for {name}: {re_}")
@@ -1000,6 +1000,12 @@ class BaseSession:
         self.model = cfg.get('model', '')
         default_context_win = 35000; default_cut_msg_interval = 7
         self.ssh_tunnel = cfg.get('ssh_tunnel')
+        # auto-tunnels derive the forward port from apibase
+        # (e.g. http://127.0.0.1:18082/v1 -> 18082)
+        self.ssh_port = cfg.get('ssh_port')
+        if not self.ssh_port and self.ssh_tunnel:
+            m = re.search(r':(\d+)(?:/|$)', str(cfg.get('apibase', '')))
+            self.ssh_port = int(m.group(1)) if m else None
         # Local-SSH-tunnel models (qwen3.8-27b, ornith1.5-35B-A3B, ...) have
         # the same long-reasoning history profile as DeepSeek.
         deepseek_style_history = 'deepseek' in self.model.lower() or self.ssh_tunnel is not None
@@ -1267,8 +1273,8 @@ class NativeOAISession(NativeClaudeSession):
         tunnel = None
         if self.ssh_tunnel:
             from ssh_tunnel import ensure_tunnel, release_tunnel
-            ensure_tunnel(self.ssh_tunnel)
-            tunnel = lambda: release_tunnel(self.ssh_tunnel)
+            ensure_tunnel(self.ssh_tunnel, self.ssh_port)
+            tunnel = lambda: release_tunnel(self.ssh_tunnel, self.ssh_port)
         try:
             messages = _fix_messages(messages)
             messages = _ensure_thinking_blocks(messages, self.model)
