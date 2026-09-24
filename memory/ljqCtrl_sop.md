@@ -5,9 +5,9 @@
 ## 平台说明
 - **Windows**: 本 SOP 主体（DPI 换算/win32gui 物理坐标），ljqCtrl_win.py 后端
 - **macOS**: §1 环境载入
-- **Linux**: 键鼠走 xdotool、窗口枚举走 `ListWindows`(xdotool)、截图 mss(X11)。
-  ⚠️ 纯 GNOME/KDE Wayland 会话不向 X11 客户端共享像素 → 截图全黑，ljqCtrl.GrabWindow 会主动报错。
-  此时截图通道 = 让用户手动截屏后传路径（或 GNOME 远程桌面分享授权）；键鼠/窗口操作仍可用。
+- **Linux/X11**: xdotool 键鼠与窗口、mss 截图；Windows 路径仍只用于 Windows。
+- **Ubuntu GNOME Wayland（实测）**: `ljqCtrl._grab()` 经 xdg-desktop-portal `Screenshot` 返回 PIL RGB 图；授权可能每次弹窗。先截图初始化真实 `swidth/sheight`，之后以截图像素调用 `SetCursorPos`/`Click`；不要用 Xwayland `xrandr` 的虚拟分辨率定位。鼠标走 `/dev/uinput` 的独立绝对指针（需当前用户可写），键盘 `Press` 走 ydotool 键盘设备；禁用 pyautogui。已在原生 GTK 按钮和偏心坐标、快捷键上实测命中。
+- **限制**: 原生 Wayland 窗口不在 `ListWindows`(X11) 中、不能用 `GrabWindow`/`Activate` 的 X11 窗口 ID；`GrabWindow` 会明确拒绝，需先 `_grab()` 后根据画面坐标裁剪。`Click(check=True)` 会抓前后两张图，可能连续触发授权弹窗；受控动作可用 `check=False` 并另做可观察结果验证。只同意明确的截图/共享请求，不授予远程控制权限。
 
 ## 0. API 快速参考 (Signatures)
 - `ljqCtrl.dpi_scale`: float (缩放系数 = 逻辑宽度 / 物理宽度)

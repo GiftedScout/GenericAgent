@@ -4,7 +4,7 @@
 - 坑(rapid): result[i][2] conf 是 str 不是 float
 - 坑(rapid): 无文字时 result 返回 None 而非空列表
 - 坑: enhance 放大+高对比度处理，对清晰文字有害，默认关闭
-- 坑(远程桌面/Wayland): 截图可能全黑(像素通道不可用)。Windows 可用 ocr_window(hwnd); Linux(Wayland) 无此通道, 让用户手动截屏传路径, 或 xdotool 枚举窗口
+- Wayland: X11/mss 像素可能全黑；GNOME 可通过 ljqCtrl._grab() 的 Screenshot portal 经用户授权取得图像；原生窗口ID截图仍不可用。
 """
 import re
 from PIL import ImageGrab, Image, ImageEnhance

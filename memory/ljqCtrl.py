@@ -1,7 +1,7 @@
 """
 ljqCtrl — 跨平台 GUI 键鼠/窗口/截图控制
   Windows: 委托 ljqCtrl_win.py (win32api + WGC 后台截图)
-  Linux:   xdotool + mss (X11/Xwayland); 纯Wayland原生窗口无法经X11激活, 此时用 grim+ydotool
+  Linux:   X11 = xdotool+mss; GNOME Wayland = Screenshot portal + uinput pointer
 CRITICAL: 严禁在此工具链中 import pyautogui。
 ljqCtrl Quick Reference:
 - dpi_scale: float (Logical = Physical * dpi_scale; Ubuntu X11 通常为 1.0)
@@ -35,33 +35,77 @@ else:
         return r.stdout.strip()
 
     # ---------- 屏幕几何 ----------
-    _geo = _xdotool('getdisplaygeometry').split()
-    swidth, sheight = int(_geo[0]), int(_geo[1])
-    dpi_scale = 1.0  # X11 坐标即物理像素
+    _wayland = os.environ.get('XDG_SESSION_TYPE', '').lower() == 'wayland'
+    if _wayland:
+        swidth, sheight = 0, 0  # 等待用户授权的 Portal 图像确定实际像素尺寸
+    else:
+        _geo = _xdotool('getdisplaygeometry').split()
+        swidth, sheight = int(_geo[0]), int(_geo[1])
+    dpi_scale = 1.0
     cwidth, cheight = swidth, sheight
-    print('Screen width & height:', swidth, sheight)
-    print('dpi_scale:', dpi_scale)
+    if _wayland:
+        print('Wayland: 截图坐标需先调用 _grab() 初始化（Portal 可能要求用户授权）')
+    else:
+        print('Screen width & height:', swidth, sheight)
+        print('dpi_scale:', dpi_scale)
 
-    # ---------- 截图 (mss) ----------
-    import mss
-    _MSS = getattr(mss, 'MSS', mss.mss)
-    _sct = None
-    def _sct_get():
-        global _sct
-        if _sct is None: _sct = _MSS()
-        return _sct
+    # ---------- 截图 (GNOME Wayland: portal; X11: mss) ----------
+    def _portal_grab():
+        import dbus, dbus.mainloop.glib
+        from gi.repository import GLib
+        from urllib.parse import urlparse, unquote
+        dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+        bus = dbus.SessionBus()
+        desktop = bus.get_object('org.freedesktop.portal.Desktop', '/org/freedesktop/portal/desktop')
+        shot = dbus.Interface(desktop, 'org.freedesktop.portal.Screenshot')
+        result, loop = {}, GLib.MainLoop()
+        token = 'ga_' + os.urandom(8).hex()
+        request_path = '/org/freedesktop/portal/desktop/request/' + bus.get_unique_name()[1:].replace('.', '_') + '/' + token
+        def respond(code, values):
+            result['code'], result['values'] = int(code), values
+            loop.quit()
+        receiver = bus.add_signal_receiver(respond, signal_name='Response',
+            dbus_interface='org.freedesktop.portal.Request', path=request_path)
+        timer = None
+        try:
+            handle = shot.Screenshot('', {'handle_token': dbus.String(token),
+                'interactive': dbus.Boolean(False)}, timeout=10)
+            if str(handle) != request_path:
+                raise RuntimeError(f'portal request path mismatch: {handle}')
+            timer = GLib.timeout_add_seconds(20, lambda: (loop.quit(), False)[1])
+            loop.run()
+            if result.get('code') != 0:
+                raise RuntimeError(f'截图未获授权或超时 (portal response={result.get("code")})')
+            uri = str(result['values']['uri'])
+            parsed = urlparse(uri)
+            if parsed.scheme != 'file' or parsed.netloc not in ('', 'localhost'):
+                raise RuntimeError('portal 未返回本地截图文件')
+            with Image.open(unquote(parsed.path)) as source:
+                img = source.convert('RGB')
+            return img
+        finally:
+            receiver.remove()
+            if timer is not None:
+                GLib.source_remove(timer) if GLib.main_context_default().find_source_by_id(timer) else None
+
     def _grab(bbox=None):
-        if bbox is None: bbox = (0, 0, swidth, sheight)
-        l, t, r, b = [int(v) for v in bbox]
-        w, h = max(r - l, 1), max(b - t, 1)
-        raw = _sct_get().grab({'left': l, 'top': t, 'width': w, 'height': h})
-        img = Image.frombytes('RGB', (w, h), raw.rgb, 'raw', 'RGB')
-        # Wayland 安全边界检测: X11/Xwayland 下 XGetImage 不共享像素 → 全黑帧。
-        # 静默返回黑图会让 FindBlock/Click check 产生无意义的假结果, 必须显式报错。
+        if _wayland:
+            img = _portal_grab()
+            global swidth, sheight, cwidth, cheight
+            swidth, sheight = img.size  # portal 输出像素，与 Xwayland 虚拟几何可能不同
+            cwidth, cheight = img.size
+            if bbox is not None:
+                l, t, r, b = [int(v) for v in bbox]
+                img = img.crop((max(0, l), max(0, t), min(swidth, r), min(sheight, b)))
+        else:
+            import mss
+            if bbox is None: bbox = (0, 0, swidth, sheight)
+            l, t, r, b = [int(v) for v in bbox]
+            with mss.mss() as sct:
+                raw = sct.grab({'left': l, 'top': t, 'width': max(r-l, 1), 'height': max(b-t, 1)})
+                img = Image.frombytes('RGB', raw.size, raw.rgb)
         if img.getextrema() == ((0, 0), (0, 0), (0, 0)):
-            raise RuntimeError(
-                '截图全黑: 当前 GNOME Wayland 会话不向 X11 客户端共享像素(mss/grim/PIL 均不可用)。'
-                '键鼠/窗口操作仍可用; 截图需切换到 Xorg 会话, 或让用户手动截屏后传路径。')
+            raise RuntimeError('截图全黑，拒绝返回无法识别的图像')
         return img
 
     # ---------- 窗口枚举/激活 ----------
@@ -103,15 +147,63 @@ else:
     activate = Activate
 
     # ---------- 鼠标 ----------
-    def MouseDown(): _xdotool('mousedown', 1)
-    def MouseUp(): _xdotool('mouseup', 1)
+    _mouse_fd = None
+    def _mouse():
+        """创建纯指针设备；ydotool 的键盘+鼠标混合设备在 GNOME 下被当成键盘。"""
+        global _mouse_fd
+        if _mouse_fd is None:
+            import fcntl, struct, atexit
+            fd = os.open('/dev/uinput', os.O_WRONLY | os.O_NONBLOCK)
+            try:
+                for code in (1, 3): fcntl.ioctl(fd, 0x40045564, code)  # EV_KEY, EV_ABS
+                fcntl.ioctl(fd, 0x40045565, 272)  # BTN_LEFT
+                for code in (0, 1): fcntl.ioctl(fd, 0x40045567, code)  # ABS_X, ABS_Y
+                # uinput_user_dev: setup 包含 ABS_X/Y 范围
+                name = b'GA Wayland Pointer'
+                setup = struct.pack('80sHHHHI' + 'i'*64*4, name, 3, 0x2333, 0x6666, 1, 0,
+                    *([65535, 65535] + [0]*62), *([0]*64), *([0]*64), *([0]*64))
+                os.write(fd, setup)
+                fcntl.ioctl(fd, 0x5501)  # UI_DEV_CREATE
+            except Exception:
+                os.close(fd)
+                raise
+            _mouse_fd = fd
+            def close_mouse():
+                fcntl.ioctl(fd, 0x5502)  # UI_DEV_DESTROY
+                os.close(fd)
+            atexit.register(close_mouse)
+            time.sleep(0.7)  # 等待 GNOME/libinput 识别设备
+        return _mouse_fd
+    def _mouse_event(typ, code, value):
+        import struct
+        os.write(_mouse(), struct.pack('llHHi', 0, 0, typ, code, value))
+        os.write(_mouse(), struct.pack('llHHi', 0, 0, 0, 0, 0))  # SYN_REPORT
+    def MouseDown():
+        if _wayland: _mouse_event(1, 272, 1)
+        else: _xdotool('mousedown', 1)
+    def MouseUp():
+        if _wayland: _mouse_event(1, 272, 0)
+        else: _xdotool('mouseup', 1)
     def MouseClick(staytime=0.05):
-        _xdotool('click', 1); time.sleep(staytime)
+        if _wayland:
+            MouseDown(); time.sleep(max(staytime, 0.02)); MouseUp()
+        else: _xdotool('click', 1)
+        time.sleep(staytime)
     def MouseDClick(staytime=0.05):
-        _xdotool('click', '--repeat', 2, '--delay', '50', 1); time.sleep(staytime)
+        if _wayland: MouseClick(staytime); MouseClick(staytime)
+        else:
+            _xdotool('click', '--repeat', 2, '--delay', '50', 1)
+            time.sleep(staytime)
     def SetCursorPos(z):
-        z = tuple(map(lambda v: int(v * dpi_scale), z))
-        _xdotool('mousemove', '--sync', z[0], z[1])
+        if _wayland:
+            x, y = [int(v) for v in z]
+            if not (0 <= x < swidth and 0 <= y < sheight):
+                raise ValueError(f'坐标不在 Portal 截图范围内: {(x, y)} / {(swidth, sheight)}')
+            _mouse_event(3, 0, round(x * 65535 / swidth))
+            _mouse_event(3, 1, round(y * 65535 / sheight))
+        else:
+            z = tuple(map(lambda v: int(v * dpi_scale), z))
+            _xdotool('mousemove', '--sync', z[0], z[1])
         time.sleep(0.05)
 
     def ScreenCapAt(x, y, r=100):
@@ -163,18 +255,47 @@ else:
     def Press(cmd, staytime=0):
         if type(cmd) is list: cmds = [x.lower() for x in cmd]
         else: cmds = cmd.lower().split('+')
-        keys = '+'.join(_xkey(z) for z in cmds)
-        if staytime:
-            _xdotool('keydown', keys, check=False)
-            time.sleep(staytime)
-            _xdotool('keyup', keys, check=False)
+        keys = [_xkey(z) for z in cmds]
+        if _wayland:
+            # xdotool 仅送到 Xwayland；从当前 X keymap 换算 Linux evdev 扫描码，
+            # 再通过 ydotool 的 keyboard 设备输入原生 Wayland 窗口。
+            mapping = {}
+            for line in subprocess.check_output(['xmodmap', '-pke'], text=True).splitlines():
+                m = re.match(r'keycode\s+(\d+)\s+=\s+(.*)', line)
+                if m:
+                    for name in m.group(2).split():
+                        if name != 'NoSymbol': mapping.setdefault(name.lower(), int(m.group(1)) - 8)
+            aliases = {'ctrl': 'control_l', 'control': 'control_l', 'shift': 'shift_l',
+                       'alt': 'alt_l', 'super': 'super_l', 'win': 'super_l',
+                       'altgr': 'alt_r', 'space': 'space'}
+            codes = []
+            for key in keys:
+                key = aliases.get(key.lower(), key.lower())
+                if key not in mapping or mapping[key] < 0:
+                    raise ValueError(f'当前键盘布局不支持按键: {key}')
+                codes.append(mapping[key])
+            seq = [f'{code}:1' for code in codes] + [f'{code}:0' for code in reversed(codes)]
+            if staytime:
+                subprocess.run(['ydotool', 'key', *seq[:len(codes)]], check=True)
+                try: time.sleep(staytime)
+                finally: subprocess.run(['ydotool', 'key', *seq[len(codes):]], check=True)
+            else:
+                subprocess.run(['ydotool', 'key', *seq], check=True)
         else:
-            _xdotool('key', keys)
+            joined = '+'.join(keys)
+            if staytime:
+                _xdotool('keydown', joined, check=False)
+                time.sleep(staytime)
+                _xdotool('keyup', joined, check=False)
+            else:
+                _xdotool('key', joined)
     press = Press
 
     # ---------- 窗口截图 ----------
     def GrabWindow(hwnd_or_name):
         """窗口客户区截图(不含标题栏/边框), 先激活。截图内坐标偏移原点 = 客户区左上角(物理)"""
+        if _wayland:
+            raise NotImplementedError('Wayland 原生窗口不暴露 X11 窗口ID/几何；请用 _grab() 经 Portal 授权截图，再按画面坐标裁剪')
         if isinstance(hwnd_or_name, str):
             wid = FindWindow(None, hwnd_or_name)
             assert wid, f'窗口未找到: {hwnd_or_name}'

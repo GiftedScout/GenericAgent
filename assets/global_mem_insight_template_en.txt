@@ -5,8 +5,8 @@ L2: currently empty
 L3: memory_cleanup_sop(memory cleanup) | ui_detect.py | ocr_utils.py | subagent
 L4: L4_raw_sessions/ historical sessions
 
-Keyboard/Mouse/Screenshot: ljqCtrl_sop(Win: no pyautogui/activate first | Linux: xdotool+mss, Wayland screenshots all-black→ask user to paste)
-UI/Vision: computer_use.md(Win-focused) | vision_sop | prefer window-local screenshots
+Keyboard/Mouse/Screenshot: ljqCtrl_sop (see Linux/Wayland platform notes)
+UI/Vision: ljqCtrl_sop (see platform notes) | vision_sop | prefer cropped screenshots
 Scheduling: scheduled_task_sop | Autonomous: autonomous_operation_sop | watchdog/reflect: agentmain --reflect
 
 [RULES]

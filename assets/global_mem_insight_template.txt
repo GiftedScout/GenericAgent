@@ -5,8 +5,8 @@ L2: 现空
 L3: memory_cleanup_sop(记忆整理) | ui_detect.py | ocr_utils.py | subagent
 L4: L4_raw_sessions/ 历史会话
 
-键鼠/截图: ljqCtrl_sop(Win: 禁pyautogui/先activate | Linux: xdotool+mss, Wayland截图全黑→让用户贴图)
-UI操作/视觉: computer_use.md(Win为主) | vision_sop | 优先窗口局部截图
+键鼠/截图: ljqCtrl_sop (Linux/Wayland见平台说明)
+UI操作/视觉: ljqCtrl_sop(先看平台说明) | vision_sop | 优先局部截图
 定时:scheduled_task_sop | 自主:autonomous_operation_sop | watchdog/反射:agentmain --reflect
 
 [RULES]
