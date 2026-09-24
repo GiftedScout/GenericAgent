@@ -52,14 +52,15 @@ _INSTALL_HINT = ("no local OCR engine available; install one with "
 
 
 def _image_config():
-    """Use the explicit image2 config from mykey.py."""
-    try:
-        cfg = getattr(importlib.import_module("mykey"), "native_oai_config_image2")
-    except (ImportError, AttributeError) as e:
-        raise RuntimeError("explicit image config native_oai_config_image2 is unavailable") from e
-    if not isinstance(cfg, dict) or not cfg.get("apikey"):
-        raise RuntimeError("explicit image2 credential is not configured")
-    return cfg
+    """The mykey entry configured for images/generations (interface-grouped
+    `native_image_config` or any flat entry with that api_mode)."""
+    import llmcore
+    mk = llmcore.reload_mykeys()[0]
+    for k, cfg in mk.items():
+        if isinstance(cfg, dict) and str(cfg.get("api_mode", "")).lower() == "images/generations":
+            if cfg.get("apikey"):
+                return cfg
+    raise RuntimeError("no mykey entry with api_mode 'images/generations' is configured")
 
 
 def _credential(kind):

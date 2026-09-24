@@ -704,6 +704,12 @@ class AgentManager:
     def _has_native_config(self, text: str) -> bool:
         return bool(re.search(rf"^{re.escape(self.NATIVE_CONFIG_VAR)}\s*=\s*\{{", text, re.M))
 
+    def _has_nested_groups(self, text: str) -> bool:
+        import mykey_admin
+        return any(
+            re.search(rf"^{re.escape(var)}\s*=\s*\{{", text, re.M)
+            for var, _mode in mykey_admin.NESTED_GROUPS)
+
     def _invalidate_mykey_cache(self) -> None:
         self.ensure_ga_import_path()
         sys.modules.pop("mykey", None)
@@ -820,9 +826,23 @@ class AgentManager:
     def add_model_profile(self, data: dict) -> dict:
         cfg = self._build_cfg(data)
         text = self._mykey_file().read_text(encoding="utf-8")
+        if self._has_nested_groups(text):
+            # Interface-grouped layout: entry goes under vendor → router.
+            import mykey_admin
+            entry = dict(cfg)
+            mykey_admin.default_type_router(entry)
+            entry.pop("protocol", None)
+            keys, _mk = self._mykey_vars()
+            key = self._next_entry_key(keys, entry)
+            group = mykey_admin.group_for(entry)
+            text = mykey_admin.insert_nested_entry(text, key, entry, group)
+            profiles = self._save_mykey_text(text)
+            var = f"{group}_{key}"
+            pid = next((p["id"] for p in profiles if p.get("varName") == var), 0)
+            return {"varName": var, "profileId": pid or (profiles[-1]["id"] if profiles else 0),
+                    "profiles": profiles}
         if self._has_native_config(text):
-            # One entry in the provider dict instead of another top-level variable
-            # plus a hand-kept LLM_CATALOG (the old add-a-model chore).
+            # Single-dict provider layout: one entry inside native_config.
             keys, _mk = self._mykey_vars()
             key = self._next_entry_key(keys, cfg)
             text = self._write_native_entry(text, key, cfg)

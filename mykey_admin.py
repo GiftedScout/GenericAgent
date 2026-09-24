@@ -18,6 +18,15 @@ import time
 
 NATIVE_CONFIG_VAR = "native_config"
 
+# Interface-grouped layout (mykey.py since 2026-09): group variable →
+# default api_mode.  llmcore._expand_nested_groups flattens it at load.
+NESTED_GROUPS = (
+    ("native_oai_config", "responses"),
+    ("native_claude_config", "claude"),
+    ("native_chat_config", "chat_completions"),
+    ("native_image_config", "images/generations"),
+)
+
 # Written into new entries; the rest of BaseSession's knobs stay optional.
 PROTOCOLS = ("oai", "claude")
 # Shown by the TUI form so users know what they may type.  Full list lives in
@@ -28,6 +37,9 @@ FIELD_HINTS = (
     ("apibase", "接口地址（必填）"),
     ("model", "模型名（必填）"),
     ("protocol", "oai | claude"),
+    ("api_mode", "responses | chat_completions | images/generations（缺省按 protocol 推）"),
+    ("type", "厂商（TUI 分组，缺省按 protocol 推）"),
+    ("router", "路由/渠道（TUI 分组，缺省=apibase 主机名）"),
 )
 
 KNOWN_FIELDS = (
@@ -232,6 +244,134 @@ def native_var_parts(var: str):
     return None
 
 
+# ── interface-grouped layout ───────────────────────────────────────────────
+
+def group_for(cfg: dict) -> str:
+    """Which nested group variable an entry belongs to."""
+    proto = str(cfg.get("protocol") or "oai").lower()
+    if proto == "claude":
+        return "native_claude_config"
+    mode = str(cfg.get("api_mode") or "responses").lower().replace("-", "_")
+    if mode == "images/generations":
+        return "native_image_config"
+    if mode in ("responses", "response"):
+        return "native_oai_config"
+    return "native_chat_config"
+
+
+def has_nested_groups(text: str) -> bool:
+    for var, _mode in NESTED_GROUPS:
+        if re.search(rf"^{re.escape(var)}\s*=\s*\{{", text, re.M):
+            return True
+    return False
+
+
+def _entry_text(key: str, cfg: dict, indent: int = 12) -> str:
+    body = format_dict(cfg, indent + 4)
+    return f"{' ' * indent}{repr(key)}: {body},"
+
+
+def _group_span(text: str, group: str):
+    m = re.search(rf"^{re.escape(group)}\s*=\s*\{{", text, re.M)
+    if not m:
+        return None
+    i, depth, close = m.end() - 1, 0, -1
+    while i < len(text):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                close = i
+                break
+        i += 1
+    if close < 0:
+        raise ValueError(f"malformed group block: {group}")
+    return m.start(), close
+
+
+def insert_nested_entry(text: str, key: str, cfg: dict, group: str) -> str:
+    """Insert (or replace) an entry inside `group = {vendor: {router: {key: cfg}}}`.
+
+    New vendor/router layers are created as needed; existing layers are
+    reused, so the file keeps one block per vendor and per router."""
+    vendor = str(cfg.get("type") or "未标注")
+    router = str(cfg.get("router") or "未标注")
+    entry = _entry_text(key, cfg, 16) + "\n"
+
+    span = _group_span(text, group)
+    if span is None:
+        return (text.rstrip() + f"\n{group} = {{\n"
+                f"    {repr(vendor)}: {{\n        {repr(router)}: {{\n"
+                f"{entry}        }},\n    }},\n}}\n")
+    gs, gc = span
+    body = text[gs:gc]
+    # Replace in place when the key already exists inside this group.
+    m = re.search(rf"^[ \t]*'{re.escape(key)}'[ \t]*:", body, re.M)
+    if m:
+        j = body.index("{", m.end())
+        depth, i = 0, j
+        while i < len(body):
+            if body[i] == "{":
+                depth += 1
+            elif body[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        return text[:gs + m.start()] + entry.rstrip("\n") + "\n" + text[gs + i + 1:]
+
+    # Find (or prepare to create) the vendor layer.
+    mv = re.search(rf"^[ \t]*{re.escape(repr(vendor))}[ \t]*:\s*\{{", body, re.M)
+    if mv:
+        # Find (or create) the router layer inside the vendor block.
+        j = body.index("{", mv.end() - 1)
+        depth, vi = 0, j
+        while vi < len(body):
+            if body[vi] == "{":
+                depth += 1
+            elif body[vi] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            vi += 1
+        vbody = body[j + 1:vi]
+        mr = re.search(rf"^[ \t]*{re.escape(repr(router))}[ \t]*:\s*\{{", vbody, re.M)
+        if mr:
+            rj = vbody.index("{", mr.end() - 1)
+            rdepth, ri = 0, rj
+            while ri < len(vbody):
+                if vbody[ri] == "{":
+                    rdepth += 1
+                elif vbody[ri] == "}":
+                    rdepth -= 1
+                    if rdepth == 0:
+                        break
+                ri += 1
+            # Insert the entry just before the router block's closing brace.
+            new_vbody = vbody[:ri] + entry + vbody[ri:]
+        else:
+            new_vbody = vbody.rstrip() + f"\n        {repr(router)}: {{\n{entry}        }},\n"
+        new_body = body[:j + 1] + new_vbody + body[vi:]
+    else:
+        new_body = body.rstrip() + (f"\n    {repr(vendor)}: {{\n"
+                                    f"        {repr(router)}: {{\n{entry}        }},\n"
+                                    f"    }},\n")
+    return text[:gs] + new_body + text[gc:]
+
+
+def default_type_router(cfg: dict) -> None:
+    """Fill `type`/`router` defaults so the TUI picker can group the entry."""
+    if not cfg.get("type"):
+        model = str(cfg.get("model") or "").lower()
+        cfg["type"] = ("Claude" if "claude" in model else
+                       "本地模型" if str(cfg.get("apibase", "")).startswith(("http://127.", "http://localhost"))
+                       else "其他模型")
+    if not cfg.get("router"):
+        host = str(cfg.get("apibase") or "").split("//")[-1].split("/", 1)[0]
+        cfg["router"] = host or "未标注路由"
+
+
 # ── high-level write ───────────────────────────────────────────────────────
 
 def add_provider(cfg: dict, path: str = "", root: str = "") -> tuple[str, str]:
@@ -253,6 +393,18 @@ def add_provider(cfg: dict, path: str = "", root: str = "") -> tuple[str, str]:
             var = f"{var}_{n}"
         text = text.rstrip() + f"\n{var} = {format_dict(cfg)}\n"
         entry_key = var
+    elif has_nested_groups(text):
+        entry = dict(cfg)
+        default_type_router(entry)
+        # 嵌套组不再需要 protocol 字段(由组变量名推导),去掉避免误导
+        entry.pop("protocol", None)
+        import llmcore
+        try:
+            keys = [k for k in llmcore.reload_mykeys()[0]]
+        except Exception:
+            keys = [m.group(1) for m in re.finditer(r"^\s*'([^']+)'\s*:", text, re.M)]
+        entry_key = next_entry_key(keys, entry)
+        text = insert_nested_entry(text, entry_key, entry, group_for(entry))
     else:
         import llmcore
         try:

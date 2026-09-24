@@ -52,12 +52,88 @@ def _expand_native_config(mk):
     return out
 
 
+# Interface-grouped mykey.py layout (preferred since 2026-09): providers are
+# grouped by API interface, then vendor, then router:
+#
+#     native_oai_config    = { 'OpenAI': { 'aihub': { 'aihub0': {...} } }, ... }
+#     native_claude_config = { 'Claude': { '4router': { 'opus5': {...} } }, ... }
+#     native_chat_config   = { 'Gemini': { 'Google': { 'google': {...} } }, ... }
+#     native_image_config  = { 'OpenAI': { 'aihub': { 'image2': {...} } }, ... }
+#
+# The group variable name pins both the api_mode default (entries may omit
+# `api_mode` / `protocol` entirely) and the session class, exactly like the
+# legacy flat `native_oai_config_<key>` variable names.
+_NESTED_GROUPS = (
+    ('native_oai_config',    'native_oai_config',    'responses',          'oai'),
+    ('native_claude_config', 'native_claude_config', 'claude',             'claude'),
+    ('native_chat_config',   'native_chat_config',   'chat_completions',   'oai'),
+    ('native_image_config',  'native_image_config',  'images/generations', 'oai'),
+)
+
+
+def _expand_nested_groups(mk):
+    """Flatten the interface-grouped nested layout into legacy flat keys.
+
+    Normal shape is `{vendor: {router: {entry_key: cfg}}}`; intermediate
+    layers may be omitted (a group may hold `{router: cfg}` directly).  Group
+    variables that are NOT nested (legacy flat files) pass through untouched,
+    and only variables actually flattened are dropped from the output.
+    """
+    if not isinstance(mk, dict):
+        return mk
+    nested = {}
+    for var, _p, _m, _pr in _NESTED_GROUPS:
+        v = mk.get(var)
+        if isinstance(v, dict) and v and any(isinstance(c, dict) for c in v.values()):
+            nested[var] = v
+    if not nested:
+        return mk
+    # Drop only the variables that were actually flattened as nested groups —
+    # legacy flat files still carry `native_oai_config_<key>` top-level
+    # variables, and those must survive.
+    out = {k: v for k, v in mk.items() if k not in nested}
+    catalog = dict(out.get('LLM_CATALOG') or {})
+
+    def emit(key, cfg):
+        entry = dict(cfg)
+        entry.setdefault('protocol', proto)
+        entry.setdefault('api_mode', default_mode)
+        flat = f'{prefix}_{key}'
+        meta = {m: entry.pop(m) for m in ('type', 'router', 'protocol') if entry.get(m)}
+        out[flat] = entry
+        catalog[flat] = meta
+
+    for var, prefix, default_mode, proto in _NESTED_GROUPS:
+        if var not in nested:
+            continue
+        # A grouping layer: dict of dicts, no model/apibase of its own.
+        def is_group(d):
+            return isinstance(d, dict) and d and 'model' not in d and 'apibase' not in d \
+                and all(isinstance(c, dict) for c in d.values())
+        stack = [nested[var]]
+        while stack:
+            d = stack.pop()
+            for k, v in d.items():
+                if is_group(v):
+                    stack.append(v)
+                elif isinstance(v, dict):
+                    emit(k, v)
+    if catalog:
+        out['LLM_CATALOG'] = catalog
+    return out
+
+
+def _expand_mykey_layout(mk):
+    """Apply every mykey.py layout migration in order (nested groups first)."""
+    return _expand_native_config(_expand_nested_groups(mk))
+
+
 def _load_mykeys():
     global _mykey_path
     try:
         sys.modules.pop('mykey', None)
         import mykey; _mykey_path = mykey.__file__
-        return _expand_native_config({k: v for k, v in vars(mykey).items() if not k.startswith('_')})
+        return _expand_mykey_layout({k: v for k, v in vars(mykey).items() if not k.startswith('_')})
     except ImportError as e:
         if getattr(e, 'name', None) != 'mykey':
             raise Exception(f'[ERROR] mykey.py found but failed to import: {e}') from e
@@ -66,8 +142,8 @@ def _load_mykeys():
     p = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mykey.json')
     if not os.path.exists(p): raise Exception('[ERROR] mykey.py not found in sys.path and mykey.json not found. Run "python configure_mykey.py" or copy mykey_template.py to mykey.py and fill in your keys.')
     with open(_mykey_path := p, encoding='utf-8') as f: mk = json.load(f)
-    if isinstance(mk, dict) and 'remote_url' in mk: return _expand_native_config(requests.get(mk['remote_url'], timeout=10).json())
-    return _expand_native_config(mk)
+    if isinstance(mk, dict) and 'remote_url' in mk: return _expand_mykey_layout(requests.get(mk['remote_url'], timeout=10).json())
+    return _expand_mykey_layout(mk)
 
 _mykey_lock = threading.Lock()
 _mykey_path = _mykey_mtime = None
