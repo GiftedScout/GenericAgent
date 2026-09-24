@@ -7,7 +7,7 @@
 - Wayland: X11/mss 像素可能全黑；GNOME 可通过 ljqCtrl._grab() 的 Screenshot portal 经用户授权取得图像；原生窗口ID截图仍不可用。
 """
 import re
-from PIL import ImageGrab, Image, ImageEnhance
+from PIL import Image, ImageEnhance
 
 _LANG = 'zh-Hans-CN'
 _rapid_engine = None
@@ -62,37 +62,8 @@ def ocr_screen(bbox=None, lang=_LANG, enhance=False, engine=None):
     :param bbox: (x1, y1, x2, y2) 像素坐标，None=全屏
     :return: dict {'text': 全文, 'lines': [行文本], 'details': [bbox+conf](仅rapid)}
     """
-    img = ImageGrab.grab(bbox=bbox)
-    return ocr_image(img, lang, enhance, engine)
-
-def ocr_window(hwnd, lang=_LANG, enhance=False, engine=None):
-    """
-    截取窗口并 OCR (Windows PrintWindow API, 支持远程桌面断开场景)
-    仅 Windows 可用; 其他平台抛 NotImplementedError
-    :param hwnd: 窗口句柄(int)
-    :return: dict {'text': 全文, 'lines': [行文本], 'details': [bbox+conf](仅rapid)}
-    """
-    import sys
-    if sys.platform != 'win32':
-        raise NotImplementedError("ocr_window 仅 Windows 可用; 本机请用 ocr_screen/ocr_image, 或让用户手动截屏传路径")
-    import win32gui, win32ui
-    from ctypes import windll
-    l, t, r, b = win32gui.GetWindowRect(hwnd)
-    w, h = r - l, b - t
-    hwndDC = win32gui.GetWindowDC(hwnd)
-    mfcDC = win32ui.CreateDCFromHandle(hwndDC)
-    saveDC = mfcDC.CreateCompatibleDC()
-    saveBitMap = win32ui.CreateBitmap()
-    saveBitMap.CreateCompatibleBitmap(mfcDC, w, h)
-    saveDC.SelectObject(saveBitMap)
-    windll.user32.PrintWindow(hwnd, saveDC.GetSafeHdc(), 3)
-    bmpinfo = saveBitMap.GetInfo()
-    bmpstr = saveBitMap.GetBitmapBits(True)
-    img = Image.frombuffer('RGB', (bmpinfo['bmWidth'], bmpinfo['bmHeight']), bmpstr, 'raw', 'BGRX', 0, 1)
-    win32gui.DeleteObject(saveBitMap.GetHandle())
-    saveDC.DeleteDC()
-    mfcDC.DeleteDC()
-    win32gui.ReleaseDC(hwnd, hwndDC)
+    import ljqCtrl
+    img = ljqCtrl._grab(bbox)
     return ocr_image(img, lang, enhance, engine)
 
 if __name__ == "__main__":

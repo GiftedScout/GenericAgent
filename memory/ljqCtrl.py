@@ -293,9 +293,12 @@ else:
 
     # ---------- 窗口截图 ----------
     def GrabWindow(hwnd_or_name):
-        """窗口客户区截图(不含标题栏/边框), 先激活。截图内坐标偏移原点 = 客户区左上角(物理)"""
+        """窗口客户区截图；Wayland使用持久授权的单窗口ScreenCast，不走全屏截图。"""
         if _wayland:
-            raise NotImplementedError('Wayland 原生窗口不暴露 X11 窗口ID/几何；请用 _grab() 经 Portal 授权截图，再按画面坐标裁剪')
+            if not isinstance(hwnd_or_name, str):
+                raise TypeError('Wayland原生窗口需传窗口标题，不接受X11窗口ID')
+            from wayland_window_capture import capture_window
+            return capture_window(hwnd_or_name)
         if isinstance(hwnd_or_name, str):
             wid = FindWindow(None, hwnd_or_name)
             assert wid, f'窗口未找到: {hwnd_or_name}'
