@@ -827,20 +827,19 @@ class AgentManager:
         cfg = self._build_cfg(data)
         text = self._mykey_file().read_text(encoding="utf-8")
         if self._has_nested_groups(text):
-            # Interface-grouped layout: entry goes under vendor → router.
+            # Interface-grouped layout: entry is a keyless list item under
+            # vendor → router; type/router come from structure, not the entry.
             import mykey_admin
             entry = dict(cfg)
             mykey_admin.default_type_router(entry)
-            entry.pop("protocol", None)
-            keys, _mk = self._mykey_vars()
-            key = self._next_entry_key(keys, entry)
-            group = mykey_admin.group_for(entry)
-            text = mykey_admin.insert_nested_entry(text, key, entry, group)
+            for _k in ("protocol", "type", "router"):
+                entry.pop(_k, None)
+            before = {p["varName"] for p in self.list_model_profiles()}
+            text = mykey_admin.insert_nested_entry(text, entry, mykey_admin.group_for(cfg))
             profiles = self._save_mykey_text(text)
-            var = f"{group}_{key}"
-            pid = next((p["id"] for p in profiles if p.get("varName") == var), 0)
-            return {"varName": var, "profileId": pid or (profiles[-1]["id"] if profiles else 0),
-                    "profiles": profiles}
+            new = [p for p in profiles if p["varName"] not in before]
+            pick = (new or profiles)[-1]
+            return {"varName": pick["varName"], "profileId": pick["id"], "profiles": profiles}
         if self._has_native_config(text):
             # Single-dict provider layout: one entry inside native_config.
             keys, _mk = self._mykey_vars()

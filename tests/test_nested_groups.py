@@ -1,15 +1,17 @@
 # -*- coding: utf-8 -*-
 """Regression tests for the interface-grouped nested mykey.py layout.
 
-The file now groups providers by API interface, then vendor, then router:
+The file groups providers by API interface, then vendor, then router;
+entries are keyless list items:
 
-    native_oai_config    = { 'OpenAI': { 'aihub': { 'aihub0': {...} } }, ... }
-    native_claude_config = { 'Claude': { '4router': { 'opus': {...} } }, ... }
-    native_chat_config   = { 'Gemini': { 'Google': { 'google': {...} } }, ... }
-    native_image_config  = { 'OpenAI': { 'aihub': { 'image2': {...} } }, ... }
+    native_oai_config    = { 'OpenAI': { 'aihub': [ {...}, {...} ] } }
+    native_claude_config = { 'Claude': { '4router': [ {...} ] } }
+    native_chat_config   = { 'Gemini': { 'Google': [ {...} ] } }
+    native_image_config  = { 'OpenAI': { 'aihub': [ {...} ] } }
 
-llmcore._expand_nested_groups flattens that into the legacy flat keys
-(`native_<group>_<entry_key>`) that the runtime / picker already consume.
+Entries carry NO type/router/api_mode: the group variable name gives
+api_mode, and the vendor/router keys give the LLM_CATALOG metadata.
+Flat runtime keys are `{group}_{vendor}_{router}_{i}`.
 """
 import os
 import sys
@@ -30,57 +32,65 @@ def check(name, cond):
         print(f"  [FAIL] {name}")
 
 
-def test_flatten_three_levels():
-    print("1) three-level flatten (vendor -> router -> entry)")
+def test_flatten_list_entries():
+    print("1) keyless list entries, meta derived from structure")
     mk = {
         "native_oai_config": {
             "OpenAI": {
-                "aihub": {
-                    "aihub0": {
-                        "name": "x", "apikey": "k", "apibase": "https://b",
-                        "model": "m", "type": "OpenAI", "router": "aihub",
-                    }
-                }
-            }
+                "aihub": [
+                    {"name": "x", "apikey": "k", "apibase": "https://b", "model": "m"},
+                    {"apikey": "k", "apibase": "https://b", "model": "m2"},
+                ]
+            },
+            "Grok": {
+                "fluxionai": [{"apikey": "k", "apibase": "https://f", "model": "g"}]
+            },
         },
         "native_claude_config": {
             "Claude": {
-                "4router": {
-                    "opus": {"name": "c", "apikey": "k", "apibase": "https://b", "model": "c"},
-                }
+                "4router": [{"name": "c", "apikey": "k", "apibase": "https://b", "model": "c"}]
             }
         },
     }
     out = llmcore._expand_nested_groups(mk)
-    check("oai entry flattened", "native_oai_config_aihub0" in out)
-    check("api_mode derived responses", out.get("native_oai_config_aihub0", {}).get("api_mode") == "responses")
-    check("model preserved", out.get("native_oai_config_aihub0", {}).get("model") == "m")
-    check("apibase preserved", out.get("native_oai_config_aihub0", {}).get("apibase") == "https://b")
-    check("claude entry flattened", "native_claude_config_opus" in out)
-    check("api_mode derived claude", out.get("native_claude_config_opus", {}).get("api_mode") == "claude")
-    check("group var dropped", "native_oai_config" not in out and "native_claude_config" not in out)
+    k0 = "native_oai_config_OpenAI_aihub_0"
+    k1 = "native_oai_config_OpenAI_aihub_1"
+    kg = "native_oai_config_Grok_fluxionai_0"
+    kc = "native_claude_config_Claude_4router_0"
+    check("entry 0 flattened", k0 in out)
+    check("entry 1 flattened", k1 in out)
+    check("second vendor flattened", kg in out)
+    check("claude entry flattened", kc in out)
+    check("api_mode derived responses", out.get(k0, {}).get("api_mode") == "responses")
+    check("api_mode derived claude", out.get(kc, {}).get("api_mode") == "claude")
+    check("model preserved", out.get(k0, {}).get("model") == "m")
+    check("entry has no type field", "type" not in out.get(k0, {}))
+    check("entry has no router field", "router" not in out.get(k0, {}))
+    check("group vars dropped", "native_oai_config" not in out and "native_claude_config" not in out)
     cat = out.get("LLM_CATALOG", {})
-    check("catalog has router", cat.get("native_oai_config_aihub0", {}).get("router") == "aihub")
-    check("catalog has type", cat.get("native_oai_config_aihub0", {}).get("type") == "OpenAI")
+    check("catalog router from structure", cat.get(k0, {}).get("router") == "aihub")
+    check("catalog type from structure", cat.get(k0, {}).get("type") == "OpenAI")
 
 
 def test_api_mode_explicit_override():
     print("2) explicit api_mode wins over group default")
-    mk = {"native_image_config": {"OpenAI": {"aihub": {"image2": {
-        "apikey": "k", "apibase": "https://b", "model": "img",
-        "api_mode": "images/generations"}}}}}
+    mk = {"native_image_config": {"OpenAI": {"aihub": [
+        {"apikey": "k", "apibase": "https://b", "model": "img",
+         "api_mode": "images/generations"}]}}}
     out = llmcore._expand_nested_groups(mk)
-    check("image entry flattened", "native_image_config_image2" in out)
-    check("explicit api_mode kept", out.get("native_image_config_image2", {}).get("api_mode") == "images/generations")
+    k = "native_image_config_OpenAI_aihub_0"
+    check("image entry flattened", k in out)
+    check("explicit api_mode kept", out.get(k, {}).get("api_mode") == "images/generations")
 
 
 def test_chat_group_default():
     print("3) chat group derives chat_completions")
-    mk = {"native_chat_config": {"Gemini": {"Google": {"google": {
-        "apikey": "k", "apibase": "https://b", "model": "g"}}}}}
+    mk = {"native_chat_config": {"Gemini": {"Google": [
+        {"apikey": "k", "apibase": "https://b", "model": "g"}]}}}
     out = llmcore._expand_nested_groups(mk)
-    check("chat entry flattened", "native_chat_config_google" in out)
-    check("api_mode derived chat_completions", out.get("native_chat_config_google", {}).get("api_mode") == "chat_completions")
+    k = "native_chat_config_Gemini_Google_0"
+    check("chat entry flattened", k in out)
+    check("api_mode derived chat_completions", out.get(k, {}).get("api_mode") == "chat_completions")
 
 
 def test_legacy_flat_untouched():
@@ -100,7 +110,7 @@ def test_single_dict_compat():
 
 
 if __name__ == "__main__":
-    test_flatten_three_levels()
+    test_flatten_list_entries()
     test_api_mode_explicit_override()
     test_chat_group_default()
     test_legacy_flat_untouched()

@@ -272,90 +272,82 @@ def _entry_text(key: str, cfg: dict, indent: int = 12) -> str:
 
 
 def _group_span(text: str, group: str):
-    m = re.search(rf"^{re.escape(group)}\s*=\s*\{{", text, re.M)
-    if not m:
-        return None
-    i, depth, close = m.end() - 1, 0, -1
-    while i < len(text):
-        if text[i] == "{":
+    """Char span (start .. closing brace) of the REAL `group = {...}` dict.
+
+    AST-based on purpose: mykey.py's header docstring contains a sample
+    snippet starting with `native_oai_config = {`, so a text/regex search
+    would anchor inside the docstring and corrupt it.
+    """
+    import ast as _ast
+    for node in _ast.parse(text).body:
+        if (isinstance(node, _ast.Assign)
+                and len(node.targets) == 1
+                and getattr(node.targets[0], "id", "") == group
+                and isinstance(node.value, _ast.Dict)):
+            d = node.value
+            first_line = text.split("\n")[node.lineno - 1]
+            ob = first_line.index("{")
+            start = _line_offset(text, node.lineno) + ob
+            last_line = text.split("\n")[d.end_lineno - 1]
+            cb = last_line.rindex("}")
+            end = _line_offset(text, d.end_lineno) + cb
+            return start, end
+    return None
+
+
+def _line_offset(text: str, lineno: int) -> int:
+    """Offset of the start of 1-based `lineno` within `text`."""
+    return sum(len(l) + 1 for l in text.split("\n")[:lineno - 1])
+
+
+def _block_range(block: str, open_idx: int) -> int:
+    """Index of the brace/bracket matching the one at `open_idx`."""
+    opener, closer = (("{", "}") if block[open_idx] == "{" else ("[", "]"))
+    depth, i = 0, open_idx
+    while i < len(block):
+        if block[i] == opener:
             depth += 1
-        elif text[i] == "}":
+        elif block[i] == closer:
             depth -= 1
             if depth == 0:
-                close = i
-                break
+                return i
         i += 1
-    if close < 0:
-        raise ValueError(f"malformed group block: {group}")
-    return m.start(), close
+    raise ValueError("unbalanced block")
 
 
-def insert_nested_entry(text: str, key: str, cfg: dict, group: str) -> str:
-    """Insert (or replace) an entry inside `group = {vendor: {router: {key: cfg}}}`.
+def insert_nested_entry(text: str, cfg: dict, group: str) -> str:
+    """Append an entry to `group = {vendor: {router: [entry, ...]}}`.
 
-    New vendor/router layers are created as needed; existing layers are
-    reused, so the file keeps one block per vendor and per router."""
+    Entries are keyless list items; new vendor/router layers are created as
+    needed, existing ones are reused."""
     vendor = str(cfg.get("type") or "未标注")
     router = str(cfg.get("router") or "未标注")
-    entry = _entry_text(key, cfg, 16) + "\n"
+    # entry = a dict literal (no key) indented for the list position
+    entry = "            " + format_dict(cfg, 20).rstrip() + ",\n"
 
     span = _group_span(text, group)
     if span is None:
         return (text.rstrip() + f"\n{group} = {{\n"
-                f"    {repr(vendor)}: {{\n        {repr(router)}: {{\n"
-                f"{entry}        }},\n    }},\n}}\n")
+                f"    {repr(vendor)}: {{\n        {repr(router)}: [\n"
+                f"{entry}        ],\n    }},\n}}\n")
     gs, gc = span
     body = text[gs:gc]
-    # Replace in place when the key already exists inside this group.
-    m = re.search(rf"^[ \t]*'{re.escape(key)}'[ \t]*:", body, re.M)
-    if m:
-        j = body.index("{", m.end())
-        depth, i = 0, j
-        while i < len(body):
-            if body[i] == "{":
-                depth += 1
-            elif body[i] == "}":
-                depth -= 1
-                if depth == 0:
-                    break
-            i += 1
-        return text[:gs + m.start()] + entry.rstrip("\n") + "\n" + text[gs + i + 1:]
-
-    # Find (or prepare to create) the vendor layer.
     mv = re.search(rf"^[ \t]*{re.escape(repr(vendor))}[ \t]*:\s*\{{", body, re.M)
     if mv:
-        # Find (or create) the router layer inside the vendor block.
-        j = body.index("{", mv.end() - 1)
-        depth, vi = 0, j
-        while vi < len(body):
-            if body[vi] == "{":
-                depth += 1
-            elif body[vi] == "}":
-                depth -= 1
-                if depth == 0:
-                    break
-            vi += 1
-        vbody = body[j + 1:vi]
-        mr = re.search(rf"^[ \t]*{re.escape(repr(router))}[ \t]*:\s*\{{", vbody, re.M)
+        vi = _block_range(body, body.index("{", mv.end() - 1))
+        vbody = body[mv.end():vi]
+        mr = re.search(rf"^[ \t]*{re.escape(repr(router))}[ \t]*:\s*[\{{\[]", vbody, re.M)
         if mr:
-            rj = vbody.index("{", mr.end() - 1)
-            rdepth, ri = 0, rj
-            while ri < len(vbody):
-                if vbody[ri] == "{":
-                    rdepth += 1
-                elif vbody[ri] == "}":
-                    rdepth -= 1
-                    if rdepth == 0:
-                        break
-                ri += 1
-            # Insert the entry just before the router block's closing brace.
+            rj = vbody.index(vbody[mr.end() - 1], mr.end() - 1)
+            ri = _block_range(vbody, rj)
             new_vbody = vbody[:ri] + entry + vbody[ri:]
+            new_body = body[:mv.end()] + new_vbody + body[vi:]
         else:
-            new_vbody = vbody.rstrip() + f"\n        {repr(router)}: {{\n{entry}        }},\n"
-        new_body = body[:j + 1] + new_vbody + body[vi:]
+            new_vbody = vbody.rstrip() + f"\n        {repr(router)}: [\n{entry}        ],\n"
+            new_body = body[:mv.end()] + new_vbody + body[vi:]
     else:
         new_body = body.rstrip() + (f"\n    {repr(vendor)}: {{\n"
-                                    f"        {repr(router)}: {{\n{entry}        }},\n"
+                                    f"        {repr(router)}: [\n{entry}        ],\n"
                                     f"    }},\n")
     return text[:gs] + new_body + text[gc:]
 
@@ -395,16 +387,13 @@ def add_provider(cfg: dict, path: str = "", root: str = "") -> tuple[str, str]:
         entry_key = var
     elif has_nested_groups(text):
         entry = dict(cfg)
-        default_type_router(entry)
-        # 嵌套组不再需要 protocol 字段(由组变量名推导),去掉避免误导
+        default_type_router(entry)          # fills type/router for group placement
+        # type/router are structural (vendor/router keys), not entry fields
         entry.pop("protocol", None)
-        import llmcore
-        try:
-            keys = [k for k in llmcore.reload_mykeys()[0]]
-        except Exception:
-            keys = [m.group(1) for m in re.finditer(r"^\s*'([^']+)'\s*:", text, re.M)]
-        entry_key = next_entry_key(keys, entry)
-        text = insert_nested_entry(text, entry_key, entry, group_for(entry))
+        entry.pop("type", None)
+        entry.pop("router", None)
+        text = insert_nested_entry(text, entry, group_for(cfg))
+        entry_key = f"{group_for(cfg)}/{entry.get('name', entry.get('model'))}"
     else:
         import llmcore
         try:

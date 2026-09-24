@@ -74,17 +74,21 @@ _NESTED_GROUPS = (
 def _expand_nested_groups(mk):
     """Flatten the interface-grouped nested layout into legacy flat keys.
 
-    Normal shape is `{vendor: {router: {entry_key: cfg}}}`; intermediate
-    layers may be omitted (a group may hold `{router: cfg}` directly).  Group
-    variables that are NOT nested (legacy flat files) pass through untouched,
-    and only variables actually flattened are dropped from the output.
+    Preferred shape (mykey.py, 2026-09): entries are keyless lists —
+    `{vendor: {router: [ {entry}, {entry} ]}}` — so the file itself carries
+    no per-entry name, type or router: those are read off the structure
+    (vendor key = type, router key = router) and land in LLM_CATALOG.  A
+    router may also hold a keyed dict (older intermediate form); explicit
+    `type`/`router` fields on an entry still win over the structural ones.
+    Group variables that are NOT nested (legacy flat files) pass through
+    untouched, and only variables actually flattened are dropped.
     """
     if not isinstance(mk, dict):
         return mk
     nested = {}
     for var, _p, _m, _pr in _NESTED_GROUPS:
         v = mk.get(var)
-        if isinstance(v, dict) and v and any(isinstance(c, dict) for c in v.values()):
+        if isinstance(v, dict) and v and any(isinstance(c, (dict, list)) for c in v.values()):
             nested[var] = v
     if not nested:
         return mk
@@ -94,30 +98,49 @@ def _expand_nested_groups(mk):
     out = {k: v for k, v in mk.items() if k not in nested}
     catalog = dict(out.get('LLM_CATALOG') or {})
 
-    def emit(key, cfg):
-        entry = dict(cfg)
-        entry.setdefault('protocol', proto)
-        entry.setdefault('api_mode', default_mode)
-        flat = f'{prefix}_{key}'
-        meta = {m: entry.pop(m) for m in ('type', 'router', 'protocol') if entry.get(m)}
-        out[flat] = entry
-        catalog[flat] = meta
+    def _safe(s):
+        return re.sub(r'[^0-9A-Za-z]+', '_', str(s)).strip('_') or 'x'
 
     for var, prefix, default_mode, proto in _NESTED_GROUPS:
         if var not in nested:
             continue
-        # A grouping layer: dict of dicts, no model/apibase of its own.
-        def is_group(d):
-            return isinstance(d, dict) and d and 'model' not in d and 'apibase' not in d \
-                and all(isinstance(c, dict) for c in d.values())
-        stack = [nested[var]]
-        while stack:
-            d = stack.pop()
+        counters = {}
+
+        def is_entry(d):
+            return isinstance(d, dict) and any(k in d for k in ('model', 'apibase', 'apikey'))
+
+        def emit(path, cfg):
+            entry = dict(cfg)
+            entry.setdefault('protocol', proto)
+            entry.setdefault('api_mode', default_mode)
+            meta = {'type': path[0]} if path else {}
+            if len(path) > 1:
+                meta['router'] = path[1]
+            for m in ('type', 'router'):
+                if entry.get(m):
+                    meta[m] = entry.pop(m)      # explicit field wins
+                entry.pop(m, None)              # structural dupes don't ship
+            group = '_'.join(_safe(p) for p in path)
+            i = counters.get(group, 0)
+            counters[group] = i + 1
+            flat = f'{prefix}_{group}_{i}'
+            out[flat] = entry
+            catalog[flat] = meta
+
+        def walk(d, path):
             for k, v in d.items():
-                if is_group(v):
-                    stack.append(v)
+                kp = path + (str(k),)
+                if isinstance(v, list):
+                    for e in v:
+                        if is_entry(e):
+                            emit(kp, e)
                 elif isinstance(v, dict):
-                    emit(k, v)
+                    if is_entry(v):
+                        emit(kp, v)
+                    else:
+                        walk(v, kp)
+
+        walk(nested[var], ())
     if catalog:
         out['LLM_CATALOG'] = catalog
     return out
