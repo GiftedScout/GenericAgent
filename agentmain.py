@@ -43,6 +43,17 @@ def get_system_prompt():
     prompt += get_global_memory()
     return prompt
 
+def _settlement_safe_chunks(gen, state):
+    """Keep a post-settlement backend failure from replacing the user answer."""
+    try:
+        yield from gen
+    except Exception as exc:
+        if state.get('seen'):
+            yield {'_settlement_error': exc}
+        else:
+            raise
+
+
 def iter_display_events(gen, source, turn_resps, stop_check=None):
     """Consume the agent_runner_loop chunk stream; yield UI display events.
 
@@ -61,14 +72,19 @@ def iter_display_events(gen, source, turn_resps, stop_check=None):
     full_resp = ""; display_resp = ""; display_pos = 0
     curr_turn = 0
     settle = None      # (full_len, disp_len): 结算（记忆维护）冻结点
-    for chunk in gen:
+    settlement_state = {'seen': False}
+    for chunk in _settlement_safe_chunks(gen, settlement_state):
         if stop_check and stop_check():
             break
         if isinstance(chunk, dict):
+            if '_settlement_error' in chunk:
+                # 结算是后台维护；用户答案已冻结，失败只结束后台流。
+                break
             if 'settlement' in chunk:
                 # 结算状态是 UI 独立事件：答案正文和历史不得混入提示文本。
                 # 结算前的内容已经完整流出；之后的维护轮次仅保留在审计历史，
                 # display_resp 冻结在这里，done 只返回用户真正看到的答案。
+                settlement_state['seen'] = True
                 settle = (len(full_resp), len(display_resp))
                 if os.environ.get("GA_DEBUG_SETTLE"):
                     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp", "settle_debug.log"), "a") as _f:
@@ -117,6 +133,17 @@ def iter_display_events(gen, source, turn_resps, stop_check=None):
 # agent = GenericAgent(); threading.Thread(target=agent.run, daemon=True).start()
 # output1_queue = agent.put_task(prompt1)
 # output2_queue = agent.put_task(prompt2)
+def _is_settlement_prompt(msg):
+    """Whether a backend user message is the internal memory-maintenance turn."""
+    if not isinstance(msg, dict) or msg.get('role') != 'user':
+        return False
+    content = msg.get('content')
+    if isinstance(content, str):
+        return '[后台记忆维护]' in content
+    return any('[后台记忆维护]' in str(b.get('text', ''))
+               for b in (content or []) if isinstance(b, dict))
+
+
 class GenericAgent:
     def __init__(self):
         os.makedirs(os.path.join(script_dir, 'temp'), exist_ok=True)
@@ -275,6 +302,10 @@ class GenericAgent:
             return '[retry] 上一轮执行因网络中断/意外退出而中断，请从断点继续原任务。不要重新询问用户，直接接着做。'
         if hist[-1].get('role') != 'user':
             display_queue.put({'done': '❌ /retry: 没有可重试的中断请求（上一轮不是未响应就中断的）', 'source': 'system'})
+            return None
+        if _is_settlement_prompt(hist[-1]):
+            # 用户答案已经在 settlement marker 前提交；后台维护失败不可重跑成新任务。
+            display_queue.put({'done': '✅ 用户答案已完成；后台记忆维护未完成，未重跑原任务。', 'source': 'system'})
             return None
         msg = hist.pop()
         c = msg.get('content')
