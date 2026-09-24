@@ -10,6 +10,15 @@ except ImportError: _hook = lambda *a, **k: None
 # `continue_cmd` re-emits the very same line when replaying a log, so a restored
 # session looks exactly like it did live.
 SETTLEMENT_NOTICE = "\n\n🧠 记忆结算中（后台维护记忆，请勿关闭终端）…\n"
+# Real sessions need more than three maintenance turns: the recent sample's
+# maximum was 13.  Keep a finite guard, but do not truncate a normal L0
+# read/patch/verify cycle merely because it crossed three model calls.
+MEMORY_SETTLEMENT_MAX_TURNS = 16
+SETTLEMENT_CONTINUATION = (
+    "\n[后台记忆维护] 继续当前记忆文件维护流程。只根据刚才的工具结果执行"
+    "最小必要的 file_read/file_patch/file_write；若已完成或没有新事实，立即停止"
+    "调用工具。不要回答原用户任务，不要复述记忆，不要调用其他工具。\n"
+)
 
 
 @dataclass
@@ -21,6 +30,8 @@ class StepOutcome:
     # separate from should_exit: the tool must still let the model finish the
     # approved file_read/file_patch/file_write memory update before stopping.
     settlement: bool = False
+
+
 def try_call_generator(func, *args, **kwargs):
     ret = func(*args, **kwargs)
     if hasattr(ret, '__iter__') and not isinstance(ret, (str, bytes, dict, list)): ret = yield from ret
@@ -78,8 +89,8 @@ def agent_runner_loop(client, system_prompt, user_input, handler, tools_schema,
     settlement_turns = 0
     settlement_schema = _settlement_tools(tools_schema)
     _hook('agent_before', locals())
-    while turn < handler.max_turns:
-        if settlement_mode and settlement_turns >= 3:
+    while turn < handler.max_turns or settlement_mode:
+        if settlement_mode and settlement_turns >= MEMORY_SETTLEMENT_MAX_TURNS:
             exit_reason = {'result': 'MEMORY_SETTLEMENT_LIMIT'}
             break
         turn += 1
@@ -111,6 +122,7 @@ def agent_runner_loop(client, system_prompt, user_input, handler, tools_schema,
                           for tc in response.tool_calls]
        
         tool_results = []; next_prompts = set(); exit_reason = {}
+        settlement_entered_this_turn = False
         for ii, tc in enumerate(tool_calls):
             tool_name, args, tid = tc['tool_name'], tc['args'], tc.get('id', '')
             is_settlement_tool = tool_name == 'start_long_term_update'
@@ -135,6 +147,7 @@ def agent_runner_loop(client, system_prompt, user_input, handler, tools_schema,
 
             if outcome.settlement:
                 settlement_mode = True
+                settlement_entered_this_turn = True
                 handler._done_hooks.clear()
                 # 先冻结用户显示，再写入结算工具结果；后者仅保留在审计历史。
                 yield {"settlement": True, "turn": turn}
@@ -169,10 +182,24 @@ def agent_runner_loop(client, system_prompt, user_input, handler, tools_schema,
             if len(handler._done_hooks) == 0:
                 break
             next_prompts.add(handler._done_hooks.pop(0))
-        next_prompt = handler.turn_end_callback(response, tool_calls, tool_results, turn, '\n'.join(next_prompts), exit_reason)
+        if settlement_mode:
+            # Never re-enter the normal task callback: it appends working-memory,
+            # task-anchor, global-memory and periodic danger prompts, which made
+            # settlement repeat the user's task.  On the entry turn preserve the
+            # L0 maintenance prompt returned by start_long_term_update; after
+            # that, use only the bounded, memory-only continuation.  Tool results
+            # remain in the provider message above.
+            next_prompt = (
+                '\n'.join(next_prompts) if settlement_entered_this_turn
+                else SETTLEMENT_CONTINUATION
+            )
+        else:
+            next_prompt = handler.turn_end_callback(response, tool_calls, tool_results, turn, '\n'.join(next_prompts), exit_reason)
         _hook('turn_after', locals())
         messages = [{"role": "user", "content": next_prompt, "tool_results": tool_results}]   # just new message, history is kept in *Session
-    if exit_reason: handler.turn_end_callback(response, tool_calls, tool_results, turn, '', exit_reason)
+    if exit_reason:
+        if not settlement_mode:
+            handler.turn_end_callback(response, tool_calls, tool_results, turn, '', exit_reason)
     _hook('agent_after', locals())
     handler._last_exit = exit_reason or {'result': 'MAX_TURNS_EXCEEDED'}
     return handler._last_exit
