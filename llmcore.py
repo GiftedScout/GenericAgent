@@ -209,15 +209,8 @@ def compress_history_tags(messages, keep_recent=10, max_len=800, force=False, in
                 if not isinstance(b, dict): continue
                 t = b.get('type')
                 if t == 'text' and isinstance(b.get('text'), str): b['text'] = _trunc(b['text'])
-                elif t == 'thinking' and isinstance(b.get('thinking'), str): b['thinking'] = _trunc_str(b['thinking'])
-                elif t == 'tool_result':
-                    tc = b.get('content')
-                    if isinstance(tc, str): b['content'] = _trunc_str(tc)
-                    elif isinstance(tc, list):
-                        for sub in tc:
-                            if isinstance(sub, dict) and sub.get('type') == 'text': sub['text'] = _trunc_str(sub.get('text'))
-                elif t == 'tool_use' and isinstance(b.get('input'), dict):
-                    for k, v in b['input'].items(): b['input'][k] = _trunc_str(v)
+                # Native calls, results and signed reasoning are replay records.
+                # Never rewrite their payload while retaining their identity.
     print(f"[Cut] {_before} -> {sum(len(json.dumps(m, ensure_ascii=False)) for m in messages)}")
     return messages
 
@@ -264,21 +257,28 @@ def trim_messages_history(history, sess):
     compress_history_tags(history, interval=getattr(sess, 'cut_msg_interval', 7), counter_owner=sess)
     compress_history_tags(history, keep_recent=4, force=True, counter_owner=sess)
     if cost(history) <= target: return
-    pre, post = history[:kp], history[kp:]; costs = [len(json.dumps(m, ensure_ascii=False)) for m in post]; c = cost(pre) + sum(costs); i = 0
-    while len(post) - i > 9 and c > target:
-        c -= costs[i]; i += 1
-        while i < len(post) and post[i].get('role') != 'user': c -= costs[i]; i += 1
-        if i < len(post): old = costs[i]; post[i] = _sanitize_leading_user_msg(post[i]); costs[i] = len(json.dumps(post[i], ensure_ascii=False)); c += costs[i] - old
-    post = post[i:]
-    if kp and pre:
-        m = pre[-1]
-        if m.get('role') == 'assistant' and isinstance(m.get('content'), list):
-            m['content'] = [b for b in m['content'] if not (isinstance(b, dict) and b.get('type') == 'tool_use')] or [{"type": "text", "text": "..."}]
-        _d = lambda: [{"type": "text", "text": "..."}]
-        gap = [{"role": "assistant", "content": _d()}] if m.get('role') == 'user' else [{"role": "user", "content": _d()}, {"role": "assistant", "content": _d()}]
-        history[:] = pre + gap + post
-    else: history[:] = pre + post
-    STATS.update(ctx=(c := cost(history)), msgs=len(history)); print(f'[Debug] Trimmed context, current: {c} chars, {len(history)} messages.')
+    # Cut only at protocol-closed boundaries. A retained prefix must also end
+    # outside a tool transaction; role boundaries alone are not sufficient.
+    pending = set()
+    boundaries = [0]
+    for i, msg in enumerate(history):
+        for block in msg.get('content', []) if isinstance(msg.get('content'), list) else []:
+            if not isinstance(block, dict): continue
+            if block.get('type') == 'tool_use': pending.add(block.get('id'))
+            elif block.get('type') == 'tool_result': pending.discard(block.get('tool_use_id'))
+        if not pending: boundaries.append(i + 1)
+    prefix = max((i for i in boundaries if i <= kp), default=0)
+    cut = prefix
+    for end in boundaries:
+        if end <= prefix or end >= len(history): continue
+        # Keep at least the latest four messages, extending to a closed boundary.
+        if len(history) - end < 4: break
+        cut = end
+        if cost(history[:prefix] + history[end:]) <= target: break
+    if cut > prefix:
+        history[:] = history[:prefix] + history[cut:]
+    STATS.update(ctx=cost(history), msgs=len(history))
+
 
 def auto_make_url(base, path):
     b, p = base.rstrip('/'), path.strip('/')
@@ -579,7 +579,7 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
                 emsg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
                 _raise_if_retryable_overload(emsg)
                 if emsg: content_text += f"!!!Error: {emsg}"; yield f"!!!Error: {emsg}"
-                break
+                return [{"type": "text", "text": content_text, "_error": {"stage": "stream", "code": err.get("code") if isinstance(err, dict) else None, "message": emsg}}]
             elif etype == "response.completed":
                 usage = evt.get("response", {}).get("usage", {})
                 _record_usage(usage, api_mode)
@@ -601,7 +601,7 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
                 emsg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
                 _raise_if_retryable_overload(emsg)
                 if emsg: content_text += f"!!!Error: {emsg}"; yield f"!!!Error: {emsg}"
-                break
+                return [{"type": "text", "text": content_text, "_error": {"stage": "stream", "code": err.get("code") if isinstance(err, dict) else None, "message": emsg}}]
         _ft = _esc.flush()
         if _ft: yield _ft
         if think_open: yield "\n</thinking>\n"
@@ -616,7 +616,7 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
             for i, inp in enumerate(inps):
                 bid = fc["id"] or ''
                 if len(inps) > 1: bid = f"{bid}_{i}" if bid else f"split_{i}"
-                blocks.append({"type": "tool_use", "id": bid, "name": fc["name"], "input": inp})
+                blocks.append({"type": "tool_use", "id": bid, "name": fc["name"], "input": inp, **({"_raw_arguments": fc["args"]} if len(inps) == 1 else {})})
         return blocks
     else:
         tc_buf = {}  # index -> {id, name, args}
@@ -631,6 +631,13 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
             if data_str == "[DONE]": break
             try: evt = json.loads(data_str)
             except: continue
+            if evt.get("error"):
+                detail = evt["error"]
+                msg = detail.get("message", str(detail)) if isinstance(detail, dict) else str(detail)
+                err = "!!!Error: " + msg
+                yield err
+                return [{"type": "text", "text": content_text + err,
+                         "_error": {"stage": "stream", "message": msg}}]
             ch = (evt.get("choices") or [{}])[0]
             delta = ch.get("delta") or {}
             if ch.get("finish_reason"): finish_reason = ch["finish_reason"]
@@ -682,7 +689,7 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
             for i, inp in enumerate(inps):
                 bid = tc["id"] or ''
                 if len(inps) > 1: bid = f"{bid}_{i}" if bid else f"split_{i}"
-                blocks.append({"type": "tool_use", "id": bid, "name": tc["name"], "input": inp})
+                blocks.append({"type": "tool_use", "id": bid, "name": tc["name"], "input": inp, **({"_raw_arguments": tc["args"]} if len(inps) == 1 else {})})
         return blocks
 
 def _record_usage(usage, api_mode):
@@ -792,6 +799,7 @@ def _rebuild_ssh_tunnel(sess):
 
 def _stream_with_retry(sess, url, headers, payload, parse_fn):
     STATS['session'] = sess.name
+    sess.last_error = None
     _RETRYABLE = {408, 409, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526, 527, 529}
     cap = float(getattr(sess, 'max_retry_after', 60.0))
     def _delay(resp, attempt):
@@ -824,7 +832,12 @@ def _stream_with_retry(sess, url, headers, payload, parse_fn):
                     try: body = r.text.strip()[:500]
                     except: body = ""
                     err = f"!!!Error: HTTP {r.status_code}" + (f" (retry-after > {cap:.0f}s)" if d is None and r.status_code in _RETRYABLE and attempt < sess.max_retries else "") + (f": {body}" if body else "")
-                    yield err; return [{"type": "text", "text": err}]
+                    try: detail = r.json().get('error', {})
+                    except Exception: detail = {}
+                    sess.last_error = {"stage": "http", "status": r.status_code,
+                                       "code": detail.get('code') if isinstance(detail, dict) else None,
+                                       "message": err, "request_id": r.headers.get('x-request-id')}
+                    yield err; return [{"type": "text", "text": err, "_error": sess.last_error}]
                 gen = parse_fn(r)
                 try:
                     while True:
@@ -849,10 +862,10 @@ def _stream_with_retry(sess, url, headers, payload, parse_fn):
                 print(f"[LLM Retry] {type(e).__name__}, retry in {d:.1f}s ({attempt+1}/{sess.max_retries+1})")
                 if _sleep(d): return []
                 continue
-            yield err; return [{"type": "text", "text": err}]
+            yield err; return [{"type": "text", "text": err, "_error": {"stage": "transport", "message": err}}]
         except Exception as e:
             err = f"\n\n[!!! 流异常中断 {type(e).__name__}: {e} !!!]" if streamed else f"!!!Error: {type(e).__name__}: {e}"
-            yield err; return [{"type": "text", "text": err}]
+            yield err; return [{"type": "text", "text": err, "_error": {"stage": "transport", "message": err}}]
 
 def _openai_stream(sess, messages):
     model, api_mode = sess.model, sess.api_mode
@@ -962,7 +975,7 @@ def _msgs_claude2oai(messages):
                 elif b.get("type") == "tool_use":
                     tool_calls.append({
                         "id": b.get("id") or '', "type": "function",
-                        "function": {"name": b.get("name", ""), "arguments": json.dumps(b.get("input", {}), ensure_ascii=False)}
+                        "function": {"name": b.get("name", ""), "arguments": b.get("_raw_arguments", json.dumps(b.get("input", {}), ensure_ascii=False))}
                     })
             m = {"role": "assistant"}
             if reasoning: m["reasoning_content"] = reasoning
@@ -1187,6 +1200,9 @@ class NativeClaudeSession(BaseSession):
         if self.max_tokens is None: self.max_tokens = 8192
         model = self.model
         messages = _fix_messages(messages)
+        for message in messages:
+            for block in message.get('content', []):
+                if isinstance(block, dict): block.pop('_raw_arguments', None)
         if 'claude' in model.lower(): messages = _drop_unsigned_thinking(messages)
         messages = _ensure_thinking_blocks(messages, self.model)
         beta_parts = ["claude-code-20250219", "interleaved-thinking-2025-05-14", "redact-thinking-2026-02-12", "thinking-token-count-2026-05-13", "context-management-2025-06-27", "prompt-caching-scope-2026-01-05", "mid-conversation-system-2026-04-07", "effort-2025-11-24", "fallback-credit-2026-06-01"]
@@ -1227,17 +1243,26 @@ class NativeClaudeSession(BaseSession):
         parse_fn = (lambda r: _parse_claude_sse(r.iter_lines())) if self.stream else (lambda r: _parse_claude_json(r.json()))
         return (yield from _stream_with_retry(self, url, headers, payload, parse_fn))
 
-    def ask(self, msg):
-        assert type(msg) is dict
+    def ask(self, msg, retry_notice=None):
+        assert retry_notice is not None or type(msg) is dict
         with self.lock:
-            self.history.append(msg)
-            trim_messages_history(self.history, self)
-            messages = [{"role": m["role"], "content": list(m["content"])} for m in self.history]
+            if retry_notice is None:
+                self.history.append(msg)
+                trim_messages_history(self.history, self)
+            messages = copy.deepcopy(self.history)
+        if retry_notice:
+            messages.append({"role": "user", "content": [{"type": "text", "text": retry_notice}]})
         content_blocks = None
         gen = self.raw_ask(messages)
         try:
             while True: yield next(gen)
         except StopIteration as e: content_blocks = e.value or []
+        error = next((b.get('_error') for b in content_blocks if b.get('_error')), None)
+        self.last_error = error
+        if error:
+            response = MockResponse('', error.get('message', 'Model request failed'), [], repr(content_blocks))
+            response.error = error
+            return response
         if self.omit_thinking:
             # Some compatible servers put CoT in either a thinking block or
             # literal <think> tags.  Neither belongs in Qwen history.
@@ -1603,6 +1628,14 @@ class NativeToolClient:
         self.backend.system = combined
     def chat(self, messages, tools=None):
         if tools: self.backend.tools = tools
+        retry_notice = getattr(self, '_retry_requested', None)
+        if retry_notice:
+            self._retry_requested = None
+            resp = yield from self.backend.ask(None, retry_notice=retry_notice)
+            if resp and not getattr(resp, 'error', None):
+                self._pending_tool_ids = [tc.id for tc in resp.tool_calls]
+            if resp: _write_llm_log('Response', resp.raw, self.log_path, model=self.backend.model)
+            return resp
         if not self.backend.history: self._pending_tool_ids = []
         combined_content = []; resp = None; tool_results = []
         for msg in messages:

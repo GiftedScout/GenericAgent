@@ -117,6 +117,9 @@ def agent_runner_loop(client, system_prompt, user_input, handler, tools_schema,
             if cleaned: yield cleaned + '\n'
         _hook('llm_after', locals())
 
+        if getattr(response, 'error', None):
+            handler._last_exit = {'result': 'MODEL_ERROR', 'error': response.error}
+            return
         if not response.tool_calls: tool_calls = [{'tool_name': 'no_tool', 'args': {}}]
         else: tool_calls = [{'tool_name': tc.function.name, 'args': json.loads(tc.function.arguments), 'id': tc.id}
                           for tc in response.tool_calls]
