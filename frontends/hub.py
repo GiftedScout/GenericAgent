@@ -1,10 +1,11 @@
 """GA Hub: `import hub` -> client (silent if no server); `python hub.py` -> WS server.
-    hub.connect(agent, 'stapp')     # or override any hook: connect(a, n, put_task=, get_outputs=, abort=)
+    hub.connect(agent, 'stapp')     # or override any hook: connect(a, n, put_task=, get_outputs=, abort=, llm=)
     default put -> 'busy' if agent.is_running, else parks plain text in agent._hub_inbox for the UI
 HTTP (errors = {'error','code'} + status: offline/gone 404, busy 409, timeout 504, nosupport 501, badop 400):
     GET peers -> [{name,title,n_msgs,sig}] | {name}/messages?detail=1&sig= -> {title,tasks:[{i,input,steps:
     [{j,title,n}]}],sig} or {same:1,sig} | {name}/seg/{i}/{j}?off=N -> {content,off,n} (step bodies, tailable)
     POST {name}/put {"text":..} -> {ok:1} | {name}/abort -> {ok:1}
+    GET {name}/llms -> {cur,items:[name]} | POST {name}/llm {"no":N} -> {ok:1,cur} (switch LLM channel, busy 409)
 """
 import os, re, sys, json, time, asyncio, threading, random, hmac, hashlib
 PORT = int(os.environ.get('GA_HUB_PORT', 19736))
@@ -15,8 +16,8 @@ TITLE_MIN = 12                    # a too short last input gets the previous one
 NOISE = re.compile(r'\**LLM Running \(Turn \d+\) \.\.\.\**|`{3,}.*?`{3,}|<thinking>.*?</thinking>', re.DOTALL)
 
 class HubClient:
-    def __init__(self, name, put_task=None, get_outputs=None, abort=None, state=None, on_ev=None, sub=(), fixed=False):
-        self.name, self.put_task, self.get_outputs, self.abort = name, put_task, get_outputs, abort
+    def __init__(self, name, put_task=None, get_outputs=None, abort=None, state=None, on_ev=None, sub=(), fixed=False, llm=None, inject=None):
+        self.name, self.put_task, self.get_outputs, self.abort, self.llm, self.inject = name, put_task, get_outputs, abort, llm, inject
         self.state, self.on_ev, self.sub, self.fixed = state or dict, on_ev, list(sub), fixed  # fixed -> stable name
         self._tc, self._ws, self._lp = {}, None, None   # (i,j) -> (fp, title): a finished step is never re-scanned
     def emit(self, topic, data=None, to=None):          # thread-safe fire-and-forget from the host thread
@@ -31,7 +32,7 @@ class HubClient:
             try:
                 async with websockets.connect(URL, open_timeout=3, max_size=None) as ws:
                     self._ws, self._lp = ws, asyncio.get_running_loop()
-                    caps = [k for k, v in (('get', self.get_outputs), ('put', self.put_task), ('abort', self.abort)) if v]
+                    caps = [k for k, v in (('get', self.get_outputs), ('put', self.put_task), ('abort', self.abort), ('llm', self.llm), ('inject', self.inject)) if v]
                     await ws.send(json.dumps({'op': 'hello', 'name': self.name, 'pid': os.getpid(),
                                               'fixed': self.fixed, 'caps': caps, 'sub': self.sub}))
                     async for raw in ws: await self._on_cmd(ws, json.loads(raw))
@@ -76,7 +77,27 @@ class HubClient:
         if op in ('get', 'seg'): data = await asyncio.to_thread(self._build if op == 'get' else self._seg, c)
         elif op == 'put_task': data = (c.get('text') and await asyncio.to_thread(self.put_task, c['text'])) or {'ok': 1}
         elif op == 'abort': data = (await asyncio.to_thread(self.abort) or {'ok': 1}) if self.abort else {'error': 'no abort hook', 'code': 'nosupport'}
+        elif op == 'llm': data = await asyncio.to_thread(self.llm, c.get('no')) if self.llm else {'error': 'no llm hook', 'code': 'nosupport'}
+        elif op == 'inject': data = (await asyncio.to_thread(self.inject, c.get('kind'), c.get('text')) or {'ok': 1}) if self.inject else {'error': 'no inject hook', 'code': 'nosupport'}
         await ws.send(json.dumps({'op': 'r', 'id': c.get('id'), 'name': self.name, 'data': data}, default=str))
+
+_ROUTES = {'put': ('POST', 'put'), 'abort': ('POST', 'abort'), 'intervene': ('POST', 'intervene'), 'keyinfo': ('POST', 'keyinfo'),
+           'llm': ('POST', 'llm'), 'llms': ('GET', 'llms'), 'messages': ('GET', 'messages')}
+def call(name=None, op='peers', timeout=20, **kw):
+    """Drive any registered GA over HTTP (token from temp/.hub_token), e.g. from another GA:
+    hub.call('stapp-123', 'intervene', text=...) | 'keyinfo' (running only) | 'put' (idle only) | 'abort' | 'messages' | 'llm', no=N"""
+    import urllib.request, urllib.parse
+    tok = os.environ.get('GA_HUB_TOKEN') or open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                                              'temp', '.hub_token'), encoding='utf-8').read().strip()
+    if op == 'peers': method, path = 'GET', '/api/peers'
+    else: method, sub = _ROUTES[op]; path = f'/api/{urllib.parse.quote(name)}/{sub}'
+    q = {'t': tok, **(kw if method == 'GET' else {})}
+    req = urllib.request.Request(f'http://127.0.0.1:{WEB_PORT}{path}?{urllib.parse.urlencode(q)}', method=method,
+                                 data=json.dumps(kw).encode() if method == 'POST' else None, headers={'Content-Type': 'application/json'})
+    try: r = urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=timeout).read()
+    except urllib.error.HTTPError as e: r = e.read()
+    return json.loads(r or b'{}')
+def peers(): return call()
 
 def serve():
     """Bring the hub up on demand: any host may spawn it, the port is the lock (a loser just exits).
@@ -91,7 +112,7 @@ def serve():
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                      creationflags=0x08000008 if os.name == 'nt' else 0)   # DETACHED | NO_WINDOW
 
-def connect(agent, name=None, put_task=None, get_outputs=None, abort=None, fold=None):
+def connect(agent, name=None, put_task=None, get_outputs=None, abort=None, fold=None, llm=None, inject=None):
     """One line to wire a GA host: `hub.connect(agent, 'stapp')`; any hook can still be overridden.
     Default put refuses while the agent is busy (a remote must not cut in line), else it parks
     plain text in agent._hub_inbox; the UI feeds it through its own input entrance when idle,
@@ -101,13 +122,27 @@ def connect(agent, name=None, put_task=None, get_outputs=None, abort=None, fold=
         if not isinstance(text, str): return {'error': 'text must be a string', 'code': 'badop'}
         if getattr(agent, 'is_running', False): return {'error': f'peer {name} is busy', 'code': 'busy'}
         agent._hub_inbox.append(text)   # no put_task here: the UI's unified entrance sends it
+    def _llm(no=None):                  # no=None -> list; no=N -> switch channel (same as the stapp sidebar)
+        if no is None: return {'cur': agent.llm_no, 'items': [n for _, n, _ in agent.list_llms()]}
+        if getattr(agent, 'is_running', False): return {'error': f'peer {name} is busy', 'code': 'busy'}
+        if not 0 <= no < len(agent.list_llms()): return {'error': f'no llm #{no}', 'code': 'badop'}
+        agent.next_llm(no); return {'ok': 1, 'cur': no}
+    def _inject(kind, text):            # mid-run steering, read by ga turn_end as [MASTER] (same as _intervene/_keyinfo files)
+        attr = {'intervene': 'intervene', 'keyinfo': 'extrakeyinfo'}.get(kind)
+        if not attr or not isinstance(text, str) or not text: return {'error': 'kind must be intervene|keyinfo, text non-empty', 'code': 'badop'}
+        if not getattr(agent, 'is_running', False): return {'error': f'peer {name} is idle, use put', 'code': 'idle'}
+        old = getattr(agent, attr, None)
+        setattr(agent, attr, f'{old}\n\n{text}' if old else text)   # append: several injects in one turn all land
     try:
         try: serve()                                   # best effort: bring up a local hub if none is listening
         except Exception: pass
         if not hasattr(agent, '_hub_inbox'): agent._hub_inbox = []
         agent._hub = HubClient(name or getattr(agent, 'name', 'agent'), put_task or _put,
                                get_outputs or (lambda: agent.all_outputs), abort or agent.abort,
-                               state=lambda: {'run': bool(getattr(agent, 'is_running', False))})
+                               llm=llm or (_llm if hasattr(agent, 'list_llms') else None),
+                               inject=inject or (_inject if hasattr(agent, 'intervene') else None),
+                               state=lambda: {'run': bool(getattr(agent, 'is_running', False)),
+                                              'llm': getattr(getattr(agent, 'llmclient', None), 'name', '')})
         return agent._hub.start()
     except Exception: return None
 
@@ -116,7 +151,15 @@ if __name__ == '__main__':
     from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Response
     from fastapi.responses import FileResponse, JSONResponse; import uvicorn
     HERE, OK_ORIGIN = os.path.dirname(os.path.abspath(__file__)), ('', f'http://127.0.0.1:{PORT}', f'http://localhost:{PORT}')
-    STATUS = {'offline': 404, 'gone': 404, 'timeout': 504, 'nosupport': 501, 'badop': 400, 'busy': 409}
+    TOKEN_FILE = os.path.join(os.path.dirname(HERE), 'temp', '.hub_token')   # detached spawn drops stdout: token lives here
+    if not os.environ.get('GA_HUB_TOKEN'):                                   # env > persisted file > fresh random
+        try: TOKEN = open(TOKEN_FILE, encoding='utf-8').read().strip() or TOKEN
+        except OSError: pass
+    try:
+        os.makedirs(os.path.dirname(TOKEN_FILE), exist_ok=True)
+        with open(TOKEN_FILE, 'w', encoding='utf-8') as f: f.write(TOKEN)
+    except OSError: pass
+    STATUS = {'offline': 404, 'gone': 404, 'timeout': 504, 'nosupport': 501, 'badop': 400, 'busy': 409, 'idle': 409}
     app, peers, meta, waits, seq, pcache, pdead = FastAPI(), {}, {}, {}, [0], {}, {}  # ws / hello / futures / row / probe
     @app.middleware('http')
     async def guard(req: Request, call_next):
@@ -175,10 +218,10 @@ if __name__ == '__main__':
             if 'get' not in caps: rows.append({'name': n, 'title': '', 'n_msgs': 0, 'sig': None, 'caps': caps}); continue
             if r is None or r.get('error') or (r.get('same') and n in pcache):   # busy/skipped/idle -> last row
                 rows.append({**(pcache.get(n) or {'name': n, 'title': '?', 'n_msgs': 0, 'sig': None}),
-                             'caps': caps, 'run': (r or {}).get('run')}); continue
+                             'caps': caps, 'run': (r or {}).get('run'), 'llm': (r or {}).get('llm')}); continue
             msgs = sum(1 for t in r.get('tasks', []) if not (t.get('input') or '').lstrip().startswith('/'))
             rows.append({'name': n, 'title': r.get('title', '?'), 'n_msgs': msgs, 'sig': r.get('sig'),
-                         'caps': caps, 'run': r.get('run')})
+                         'caps': caps, 'run': r.get('run'), 'llm': r.get('llm')})
             if r.get('sig'): pcache[n] = rows[-1]
         for n in [x for x in pcache if x not in peers]: pcache.pop(n, None)
         if psig is None: return rows
@@ -193,8 +236,16 @@ if __name__ == '__main__':
         t = body.get('text', '')
         if not isinstance(t, str): return JSONResponse({'error': 'text must be a string', 'code': 'badop'}, 400)
         return out(await ask(name, {'op': 'put_task', 'text': t}))
+    @app.post('/api/{name}/intervene')
+    async def api_intervene(name: str, body: dict): return out(await ask(name, {'op': 'inject', 'kind': 'intervene', 'text': body.get('text')}))
+    @app.post('/api/{name}/keyinfo')
+    async def api_keyinfo(name: str, body: dict): return out(await ask(name, {'op': 'inject', 'kind': 'keyinfo', 'text': body.get('text')}))
     @app.post('/api/{name}/abort')
     async def api_abort(name: str): return out(await ask(name, {'op': 'abort'}))
+    @app.get('/api/{name}/llms')
+    async def api_llms(name: str): return out(await ask(name, {'op': 'llm'}))
+    @app.post('/api/{name}/llm')
+    async def api_llm(name: str, body: dict): return out(await ask(name, {'op': 'llm', 'no': int(body.get('no', -1))}))
     # ---- optional P2P pairing; delete this block to remove it completely ----
     try:
         from hub_p2p import install as _install_p2p
