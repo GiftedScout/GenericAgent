@@ -174,7 +174,9 @@ if continue_cmd is not None:
           repr([m['content'][:20] for m in both]))
     check("later task's answer is rebuilt", 'answer two' in joined)
     check("first answer survives the settlement boundary", 'answer one' in joined)
-    check("SLTU full L0 result is not rendered (preview only)", SECRET not in joined)
+    check("SLTU full L0 result is not rendered", SECRET not in joined)
+    check("SLTU control card is not restored", '🛠️ Tool: `start_long_term_update`' not in joined)
+    check("SLTU result preview is not restored", '📄 结果' not in joined)
     check("settlement turn text is not rendered", 'memory chatter' not in joined)
 
 print(f"\n=== {PASS} passed, {FAIL} failed ===")

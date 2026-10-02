@@ -1024,7 +1024,7 @@ class BaseSession:
         deepseek_style_history = 'deepseek' in self.model.lower() or self.ssh_tunnel is not None
         if deepseek_style_history:
             default_context_win = 80000; default_cut_msg_interval = 25
-            self.trim_keep_rate = float(cfg.get('trim_keep_rate', 0.6))
+        self.trim_keep_rate = float(cfg.get('trim_keep_rate', 0.6))
         self.context_win = cfg.get('context_win', default_context_win)
         # The configured context is the backend's real token window while GA
         # tracks history in chars; convert uniformly at ~3 chars/token.
@@ -1035,7 +1035,8 @@ class BaseSession:
             # 折算成本地序列化历史预算（保守方向）。隧道后端不再特殊化。
             self.history_char_limit = max(1, int(self.context_win or 35000) * 3)
         self.maxlen_multiplier = min(max(self.context_win / default_context_win * 0.75, 1.0), 3.0)
-        self.cut_msg_interval = int(default_cut_msg_interval * self.maxlen_multiplier)
+        self.cut_msg_interval = max(1, int(cfg.get('cut_msg_interval',
+                                                   int(default_cut_msg_interval * self.maxlen_multiplier))))
         self.trim_keep_prefix = max(0, int(cfg.get('trim_keep_prefix', 0) or 0))
         self.history = []; self.lock = threading.Lock(); self.system = ""
         self.name = cfg.get('name', self.model)

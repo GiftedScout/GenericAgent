@@ -1,6 +1,6 @@
 import json, tempfile
 from pathlib import Path
-from agent_loop import agent_runner_loop, SETTLEMENT_CONTINUATION, MEMORY_SETTLEMENT_MAX_TURNS
+from agent_loop import agent_runner_loop
 from ga import GenericAgentHandler
 from agentmain import iter_display_events
 
@@ -81,50 +81,25 @@ with tempfile.TemporaryDirectory() as td:
     assert target.read_text(encoding='utf-8') == 'after\n'
     assert handler._last_exit['result'] == 'CURRENT_TASK_DONE', handler._last_exit
     assert len(client.calls) == 15, len(client.calls)
-    # call 10 is the entry turn; call 11 gets the real L0 prompt, later calls
-    # receive only the isolated continuation.
-    entry_prompt = client.calls[11][0][0]['content']
-    assert '[后台记忆维护]' in entry_prompt
-    post = client.calls[12:]
-    assert all(m[0]['content'] == SETTLEMENT_CONTINUATION for m, _ in post), [m[0]['content'] for m, _ in post]
-    assert all('ORIGINAL USER TASK MUST NOT RETURN' not in m[0]['content'] for m, _ in post)
-    assert all(not any(x['function']['name'] == 'start_long_term_update' for x in tools) for _, tools in post)
-    assert len(handler.callback_calls) == 10, len(handler.callback_calls)
-    assert all(call[3] <= 10 for call in handler.callback_calls)
-    # The actual display consumer freezes at the settlement marker.
+    # Settlement is ordinary main-loop work: all tools and the normal callback
+    # remain available, then the final answer to the original task is displayed.
+    assert all(tools == schema() for _, tools in client.calls[10:])
+    assert len(handler.callback_calls) == 15, len(handler.callback_calls)
+    assert [e.get('settlement') for e in events if isinstance(e, dict) and 'settlement' in e] == []
     display_events = list(iter_display_events(iter(events), 'test', []))
     shown = display_events[-1]['done']
-    assert 'FINAL USER ANSWER' in shown and 'maintenance finished' not in shown
-    assert any(isinstance(e, dict) and e.get('settlement') for e in events)
-    print('E2E FILE READ/PATCH/VERIFY + DISPLAY FREEZE PASS', len(client.calls))
+    assert 'FINAL USER ANSWER' in shown and 'maintenance finished' in shown
+    print('E2E SINGLE MAIN LOOP + FINAL ANSWER PASS', len(client.calls))
 
-# A maintenance loop may exceed three turns, but is bounded at the explicit guard.
+# The regular max_turns budget applies uniformly, including after memory maintenance.
 responses = [Resp([Call(str(i), 'file_read', {'path': 'missing', 'start': 1, 'count': 1})])
              for i in range(10)]
 responses += [Resp([Call('s', 'start_long_term_update', {})])]
 responses += [Resp([Call(str(i), 'file_read', {'path': 'missing', 'start': 1, 'count': 1})])
-              for i in range(MEMORY_SETTLEMENT_MAX_TURNS)]
-client, handler, events = run(Path(tempfile.mkdtemp()), responses)
-assert handler._last_exit['result'] == 'MEMORY_SETTLEMENT_LIMIT', handler._last_exit
-assert len(client.calls) == 11 + MEMORY_SETTLEMENT_MAX_TURNS
-assert '[后台记忆维护]' in client.calls[11][0][0]['content']
-assert all(m[0]['content'] == SETTLEMENT_CONTINUATION for m, _ in client.calls[12:])
-assert len(handler.callback_calls) == 10, len(handler.callback_calls)
-assert all(call[3] <= 10 for call in handler.callback_calls)
-print('E2E 16-TURN GUARD PASS', len(client.calls))
-
-
-# Settlement entered on the last ordinary turn must still get its own budget.
-with tempfile.TemporaryDirectory() as td:
-    root = Path(td)
-    target = root / 'memory.txt'
-    target.write_text('before\n', encoding='utf-8')
-    responses = [Resp([Call(str(i), 'file_read', {'path': 'memory.txt', 'start': 1, 'count': 1})]) for i in range(10)]
-    responses += [Resp([Call('s', 'start_long_term_update', {})])]
-    responses += [Resp([Call('r', 'file_read', {'path': 'memory.txt', 'start': 1, 'count': 1})]), Resp([], 'done')]
-    client, handler, events = run(root, responses, max_turns=11)
-    assert handler._last_exit['result'] == 'CURRENT_TASK_DONE', handler._last_exit
-    assert len(client.calls) == 13, len(client.calls)
-    assert '[后台记忆维护]' in client.calls[11][0][0]['content']
-    assert client.calls[12][0][0]['content'] == SETTLEMENT_CONTINUATION
-    print('E2E LAST-ORDINARY-TURN SETTLEMENT PASS', len(client.calls))
+              for i in range(4)]
+client, handler, events = run(Path(tempfile.mkdtemp()), responses, max_turns=12)
+assert handler._last_exit['result'] == 'MAX_TURNS_EXCEEDED', handler._last_exit
+assert len(client.calls) == 12, len(client.calls)
+assert all(tools == schema() for _, tools in client.calls)
+assert len(handler.callback_calls) == 12, len(handler.callback_calls)
+print('E2E ORDINARY TURN BUDGET APPLIES THROUGHOUT PASS', len(client.calls))

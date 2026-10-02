@@ -24,7 +24,23 @@ def _rel_time(mtime):
 def _pairs(content):
     blocks, pairs, pending = _BLOCK_RE.findall(content or ''), [], None
     for label, body in blocks:
-        if label == 'Prompt': pending = body.strip()
+        if label == 'Prompt':
+            current = body.strip()
+            if pending is not None:
+                # Interrupted/retried requests can log consecutive Prompts.
+                # Preserve native blocks (especially tool results) instead of
+                # orphaning the previous assistant's calls. A retry may repeat
+                # blocks; keep those from the latest Prompt only once.
+                try:
+                    old, new = json.loads(pending), json.loads(current)
+                    if (old.get('role') == new.get('role') == 'user'
+                            and isinstance(old.get('content'), list)
+                            and isinstance(new.get('content'), list)):
+                        new['content'] = [b for b in old['content'] if b not in new['content']] + new['content']
+                        current = json.dumps(new, ensure_ascii=False)
+                except (ValueError, TypeError, AttributeError):
+                    pass  # Legacy text logs keep the last-Prompt semantics.
+            pending = current
         elif pending is not None:
             pairs.append((pending, body.strip())); pending = None
     return pairs
@@ -122,8 +138,9 @@ def parse_native_log(path, allow_empty=False):
     """Parse a native `model_responses_*.txt` log into backend.history.
 
     Public wrapper around the mature `/continue` parser. It intentionally only
-    restores complete Prompt→Response pairs; dangling Prompt / partial turns keep
-    the current continue semantics and are ignored. Returns:
+    restores complete Prompt→Response pairs, merging consecutive native Prompts
+    so interrupted requests cannot lose tool results. A dangling final Prompt
+    is still ignored. Returns:
     - list (possibly [] when allow_empty=True) on native success;
     - None when the file is unreadable / non-native / empty without allow_empty.
     """
@@ -582,10 +599,30 @@ _INJECT_MARKERS = ('### [WORKING MEMORY]', '[SYSTEM TIPS]', '[SYSTEM]', '[System
 # view never showed.
 _RETRY_RE = re.compile(r'\[ERROR\]\s+(?:Blank response|Incomplete response|max_tokens limit)')
 
-# do_start_long_term_update's next_prompt marks the boundary between the
-# user-facing answer and the background memory-maintenance sub-loop. Live mode
-# freezes the display there, so replay must stop at the same place.
+# Memory maintenance is internal, but current sessions answer the original task
+# AFTER maintenance. Legacy sessions had already answered BEFORE this stage.
 _SETTLEMENT_PROMPT_MARK = '[后台记忆维护]'
+
+
+def _memory_replay_phase(prompt_body):
+    """Read the actual control header, never markers quoted in user/history text."""
+    try:
+        msg = json.loads(prompt_body)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(msg, dict):
+        return None
+    content = msg.get('content', [])
+    blocks = [{'type': 'text', 'text': content}] if isinstance(content, str) else content
+    for block in blocks or []:
+        if not isinstance(block, dict) or block.get('type') != 'text':
+            continue
+        value = (block.get('text') or '').lstrip()
+        if value.startswith('### ' + _SETTLEMENT_PROMPT_MARK):
+            header = value.split('\n', 1)[0]
+            return 'current' if '当前任务中的静默记忆结算步骤' in header else 'legacy'
+    return None
+
 
 # project_mode 插件把 `\n\n---\n[PROJECT MODE: <name>]\n…\n---` 追加到当轮 user
 # message(见 plugins/project_mode._build_injection)。runtime history 尊重日志真实 prompt,
@@ -700,22 +737,13 @@ def _format_response_segment(response_body, tool_results):
             s = b.get('text', '')
             if isinstance(s, str) and s.strip(): texts.append(s)
         elif t == 'tool_use':
+            # Internal control call, not part of the restored user answer.
+            if b.get('name') == 'start_long_term_update':
+                continue
             tool_parts.append(_format_tool_use(b))
             tid = b.get('id') or ''
             if tid and tid in tool_results:
-                # start_long_term_update triggers the background settlement sub-loop.
-                # In the live view (agent_runner_loop) only its *preview*
-                # ("📄 结果 N 行") reached the display channel; the full result is
-                # the L0 memory SOP and went to history only, after which the
-                # settlement event froze the display.  Rendering the full fence
-                # here would dump the L0 SOP into the answer bubble, so mirror the
-                # live preview for this one tool.
-                if b.get('name') == 'start_long_term_update':
-                    body = tool_results[tid]
-                    n = body.count('\n') + 1 if body else 1
-                    tool_parts.append(f"📄 结果 {n} 行\n")
-                else:
-                    tool_parts.append(tool_results[tid])
+                tool_parts.append(tool_results[tid])
     return '\n\n'.join(p for p in ['\n\n'.join(texts), '\n'.join(tool_parts)] if p)
 
 
@@ -897,21 +925,33 @@ def extract_ui_messages(path):
     for i in range(len(pairs) - 1):
         next_tr[i] = _tool_results_from_prompt(pairs[i + 1][0])
 
-    out, assistant, round_turn = [], None, 0
+    out, assistant, round_turn, memory_phase = [], None, 0, None
     for i, (prompt, response) in enumerate(pairs):
-        # Settlement (memory-maintenance) turns were never shown in the live view,
-        # so they must not be rebuilt into a bubble.  Crucially this is a *skip*,
-        # not a `break`: a log can hold several user tasks, each followed by its
-        # own settlement block, and a `break` at the first mark would silently drop
-        # every real task that came after it.  Close the in-flight bubble and keep
-        # going so the next real user task still renders.
-        if _SETTLEMENT_PROMPT_MARK in prompt:
-            if assistant is not None:
-                out.append(assistant)
-                assistant = None
-            continue
-        user = _user_text(prompt)
-        seg = _format_response_segment(response, next_tr[i])
+        phase = _memory_replay_phase(prompt)
+        if phase is not None:
+            memory_phase = phase
+            user = ''
+        else:
+            user = _user_text(prompt)
+        if user:
+            memory_phase = None  # never swallow a later real user task
+        if memory_phase is not None:
+            # Legacy settlement never answered the user. Current maintenance
+            # ends with a normal no-tool answer; keep it in the original bubble.
+            # Keep state across tool results/retries lacking a control header.
+            try:
+                blocks = ast.literal_eval(response)
+            except (ValueError, SyntaxError):
+                blocks = []
+            if (memory_phase == 'legacy' or not isinstance(blocks, list)
+                    or any(isinstance(b, dict) and b.get('type') == 'tool_use'
+                           for b in blocks)):
+                continue
+            seg = _assistant_text(response)
+            if not seg.strip():
+                continue
+        else:
+            seg = _format_response_segment(response, next_tr[i])
         if user:
             if assistant is not None: out.append(assistant)
             out.append({'role': 'user', 'content': user})
