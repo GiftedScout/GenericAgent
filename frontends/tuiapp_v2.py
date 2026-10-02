@@ -23,6 +23,8 @@ import threading
 import time
 import subprocess
 import shutil
+import pathlib
+from urllib.parse import urlsplit, unquote
 
 # Local: cross-platform shortcut-label formatter (Win/Linux "Ctrl+B" vs mac "⌃B").
 # Imported early because _TIPS at module load time uses fmt_key().
@@ -1090,10 +1092,112 @@ def render_folded_text(text: str) -> str:
 
 
 class HardBreakMarkdown(Markdown):
-    # softbreak → hardbreak so multi-line agent logs aren't collapsed into one line.
-    def __init__(self, markup, **kwargs):
+    # Rich-generated automatic links are disabled; only explicitly-authored
+    # Markdown links survive after their destination is validated below.
+    hyperlinks = True
+
+    def __init__(self, markup, *, link_root=None, **kwargs):
+        kwargs.setdefault("hyperlinks", True)
         super().__init__(adapt_math_markdown(markup), **kwargs)
+        self._autolink_plain_http(self.parsed)
+        self._validate_link_targets(self.parsed, os.path.abspath(link_root or os.getcwd()))
         self._soft_to_hard(self.parsed)
+
+    @classmethod
+    def _autolink_plain_http(cls, tokens, in_link=False):
+        """Turn bare HTTP(S) URLs in ordinary text into real Markdown links."""
+        from markdown_it.token import Token
+
+        url_re = re.compile(r'''https?://[^\s<>"']+''', re.IGNORECASE)
+        punctuation = ".,;:!?。！，；：！？"
+        i = 0
+        while i < len(tokens):
+            token = tokens[i]
+            if token.type == "link_open":
+                in_link = True
+            elif token.type == "link_close":
+                in_link = False
+            if token.children:
+                cls._autolink_plain_http(token.children, in_link)
+            if token.type != "text" or in_link or not token.content:
+                i += 1
+                continue
+
+            pieces = []
+            last = 0
+            for match in url_re.finditer(token.content):
+                raw = match.group(0)
+                url = raw.rstrip(punctuation)
+                # Strip only unmatched closing parentheses/brackets; balanced
+                # delimiters are valid URL path characters.
+                for close, opening in ((")", "("), ("]", "["), ("}", "{")):
+                    while url.endswith(close) and url.count(close) > url.count(opening):
+                        url = url[:-1]
+                if not url or not url.lower().startswith(("http://", "https://")):
+                    continue
+                end = match.start() + len(url)
+                if end <= match.start():
+                    continue
+                pieces.extend((token.content[last:match.start()], url))
+                last = end
+            if not pieces:
+                i += 1
+                continue
+            pieces.append(token.content[last:])
+            replacement = []
+            for part in pieces:
+                if part and part.lower().startswith(("http://", "https://")):
+                    replacement.extend((
+                        Token(type="link_open", tag="a", nesting=1,
+                              attrs={"href": part}, level=token.level),
+                        Token(type="text", tag="", nesting=0, content=part,
+                              level=token.level + 1),
+                        Token(type="link_close", tag="a", nesting=-1,
+                              level=token.level),
+                    ))
+                elif part:
+                    replacement.append(Token(type="text", tag="", nesting=0,
+                                             content=part, level=token.level))
+            tokens[i:i + 1] = replacement
+            i += len(replacement)
+
+    @classmethod
+    def _validate_link_targets(cls, tokens, root):
+        root_path = pathlib.Path(root).resolve()
+        for token in tokens:
+            if token.type == "link_open":
+                href = str(token.attrs.get("href", ""))
+                parts = urlsplit(href)
+                scheme = parts.scheme.lower()
+                if scheme in ("http", "https") and parts.netloc:
+                    # OSC-8's http(s) target is opened by the system default browser.
+                    token.attrs["href"] = href
+                else:
+                    try:
+                        if scheme == "file":
+                            if parts.netloc not in ("", "localhost") or parts.query or parts.fragment:
+                                raise ValueError("invalid local file URI")
+                            candidate = pathlib.Path(unquote(parts.path))
+                        elif not scheme and not parts.netloc and not parts.query and not parts.fragment:
+                            candidate = pathlib.Path(unquote(parts.path)).expanduser()
+                            if not candidate.is_absolute():
+                                candidate = root_path / candidate
+                        else:
+                            raise ValueError("unsupported or malformed link target")
+                        candidate = candidate.resolve(strict=True)
+                        # OSC-8 `file:` links are delegated to the system URI
+                        # handler. Point files at their containing directory so
+                        # Ctrl-click opens the file manager instead of the file's
+                        # default editor; directories remain directly navigable.
+                        if candidate.is_file():
+                            candidate = candidate.parent
+                        token.attrs["href"] = candidate.as_uri()
+                    except (OSError, ValueError, RuntimeError):
+                        # No OSC-8 destination means this label is ordinary text,
+                        # not a misleading Ctrl-click affordance.
+                        token.attrs["href"] = ""
+            if token.children:
+                cls._validate_link_targets(token.children, root_path)
 
     @staticmethod
     def _soft_to_hard(tokens):
@@ -7959,6 +8063,9 @@ class GenericAgentTUI(App[None]):
             return 100
 
     def _render_md(self, text: str, width: int):
+        # Relative Markdown targets are resolved against this conversation's
+        # workspace (or the normal temp root), never the process CWD.
+        link_root = self._at_root()
         # Markdown via RichVisual loses segment.style.meta["offset"] so mouse selection
         # can't anchor; round-trip through ANSI → Text.from_ansi to restore selectability.
         # A parallel wide render builds a wrap-free "source" string that
@@ -7989,9 +8096,9 @@ class GenericAgentTUI(App[None]):
                         force_terminal=True, color_system="truecolor",
                         legacy_windows=False,
                         theme=_markdown_rich_theme(_palette, minimal=(self.theme != "ga-default"))
-                        ).print(HardBreakMarkdown(seg), end="")
+                        ).print(HardBreakMarkdown(seg, link_root=self._at_root()), end="")
                 Console(file=wbuf, width=10000, force_terminal=False,
-                        legacy_windows=False).print(HardBreakMarkdown(seg), end="")
+                        legacy_windows=False).print(HardBreakMarkdown(seg, link_root=self._at_root()), end="")
                 margin = " " * _DIFF_MARGIN
                 nar = "\n".join(margin + l for l in nbuf.getvalue().rstrip("\n").split("\n"))
                 return nar, wbuf.getvalue().rstrip("\n")
@@ -8044,12 +8151,12 @@ class GenericAgentTUI(App[None]):
             Console(file=buf, width=render_w, force_terminal=True,
                     color_system="truecolor", legacy_windows=False,
                     theme=_markdown_rich_theme(_palette, minimal=(self.theme != "ga-default"))
-                    ).print(HardBreakMarkdown(text), end="")
+                    ).print(HardBreakMarkdown(text, link_root=link_root), end="")
             narrow_raw = buf.getvalue().rstrip("\n")
 
             wide_buf = StringIO()
             Console(file=wide_buf, width=10000, force_terminal=False,
-                    legacy_windows=False).print(HardBreakMarkdown(text), end="")
+                    legacy_windows=False).print(HardBreakMarkdown(text, link_root=link_root), end="")
             wide_raw = wide_buf.getvalue().rstrip("\n")
 
             # Splice diff blocks over their sentinel lines (ANSI → narrow,

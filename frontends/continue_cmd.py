@@ -24,7 +24,23 @@ def _rel_time(mtime):
 def _pairs(content):
     blocks, pairs, pending = _BLOCK_RE.findall(content or ''), [], None
     for label, body in blocks:
-        if label == 'Prompt': pending = body.strip()
+        if label == 'Prompt':
+            current = body.strip()
+            if pending is not None:
+                # Interrupted/retried requests can log consecutive Prompts.
+                # Preserve native blocks (especially tool results) instead of
+                # orphaning the previous assistant's calls. A retry may repeat
+                # blocks; keep those from the latest Prompt only once.
+                try:
+                    old, new = json.loads(pending), json.loads(current)
+                    if (old.get('role') == new.get('role') == 'user'
+                            and isinstance(old.get('content'), list)
+                            and isinstance(new.get('content'), list)):
+                        new['content'] = [b for b in old['content'] if b not in new['content']] + new['content']
+                        current = json.dumps(new, ensure_ascii=False)
+                except (ValueError, TypeError, AttributeError):
+                    pass  # Legacy text logs keep the last-Prompt semantics.
+            pending = current
         elif pending is not None:
             pairs.append((pending, body.strip())); pending = None
     return pairs
@@ -122,8 +138,9 @@ def parse_native_log(path, allow_empty=False):
     """Parse a native `model_responses_*.txt` log into backend.history.
 
     Public wrapper around the mature `/continue` parser. It intentionally only
-    restores complete Prompt→Response pairs; dangling Prompt / partial turns keep
-    the current continue semantics and are ignored. Returns:
+    restores complete Prompt→Response pairs, merging consecutive native Prompts
+    so interrupted requests cannot lose tool results. A dangling final Prompt
+    is still ignored. Returns:
     - list (possibly [] when allow_empty=True) on native success;
     - None when the file is unreadable / non-native / empty without allow_empty.
     """

@@ -728,8 +728,8 @@ class GenericAgentHandler(BaseHandler):
         return StepOutcome(response, next_prompt=None)
     
     def do_start_long_term_update(self, args, response):
-        '''Agent觉得当前任务完成后有重要信息需要记忆时调用此工具。'''
-        prompt = '''### [后台记忆维护] 这是任务完成后的内部结算阶段，**不是新的用户请求**。你对用户的最终答复已在上一轮给出；本阶段只做记忆文件维护，**严禁**再输出任何面向用户的文字、复述/总结任务、或转储/复述 L1/L2 记忆内容——否则会用记忆内容盖掉对用户的真实回答，用户最终看到的就变成了记忆而非答案。
+        '''提示模型先静默完成记忆维护，再回答原始用户请求。'''
+        prompt = '''### [后台记忆维护] 这是当前任务中的静默记忆结算步骤，不是新的用户请求。调用本工具前不得输出最终答复；记忆处理期间不向用户汇报记忆变更。处理完后回到原始用户请求，在结束前给出完整、直接的答案。不得只报告记忆内容。
 请提取最近一次任务中【事实验证成功且长期有效】的环境事实、用户偏好、重要步骤更新记忆；若已在更新记忆过程或没有值得记忆的点，忽略本次调用（可直接结束，无需输出任何文字）。
 **如果没有经验证的，未来能用上的信息，忽略本次调用！**
 **只能提取行动验证成功的信息**：
@@ -745,9 +745,9 @@ class GenericAgentHandler(BaseHandler):
         if self.current_turn < 10:
             result, prompt = 'start_long_term_update is only used after completing a long turn task!', '\n'
             return StepOutcome(result, next_prompt=prompt, settlement=False)
-        # Enter bounded memory-only settlement; the main task is already done,
-        # but the model may still perform the approved memory file operations.
-        return StepOutcome(result, next_prompt=prompt, settlement=True)
+        # Continue in the regular conversation loop: memory tools and the
+        # original task must share history, and the assistant must answer after.
+        return StepOutcome(result, next_prompt=prompt, settlement=False)
 
     def _fold_earlier(self, lines):
         FALLBACK = '直接回答了用户问题'

@@ -185,7 +185,8 @@ big = "推" * 500
 out6, blocks6 = drain_ret(_parse_openai_sse, _frames(
     _ccd(rc='把 yield "\\n</thinking>\\n"; 改转义'),
     _ccd(content="<th"), _ccd(content="ink>" + big), _ccd(content="推推"),
-    _ccd(content="</think>\n\n"),
+    # Real closing tags are line-anchored; inline quoted tags remain CoT text.
+    _ccd(content="\n</think>\n\n"),
     _ccd(content='<tool_call>{"name":"run","arguments":{"x":1}}</tool_call>'),
 ), api_mode="chat_completions", omit_thinking=True)
 s6 = "".join(out6)
