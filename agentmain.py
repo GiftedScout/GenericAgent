@@ -284,7 +284,7 @@ class GenericAgent:
             trim_messages_history(be.history, be, force=True)
             after = cost()
             note = '；受最近消息/前缀/工具边界保护，未达到目标' if after > target else ''
-            display_queue.put({'done': f'✅ /compact: {before:,} → {after:,} 字符（目标 {target:,}）{note}', 'source': 'system'})
+            display_queue.put({'done': f'✅ /compact: {before / 1000:.2f}K → {after / 1000:.2f}K（目标 {target / 1000:.2f}K）{note}', 'source': 'system'})
             return None
         if raw_query.strip() == '/resume':
             return r'帮我看看最近有哪些会话可以恢复。读model_responses/目录，按修改时间取最近10个文件，从每个文件里找最后一个<history>...</history>块，用一句话总结每个会话在聊什么，列表给我选。注意读文件后要把字面的\n替换成真换行才能正确匹配。'
