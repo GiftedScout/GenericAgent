@@ -143,6 +143,8 @@ _I18N: dict[str, dict[str, str]] = {
         'help.review':          '  /review [request]    In-session code review (report inline)',
         'help.rewind':          '  /rewind [n]          Rewind the last n rounds',
         'help.continue':        '  /continue [n|name]   List / restore historical sessions',
+        'help.compact':         '  /compact             Compact context to current characters × retention rate',
+        'cmd.compact.desc':     'Compact context to current characters × retention rate',
         'help.retry':           '  /retry               Retry an interrupted request (anchor & context unchanged)',
         'help.new':             '  /new [name]          Start a new session (clears the current one)',
         'help.rename':          '  /rename <name>       Rename the current session',
@@ -416,6 +418,8 @@ _I18N: dict[str, dict[str, str]] = {
         'help.review':          '  /review [request]    in-session 代码审查（直接输出报告）',
         'help.rewind':          '  /rewind [n]          回退最近 n 轮',
         'help.continue':        '  /continue [n|name]   列出 / 恢复历史会话',
+        'help.compact':         '  /compact             按当前字符数 × 保留率手动压缩上下文',
+        'cmd.compact.desc':     '按当前字符数 × 保留率手动压缩上下文',
         'help.retry':           '  /retry               重发中断的请求（锚点与上下文不变）',
         'help.new':             '  /new [name]          新建会话（清空当前会话）',
         'help.rename':          '  /rename <name>       重命名当前会话',
@@ -1938,6 +1942,7 @@ def _cmds() -> list[tuple[str, str, str]]:
         ('/todo',     'add|ls|run|del',         _t('cmd.todo.desc')),
         ('/continue', _t('cmd.continue.arg'),   _t('cmd.continue.desc')),
         ('/retry',    '',                       _t('cmd.retry.desc', default='Retry the interrupted request (anchor & context unchanged)')),
+        ('/compact',  '',                       _t('cmd.compact.desc')),
         ('/workspace', _t('cmd.workspace.arg', default='[path|off]'),
                        _t('cmd.workspace.desc', default='设定工作目录(绝对路径)并进入项目模式')),
         ('/new',      _t('cmd.new.arg'),        _t('cmd.new.desc')),
@@ -4484,7 +4489,7 @@ class SB:
         ag = self._bridge.agent
         # /btw is deliberately NOT idle-only — a side question must be fireable
         # while the main agent runs (that's its whole purpose).
-        idle_only = {'clear', 'export', 'review', 'rewind', 'continue', 'retry'}
+        idle_only = {'clear', 'export', 'review', 'rewind', 'continue', 'retry', 'compact'}
         if name in idle_only and self._running:
             self.commit([_t('err.running_blocked')]); return
         if name in ('q', 'quit', 'exit'):
@@ -4555,6 +4560,8 @@ class SB:
         # /switch /close /branch — 多会话后端尚未接入，命令未实现，先注释掉。
         # elif name in ('switch', 'close', 'branch'):
         #     self.commit([_t('err.multi_session', name=name)])
+        elif name == 'compact':
+            self._submit('/compact', [])
         elif name == 'retry':
             # /retry: agent 端 _prepare_retry 弹出后端历史里未响应的 user 消息
             # 并原样重发（锚点与上下文不变），处理网络中断等故障后的续跑。
@@ -5020,6 +5027,7 @@ class SB:
                          _t('help.resume'),
                          _t('help.continue'),
                          _t('help.retry'),
+                         _t('help.compact'),
                          _t('help.new'),
                          _t('help.rename'),
                          _t('help.clear'),

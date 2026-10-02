@@ -2499,6 +2499,7 @@ COMMANDS = [
     ("/scheduler", "",                 "多选启动/停止 reflect 任务（cron 由 reflect/scheduler.py 驱动）"),
     ("/continue", "[n|name]",         "列出 / 恢复历史会话"),
     ("/retry",    "",                  "重发中断的请求（锚点与上下文不变）"),
+    ("/compact",  "",                  "按当前字符数 × 保留率手动压缩上下文"),
     ("/workspace","[path|off]",       "设定工作目录(绝对路径)并进入项目模式"),
     ("/todo",     "add|ls|run|del",  "个人 TODO 列表（持久化，run 自动清除）"),
     ("/resume",   "",                 "列出最近会话并恢复其中一个"),
@@ -4189,7 +4190,7 @@ class GenericAgentTUI(App[None]):
             "effort": self._cmd_effort,
             "export": self._cmd_export,
             "restore": self._cmd_restore, "btw": self._cmd_btw, "review": self._cmd_review,
-            "continue": self._cmd_continue, "retry": self._cmd_retry, "cost": self._cmd_cost,
+            "continue": self._cmd_continue, "retry": self._cmd_retry, "compact": self._cmd_compact, "cost": self._cmd_cost,
             "workspace": self._cmd_workspace,
             "todo": self._cmd_todo,
             "reload-keys": self._cmd_reload_keys,
@@ -6560,6 +6561,11 @@ class GenericAgentTUI(App[None]):
     def _rw_rewind_root(self):
         """世界线树根目录(temp/.ga_rewind),供 continue_list 树感知发现"已回退至起点"的空会话。"""
         return os.path.join(os.path.normpath(os.path.join(FRONTENDS_DIR, '..', 'temp')), '.ga_rewind')
+
+    def _cmd_compact(self, args, raw):
+        if self.current.status == "running":
+            self._system("❌ 任务运行中，无法 /compact"); return
+        self.submit_user_message('/compact', display_text='/compact')
 
     def _cmd_retry(self, args, raw):
         # /retry: agent 端 _prepare_retry 弹出后端历史里未响应的 user 消息

@@ -244,13 +244,12 @@ print = safeprint
 
 STATS = {}
 
-def trim_messages_history(history, sess):
+def trim_messages_history(history, sess, force=False):
     # Most legacy backends configure `context_win` as GA's historical
     # character-scale heuristic.  A backend may instead provide an explicit
     # safe character budget when its configured context is a server token
     # ceiling (the Qwen SSH backend does this below).
     cap = int(getattr(sess, 'history_char_limit', sess.context_win * 3))
-    target = int(cap * getattr(sess, 'trim_keep_rate', 0.6))
     kp = sess.trim_keep_prefix
     def cost(ms): return sum(len(json.dumps(m, ensure_ascii=False)) for m in ms)
     # 缓存前缀保护：未超限时绝不改写历史（含按节奏的旧消息截断）。前缀逐字节
@@ -258,10 +257,13 @@ def trim_messages_history(history, sess):
     # 使前缀反复变化、缓存持续失效，缓存命中价极低的模型实际成本反而更高。
     c = cost(history)
     STATS.update(ctx=c, msgs=len(history)); print(f'[Debug] Current context: {c} chars, {len(history)} messages.')
-    if c <= cap: return
+    target = int((c if force else cap) * getattr(sess, 'trim_keep_rate', 0.6))
+    if not force and c <= cap: return
     compress_history_tags(history, interval=getattr(sess, 'cut_msg_interval', 7), counter_owner=sess)
     compress_history_tags(history, keep_recent=4, force=True, counter_owner=sess)
-    if cost(history) <= target: return
+    if cost(history) <= target:
+        STATS.update(ctx=cost(history), msgs=len(history))
+        return
     # Cut only at protocol-closed boundaries. A retained prefix must also end
     # outside a tool transaction; role boundaries alone are not sufficient.
     pending = set()
