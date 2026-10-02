@@ -9005,11 +9005,17 @@ class GenericAgentTUI(App[None]):
             container = self.query_one("#messages", VerticalScroll)
         except Exception:
             return
+        anchor = m._role_widget
+        # Global fold also updates history outside the mounted recent window.
+        # Without its role anchor, mount(after=None) would append that old
+        # answer after the latest message. Detached/other-container anchors
+        # must not trigger a remount either.
+        if anchor is None or anchor.parent is not container:
+            return
         # Preserve scroll position across the widget teardown/rebuild cycle.
         # Must defer restoration via call_after_refresh because Textual's
         # async layout pass will clamp/reset scroll_y if set synchronously.
         saved_scroll = container.scroll_y
-        anchor = m._role_widget
         for w in m._segment_widgets:
             try: w.remove()
             except Exception: pass
