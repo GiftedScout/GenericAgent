@@ -10,7 +10,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
 
-
 static BRIDGE_PROCESS: Mutex<Option<Child>> = Mutex::new(None);
 static BRIDGE_LOG_READERS: Mutex<Vec<thread::JoinHandle<()>>> = Mutex::new(Vec::new());
 static SETTINGS_WRITE_LOCK: Mutex<()> = Mutex::new(());
@@ -138,7 +137,6 @@ fn classify_listener_identity(
     let same_root = {
         let (reported, expected) = (norm_path(reported_root), norm_path(project_dir));
 
-
         {
             reported == expected
         }
@@ -149,7 +147,6 @@ fn classify_listener_identity(
         ListenerIdentity::KnownGenericAgent
     }
 }
-
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -224,8 +221,6 @@ struct BootstrapSnapshot {
 }
 
 fn current_platform() -> String {
-
-
     {
         "linux".to_string()
     }
@@ -375,7 +370,6 @@ fn project_root() -> PathBuf {
 /// Linux: the .AppImage's folder ($APPIMAGE) when launched as an
 /// AppImage (current_exe would otherwise point inside the read-only squashfs mount).
 fn bundle_anchor_dir() -> Option<PathBuf> {
-
     {
         if let Some(p) = std::env::var_os("APPIMAGE") {
             if let Some(d) = PathBuf::from(p).parent() {
@@ -386,14 +380,12 @@ fn bundle_anchor_dir() -> Option<PathBuf> {
 
     let exe = std::env::current_exe().ok()?;
 
-
     Some(exe.parent()?.to_path_buf())
 }
 
 /// Embedded interpreter inside the bundle's runtime/python (base python, before venv).
 fn bundle_python() -> Option<PathBuf> {
     let root = bundle_root()?;
-
 
     let p = root.join("python").join("bin").join("python3");
     if p.exists() {
@@ -404,16 +396,12 @@ fn bundle_python() -> Option<PathBuf> {
 }
 
 fn platform_python_name() -> &'static str {
-
-
     {
         "python3"
     }
 }
 
 fn project_venv_python(project: &Path) -> PathBuf {
-
-
     {
         project.join(".venv").join("bin").join("python")
     }
@@ -421,7 +409,6 @@ fn project_venv_python(project: &Path) -> PathBuf {
 
 fn portable_python(project: &Path) -> Option<PathBuf> {
     let root = project.join(".portable").join("uv-python");
-
 
     let direct = root.join("bin").join("python3");
     if direct.is_file() {
@@ -436,8 +423,6 @@ fn portable_python(project: &Path) -> Option<PathBuf> {
         .collect::<Vec<_>>();
     children.sort();
     children.into_iter().find_map(|path| {
-
-
         let python = path.join("bin").join("python3");
         python.is_file().then_some(python)
     })
@@ -496,7 +481,6 @@ fn python_interpreter_resolves(python_path: &str) -> bool {
         if directory.join(python_path).is_file() {
             return true;
         }
-
     }
     false
 }
@@ -579,7 +563,6 @@ fn read_settings() -> serde_json::Map<String, serde_json::Value> {
     read_settings_from(&settings_path())
 }
 
-
 struct SettingsFileLock {
     path: PathBuf,
     token: String,
@@ -659,7 +642,6 @@ impl Drop for SettingsFileLock {
         }
     }
 }
-
 
 fn atomic_replace(source: &Path, destination: &Path) -> std::io::Result<()> {
     std::fs::rename(source, destination)
@@ -781,7 +763,6 @@ fn write_shortcut_pref(enabled: bool) -> Result<(), String> {
 /// enabled launch is what makes the portable bundle relocatable: move the folder, relaunch, and
 /// the .desktop shortcut is rewritten to the new path.
 
-
 fn ensure_desktop_shortcut() {
     // Launch target: the AppImage path when running as one, else the current exe. Writing the
     // current path on every enabled launch keeps a relocated bundle's launcher valid.
@@ -827,7 +808,6 @@ fn ensure_desktop_shortcut() {
     }
 }
 
-
 /// First-run shortcut handling for portable bundles (all platforms). Self-heals the shortcut
 /// path on every enabled launch (cheap, no UI). The first-run ASK is driven by the frontend
 /// (see the `shortcut_should_ask` / `shortcut_decide` commands): a native dialog from this
@@ -859,7 +839,6 @@ fn shortcut_decide(create: bool) -> Result<(), String> {
     }
     Ok(())
 }
-
 
 /// User-set external GenericAgent core. The desktop bridge and conductor remain package-owned;
 /// this path is only injected as GA_ROOT. A moved or deleted core falls back to the bundled one.
@@ -1206,7 +1185,6 @@ fn refresh_runtime_copy_from_legacy(
 }
 
 fn builtin_ga_root(project_dir: &str) -> PathBuf {
-
     PathBuf::from(project_dir)
 }
 
@@ -1234,7 +1212,6 @@ fn ensure_builtin_ga_root(project_dir: &str) -> Result<(), String> {
 fn same_path(a: &Path, b: &Path) -> bool {
     let a = a.canonicalize().unwrap_or_else(|_| a.to_path_buf());
     let b = b.canonicalize().unwrap_or_else(|_| b.to_path_buf());
-
 
     {
         a == b
@@ -1266,7 +1243,6 @@ pub fn get_or_discover_config() -> (String, String) {
             return (python, project);
         }
     }
-
 
     let trust_settings = true;
 
@@ -1375,7 +1351,6 @@ fn run_offline_prepare(
     let root = bundle_root().ok_or("cannot locate bundle root")?;
     let wheels = root.join("wheels");
 
-
     let (script, py) = (
         root.join("install_linux.sh"),
         root.join("python").join("bin").join("python3"),
@@ -1384,7 +1359,6 @@ fn run_offline_prepare(
     if !script.exists() || !py.exists() || !wheels.exists() {
         return Err(format!("prepare resources missing under {:?}", root));
     }
-
 
     let mut cmd = {
         let mut c = Command::new("bash");
@@ -1405,7 +1379,7 @@ fn run_offline_prepare(
 
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     sanitize_bundle_env(&mut cmd, project_dir);
-     // CREATE_NO_WINDOW
+    // CREATE_NO_WINDOW
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("failed to launch prepare: {}", e))?;
@@ -1816,10 +1790,9 @@ fn spawn_bridge_process(
     }
 
     let mut command = bridge_command(python_path, project_dir)?;
-     // CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB
+    // CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB
 
     let spawn_result = command.spawn();
-
 
     let mut child = spawn_result.map_err(|error| {
         bootstrap_failure(
@@ -2305,7 +2278,6 @@ fn reveal_in_file_manager(path: String) -> Result<(), String> {
         return Err("the selected file is unavailable".to_string());
     }
 
-
     let mut command = {
         let mut command = Command::new("xdg-open");
         command.arg(target.parent().unwrap_or(Path::new(".")));
@@ -2514,11 +2486,8 @@ pub fn run() {
             // Show the loading window immediately so the first-run prepare isn't a blank screen.
             // The window starts on loading.html (a local page), so no "connection refused" flash.
             if let Some(w) = app.get_webview_window("main") {
-
                 let _ = w.show();
             }
-
-
 
             let handle = app.handle().clone();
             let python_path = eff_py.clone();
@@ -2550,8 +2519,6 @@ pub fn run() {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let label = window.label();
                 if label == "main" {
-
-
                     {
                         let _ = api;
                         window.app_handle().exit(0);
@@ -2776,7 +2743,6 @@ mod tests {
         server.join().unwrap();
     }
 
-
     #[test]
     fn python_validation_rejects_an_unresolvable_explicit_path() {
         let current_exe = std::env::current_exe().unwrap();
@@ -2799,9 +2765,7 @@ mod tests {
         let portable_a = root.join(".portable").join("uv-python").join("a");
         let portable_z = root.join(".portable").join("uv-python").join("z");
 
-
         let portable_a_python = portable_a.join("bin").join("python3");
-
 
         let portable_z_python = portable_z.join("bin").join("python3");
         std::fs::create_dir_all(portable_a_python.parent().unwrap()).unwrap();

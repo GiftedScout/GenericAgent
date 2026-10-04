@@ -63,9 +63,10 @@ jobs:
         run: npm run test:dist
       - name: Verify packaging helper syntax
         run: |
-          bash -n frontends/desktop/packaging/scripts/macos/install_macos.sh
-          bash -n frontends/desktop/scripts/post-dmg.sh
-          python3 -m py_compile frontends/desktop/scripts/gen_ds_store.py
+          bash -n frontends/desktop/packaging/scripts/linux/install_linux.sh
+          bash -n frontends/desktop/packaging/scripts/linux/uninstall.sh
+          bash -n frontends/desktop/release_qualification/linux/run_linux_release_qualification.sh
+          python3 -m py_compile frontends/desktop/packaging/scripts/merge_desktop_settings.py
       - name: Reject source and local-development leakage
         run: |
           test -z "$(git ls-files -- \
