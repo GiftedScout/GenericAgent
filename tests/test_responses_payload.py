@@ -1,3 +1,4 @@
+from pathlib import Path
 # -*- coding: utf-8 -*-
 """Regression: responses-mode payload must (a) pass reasoning_effort through
 verbatim (ultra included), (b) pass user-configured temperature (was dropped,
@@ -11,7 +12,7 @@ import io
 import sys
 import types
 
-sys.path.insert(0, '/home/pushuai/GenericAgent')
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import llmcore
 
 PASS = FAIL = 0

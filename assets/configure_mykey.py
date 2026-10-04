@@ -506,55 +506,33 @@ def masked_input(prompt, reveal=6, tail=4):
             chars.append(c)
         return False
 
-    if os.name == 'nt':
-        import msvcrt
+    import tty, termios, select
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
         while True:
-            c = msvcrt.getwch()
+            c = sys.stdin.read(1)
             if _process(c):
                 break
             if c in ('\x08', '\x7f'):
-                _repaint()          # 退格立即重绘
+                _repaint()      # 退格立即重绘
                 continue
             if not (c.isprintable() or c == ' '):
                 continue
-            # 批量读取：粘贴时一次取完
-            while msvcrt.kbhit():
-                c2 = msvcrt.getwch()
+            # 批量读取：只要 stdin 有数据就继续读，不重绘
+            while select.select([sys.stdin], [], [], 0) == ([sys.stdin], [], []):
+                c2 = sys.stdin.read(1)
                 if _process(c2):
                     value = ''.join(chars)
                     _repaint()
+                    termios.tcsetattr(fd, termios.TCSADRAIN, old)
                     sys.stdout.write('\n')
                     sys.stdout.flush()
                     return value
             _repaint()
-    else:
-        import tty, termios, select
-        fd = sys.stdin.fileno()
-        old = termios.tcgetattr(fd)
-        try:
-            tty.setraw(fd)
-            while True:
-                c = sys.stdin.read(1)
-                if _process(c):
-                    break
-                if c in ('\x08', '\x7f'):
-                    _repaint()      # 退格立即重绘
-                    continue
-                if not (c.isprintable() or c == ' '):
-                    continue
-                # 批量读取：只要 stdin 有数据就继续读，不重绘
-                while select.select([sys.stdin], [], [], 0) == ([sys.stdin], [], []):
-                    c2 = sys.stdin.read(1)
-                    if _process(c2):
-                        value = ''.join(chars)
-                        _repaint()
-                        termios.tcsetattr(fd, termios.TCSADRAIN, old)
-                        sys.stdout.write('\n')
-                        sys.stdout.flush()
-                        return value
-                _repaint()
-        finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
     value = ''.join(chars)
     _repaint()

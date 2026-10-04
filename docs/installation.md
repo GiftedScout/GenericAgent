@@ -2,6 +2,8 @@
 
 This is the detailed installation guide for **GenericAgent**.
 
+> For this Ubuntu personal fork, clone `https://github.com/GiftedScout/GenericAgent.git` with `--branch cleanup/win-adb-redundancy`. Official installers and download links below target upstream, not this customized branch. Python 3.11/3.12 is the conservative desktop-runtime recommendation; backend/CLI regression tests were also run on system Python 3.14, without claiming pywebview compatibility.
+
 Two audiences:
 
 - **[For Humans](#for-humans)** — you are installing GA for yourself.
@@ -17,7 +19,7 @@ Two audiences:
 
 | Requirement | Notes |
 |---|---|
-| **OS** | Windows 10/11, macOS 12+, or a modern Linux distribution. |
+| **OS** | Ubuntu / Linux only (personal fork). |
 | **Python** | Use **Python 3.11 or 3.12**. **Do not use Python 3.14** — it is incompatible with `pywebview` and a few GA dependencies. The one-line installer ships an isolated Python environment, so manual Python setup is usually unnecessary. |
 | **Git** | Recommended for updates and self-evolution. |
 | **LLM API key** | GA speaks two native protocols: **OpenAI-compatible** APIs and **Anthropic Claude native** APIs. GPT-family models, Claude, Kimi, MiniMax, DeepSeek, GLM, Qwen, Gemini through OAI-compatible gateways, and similar providers can be configured through `mykey.py`. |
@@ -26,13 +28,7 @@ Two audiences:
 
 This is the easiest path. It prepares an isolated runtime, downloads GenericAgent, installs the core dependencies, and gives you a ready-to-run local project tree.
 
-**Windows PowerShell**
-
-```powershell
-powershell -ExecutionPolicy Bypass -c "$env:GLOBAL=1; irm http://fudankw.cn:9000/files/ga_install.ps1 | iex"
-```
-
-**Linux / macOS**
+**Ubuntu / Linux**
 
 ```bash
 GLOBAL=1 bash -c "$(curl -fsSL http://fudankw.cn:9000/files/ga_install.sh)"
@@ -41,7 +37,7 @@ GLOBAL=1 bash -c "$(curl -fsSL http://fudankw.cn:9000/files/ga_install.sh)"
 After installation, launch the desktop app from:
 
 ```text
-frontends/GenericAgent.exe
+python3 launch.pyw
 ```
 
 Or run from the project directory:
@@ -56,10 +52,6 @@ python launch.pyw
 
 ```bash
 INSTALL_DIR="$HOME/work/GenericAgent" GLOBAL=1 bash -c "$(curl -fsSL http://fudankw.cn:9000/files/ga_install.sh)"
-```
-
-```powershell
-$env:INSTALL_DIR="C:\dev\GenericAgent"; powershell -ExecutionPolicy Bypass -c "$env:GLOBAL=1; irm http://fudankw.cn:9000/files/ga_install.ps1 | iex"
 ```
 
 #### Force reinstall
@@ -107,10 +99,10 @@ python assets/configure_mykey.py
 
 #### Desktop App
 
-For one-line installs on Windows, double-click:
+From the checkout, run:
 
 ```text
-frontends/GenericAgent.exe
+python3 launch.pyw
 ```
 
 #### Terminal UI
@@ -159,21 +151,6 @@ type ga
 ```
 
 If it resolves to something unexpected, do not rely on the shortcut. Run GA from the install directory with `python launch.pyw` or `python frontends/tuiapp_v2.py`.
-
-#### Windows Defender blocks local loopback
-
-The desktop app talks to its local bridge over `127.0.0.1` / `localhost`. On some Windows machines, Windows Defender Firewall may block this loopback connection, making the desktop app look like it cannot start or cannot connect to the service.
-
-If this happens, allow `GenericAgent.exe` and the bundled `python.exe` through Windows Defender Firewall, then restart the desktop app.
-
-#### Windows TUI rendering issues
-
-TUI rendering on Windows depends on terminal, font, and `textual` version.
-
-1. Upgrade Textual first: `pip install -U textual`.
-2. Prefer **Git Bash on Windows** over classic PowerShell / cmd when Unicode or key bindings look broken.
-3. If it still looks wrong, ask GA itself to repair the terminal compatibility. Example prompt:
-   > *"My experience using `frontends/tuiapp_v2.py` in PowerShell / cmd / Git Bash on Windows is very poor — lots of incompatibility. Please refer to Claude Code's best practices for the Windows terminal and fix all font and rendering incompatibilities."*
 
 #### `pywebview` install fails on Linux
 
@@ -229,13 +206,7 @@ Check:
 
 Default to the one-line installer unless the user already has a checkout.
 
-**Windows PowerShell**
-
-```powershell
-powershell -ExecutionPolicy Bypass -c "$env:GLOBAL=1; irm http://fudankw.cn:9000/files/ga_install.ps1 | iex"
-```
-
-**Linux / macOS**
+**Ubuntu / Linux**
 
 ```bash
 GLOBAL=1 bash -c "$(curl -fsSL http://fudankw.cn:9000/files/ga_install.sh)"
@@ -291,7 +262,7 @@ Read this document again and think through whether you have done everything corr
 
 #### Say 'Congratulations! 🎉' to the user
 
-Say to user: Congratulations! 🎉 You have successfully set up GenericAgent! Double-click `frontends/GenericAgent.exe` on Windows, or run `python frontends/tuiapp_v2.py` in your terminal to start using it.
+Say to user: Congratulations! 🎉 You have successfully set up GenericAgent! Run `python3 launch.pyw`, or run `python frontends/tuiapp_v2.py` in your terminal to start using it.
 
 #### Report the concrete result
 
@@ -314,7 +285,7 @@ Only open or run anything related to starring the repository if the user explici
 ### Never do these
 
 - Do **not** run `pip install genericagent`; GA is not a PyPI package.
-- Do **not** delete `~/GenericAgent` or `%USERPROFILE%\GenericAgent` for a "clean install" without explicit user approval.
+- Do **not** delete `~/GenericAgent` for a "clean install" without explicit user approval.
 - Do **not** fabricate API keys or treat sample keys as real.
 - Do **not** assume `ga` is a valid shell command; check first.
 - Do **not** rely on `ga update`; use `git fetch`, `git pull`, and reinstall dependencies as shown above.

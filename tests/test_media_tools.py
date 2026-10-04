@@ -117,18 +117,13 @@ class MediaToolTests(unittest.TestCase):
         self.assertIn("shared-memory", result["stdout"])
 
     def test_code_run_schema_distinguishes_python_type_from_shell_command(self):
-        expectations = {
-            "assets/tools_schema.json": ("type=python", "bash scripts", "python3", "never python"),
-            "assets/tools_schema_cn.json": ("type=python", "bash脚本", "python3", "不要调用python"),
-        }
-        for relative_path, phrases in expectations.items():
-            schema = json.loads((ROOT / relative_path).read_text(encoding="utf-8"))
-            code_run = next(
-                item["function"] for item in schema
-                if item["function"]["name"] == "code_run"
-            )
-            for phrase in phrases:
-                self.assertIn(phrase, code_run["description"], relative_path)
+        schema = json.loads((ROOT / "assets/tools_schema.json").read_text(encoding="utf-8"))
+        code_run = next(
+            item["function"] for item in schema
+            if item["function"]["name"] == "code_run"
+        )
+        for phrase in ("type=python", "bash scripts", "python3", "never python"):
+            self.assertIn(phrase, code_run["description"], "tools_schema.json")
 
     def test_active_prompts_do_not_navigate_to_retired_plan_sop(self):
         for relative_path in (

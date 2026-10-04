@@ -9,22 +9,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # and its submodules may print() during init.  We capture the raw binary stdout
 # for ACP JSON-RPC, then redirect the text-mode stdout to stderr so any stray
 # prints from agentmain/llmcore don't pollute the ACP channel.
-if sys.platform == "win32":
-    import msvcrt
-    _stdout_fd = os.dup(sys.__stdout__.fileno())
-    msvcrt.setmode(_stdout_fd, os.O_BINARY)
-    _acp_stdout = os.fdopen(_stdout_fd, "wb", buffering=0)
-    msvcrt.setmode(sys.stdin.fileno(), os.O_BINARY)
-    # Mark the ACP fd as non-inheritable so child processes can't write to it.
-    os.set_inheritable(_stdout_fd, False)
-    # Redirect the original stdout fd to stderr so child processes
-    # (tool calls) don't write into the ACP JSON-RPC channel.
-    os.dup2(sys.stderr.fileno(), sys.__stdout__.fileno())
-else:
-    _stdout_fd = os.dup(sys.__stdout__.fileno())
-    os.set_inheritable(_stdout_fd, False)
-    _acp_stdout = os.fdopen(_stdout_fd, "wb", buffering=0)
-    os.dup2(sys.stderr.fileno(), sys.__stdout__.fileno())
+_stdout_fd = os.dup(sys.__stdout__.fileno())
+os.set_inheritable(_stdout_fd, False)
+_acp_stdout = os.fdopen(_stdout_fd, "wb", buffering=0)
+os.dup2(sys.stderr.fileno(), sys.__stdout__.fileno())
 
 
 class _StdoutToStderrRouter(io.TextIOBase):

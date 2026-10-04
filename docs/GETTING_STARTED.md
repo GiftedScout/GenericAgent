@@ -1,6 +1,8 @@
 # 🚀 新手上手指南
 
-> 完全没接触过编程也没关系，跟着做就行。Mac / Windows 都适用。
+> 安装本 Ubuntu 定制版：`git clone --branch cleanup/win-adb-redundancy https://github.com/GiftedScout/GenericAgent.git`。下文官方安装器/ZIP 指向上游，不会自动安装此分支。
+
+> 完全没接触过编程也没关系，跟着做就行。本分支仅适用于 Ubuntu / Linux。
 >
 > 如果你已经有 Python 环境，直接跳到[第 2 步](#2-配置-api-key)。
 
@@ -8,27 +10,9 @@
 
 ## 1. 安装 Python
 
-### Mac
+### Ubuntu / Linux
 
-打开「终端」（启动台搜索 "终端" 或 "Terminal"），粘贴这行命令然后回车：
-
-```bash
-brew install python
-```
-
-如果提示 `brew: command not found`，说明还没装 Homebrew，先粘贴这行：
-
-```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-```
-
-装完后再执行 `brew install python`。
-
-### Windows
-
-1. 打开 [python.org/downloads](https://www.python.org/downloads/)，点黄色大按钮下载
-2. 运行安装包，**底部的 "Add Python to PATH" 一定要勾上**
-3. 点 "Install Now"
+先检查已有环境：`python3 --version`。需要隔离环境时使用 `uv venv`。
 
 ### 验证
 
@@ -38,7 +22,7 @@ brew install python
 python3 --version
 ```
 
-看到 `Python 3.x.x` 就 OK。Windows 上也可以试 `python --version`。
+看到 `Python 3.x.x` 就 OK。
 
 > ⚠️ **版本提示**：推荐 **Python 3.11 或 3.12**。不要使用 3.14（与 pywebview 等依赖不兼容）。
 
@@ -50,13 +34,7 @@ python3 --version
 
 最方便的方式是 **一键安装**（自带隔离 Python 环境 + Git + 桌面端）：
 
-**Windows PowerShell**
-
-```powershell
-powershell -ExecutionPolicy Bypass -c "irm http://fudankw.cn:9000/files/ga_install.ps1 | iex"
-```
-
-**Linux / macOS**
+**Ubuntu / Linux**
 
 ```bash
 curl -fsSL http://fudankw.cn:9000/files/ga_install.sh | bash
@@ -166,7 +144,6 @@ python3 agentmain.py
 帮我在桌面创建一个 hello.txt，内容是 Hello World
 ```
 
-> 💡 Windows 上如果 `python3` 不识别，换成 `python agentmain.py`。
 
 ---
 
@@ -191,12 +168,11 @@ Agent 会自己读代码、找出需要的包、全部装好。
 
 | 前端 | 启动命令 | 说明 |
 |------|---------|------|
-| **桌面端** | 双击 `frontends/GenericAgent.exe`（Windows 一键安装自带） | 真原生窗口，零终端依赖 |
+| **桌面端** | `python3 launch.pyw` | 真原生窗口，零终端依赖 |
 | **TUI v3** | `python frontends/tui_v3.py` | 基于块的滚屏回看、resize 重排、每终端独立配色，跨终端体验一致 |
 | **TUI v2** | `python frontends/tuiapp_v2.py` | Textual 键盘驱动界面，图片粘贴折叠、`/llm`/`/export`/`/continue` 选择器 |
 | **Streamlit / 悬浮窗** | `python launch.pyw` | 浏览器中打开的 Streamlit UI，附带桌面悬浮窗 |
 
-> 💡 Windows 下推荐用 **Git Bash** 跑 TUI；PowerShell / cmd 对 Unicode 和键位支持较弱。仍异常时请直接告诉 Agent：「参考 Claude Code 在 Windows 终端的最佳配置帮我把 TUI 修一遍」。
 
 ### 可选：让 Agent 帮你做的事
 
@@ -222,17 +198,15 @@ Agent 会自动配好。如果你电脑上没有 Git，它也会帮你下载 por
 
 | 能力 | 对 Agent 说 | 说明 |
 |------|-----------|------|
-| **PowerShell 脚本执行** | `帮我解锁当前用户的 PowerShell ps1 执行权限` | Windows 默认禁止运行 .ps1 脚本 |
-| **全局文件搜索** | `安装并配置 Everything 命令行工具进 PATH` | 毫秒级全盘文件搜索 |
+| **全局文件搜索** | `安装并配置 plocate / ripgrep` | 索引文件搜索 / 项目文本搜索 |
 
 
 ### 进阶能力
 
 | 能力 | 对 Agent 说 | 说明 |
 |------|-----------|------|
-| **OCR** | `用rapidocr配置你的ocr能力并存入记忆` | 让 Agent 能"看到"屏幕文字 |
-| **屏幕视觉** | `仿造你的llmcore，写个调用vision的能力并存入记忆` | 让 Agent 能"看到"屏幕内容 |
-| **移动端控制** | `配置 ADB 环境，准备连接安卓设备` | 通过 USB/WiFi 控制 Android 手机 |
+| **OCR** | `用rapidocr配置你的ocr能力并存入记忆` | 读取本地图片文件文字（屏幕控制暂停） |
+| **Computer-use** | 未完成，暂停验收 | 禁止主动调用其原子工具 |
 
 ### 聊天平台接入（可选）
 

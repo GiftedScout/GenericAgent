@@ -1008,8 +1008,7 @@ def save_room(signal_url: str, room: str, *, name: str = "default", path=ROOMS_F
     temporary.write_text(
         json.dumps(rooms, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
-    if os.name != "nt":
-        temporary.chmod(0o600)
+    temporary.chmod(0o600)
     os.replace(temporary, path)
     return room
 

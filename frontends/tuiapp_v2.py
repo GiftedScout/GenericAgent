@@ -37,7 +37,7 @@ from typing import Any, Callable, Optional
 
 def _ensure_tui_deps() -> None:
     """Try the imports; on first miss, pip-install the wheel and retry once.
-    Keeps `ga-cli` working on a fresh Python (Windows / macOS / Linux) where
+    Keeps `ga-cli` working on a fresh Linux Python where
     Textual or Rich hasn't been installed yet. Bails with a clear message if
     pip itself is unavailable or the install fails — never silently."""
     import importlib.util, subprocess
@@ -76,24 +76,8 @@ except ModuleNotFoundError as exc:
     raise SystemExit(2) from exc
 
 
-def _hint_terminal_capabilities() -> None:
-    """Warn once at startup if we detect a terminal known to render Textual
-    poorly (e.g. bare mintty/git-bash). The UI still works, but visuals like
-    truecolor chips and unicode glyphs may degrade. Heuristic-only — never
-    blocks startup, just prints a hint to stderr.
-    """
-    if os.name != "nt": return
-    if os.environ.get("WT_SESSION") or os.environ.get("TERM_PROGRAM"):
-        return  # Windows Terminal / iTerm2 / VSCode / Hyper — all fine
-    if os.environ.get("TERM", "").startswith("xterm"):
-        # mintty exports TERM=xterm-256color. Textual still renders, but
-        # mouse + truecolor handling is patchy. Point at the better option.
-        print("[ga-tui] hint: best rendering on Windows Terminal (`wt`) — "
-              "the mintty/git-bash console may clip colors or mouse events.",
-              file=sys.stderr)
 
 
-_hint_terminal_capabilities()
 
 
 # Strip terminal control sequences from subprocess stdout but keep SGR color codes,
@@ -1791,65 +1775,10 @@ def _clipboard_run(cmd: list[str], input: bytes | None = None, timeout: float = 
         return None
 
 
-def _copy_to_clipboard_win32(text: str) -> bool:
-    """Copy Unicode text on Windows without going through console code pages."""
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        user32 = ctypes.windll.user32
-        kernel32 = ctypes.windll.kernel32
-        GMEM_MOVEABLE = 0x0002
-        CF_UNICODETEXT = 13
-
-        kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
-        kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
-        kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
-        kernel32.GlobalLock.restype = wintypes.LPVOID
-        kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
-        kernel32.GlobalUnlock.restype = wintypes.BOOL
-        kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
-        kernel32.GlobalFree.restype = wintypes.HGLOBAL
-        user32.OpenClipboard.argtypes = [wintypes.HWND]
-        user32.OpenClipboard.restype = wintypes.BOOL
-        user32.EmptyClipboard.restype = wintypes.BOOL
-        user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
-        user32.SetClipboardData.restype = wintypes.HANDLE
-        user32.CloseClipboard.restype = wintypes.BOOL
-
-        data = text.encode("utf-16-le") + b"\x00\x00"
-        handle = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(data))
-        if not handle:
-            return False
-        locked = kernel32.GlobalLock(handle)
-        if not locked:
-            kernel32.GlobalFree(handle)
-            return False
-        ctypes.memmove(locked, data, len(data))
-        kernel32.GlobalUnlock(handle)
-
-        if not user32.OpenClipboard(None):
-            kernel32.GlobalFree(handle)
-            return False
-        try:
-            user32.EmptyClipboard()
-            if not user32.SetClipboardData(CF_UNICODETEXT, handle):
-                kernel32.GlobalFree(handle)
-                return False
-            # Ownership transferred to the clipboard; do not free `handle`.
-            return True
-        finally:
-            user32.CloseClipboard()
-    except Exception:
-        return False
 
 
 def _copy_to_clipboard(text: str) -> bool:
     data = text.encode("utf-8")
-    if sys.platform == "darwin":
-        return _clipboard_run(["pbcopy"], input=data) is not None
-    if sys.platform == "win32":
-        return _copy_to_clipboard_win32(text)
     if _HAS_WAYLAND and shutil.which("wl-copy"):
         return _clipboard_run(["wl-copy"], input=data) is not None
     if shutil.which("xclip"):
@@ -3179,9 +3108,6 @@ class InputArea(TextArea):
         Binding("shift+enter", "newline", "Newline", show=False),
         Binding("ctrl+shift+c","copy_text", "Copy", show=False),
         Binding("ctrl+v",      "paste", "Paste", show=False),
-        # macOS muscle-memory alias: most terminals swallow Cmd+V (forward via bracketed
-        # paste → _on_paste); this only hits if the terminal forwards Cmd as a key.
-        Binding("cmd+v,super+v", "paste", "Paste", show=False),
         # Ctrl+U: readline-style kill-line, repurposed here to clear the whole input.
         Binding("ctrl+u",      "clear_input", "ClearInput", show=False),
         # Ctrl+S: toggle-stash the current draft.  First press → stash
@@ -3485,15 +3411,8 @@ class InputArea(TextArea):
         self._insert_via_keyboard("\n")
 
     def _shift_is_physically_down(self) -> bool:
-        """Best-effort fallback for terminals/Textual builds that report Shift+Enter as plain Enter."""
-        if os.name != "nt":
-            return False
-        try:
-            import ctypes
-            # VK_SHIFT = 0x10.  High bit means the key is currently down.
-            return bool(ctypes.windll.user32.GetAsyncKeyState(0x10) & 0x8000)
-        except Exception:
-            return False
+        # Linux terminals report modifiers through their input protocol.
+        return False
 
     async def _on_paste(self, event: events.Paste) -> None:
         # Terminal Ctrl+V in bracketed-paste mode lands here, bypassing action_paste.
@@ -4136,10 +4055,7 @@ class GenericAgentTUI(App[None]):
 
     def __init__(self, agent_factory: Optional[AgentFactory] = None) -> None:
         super().__init__()
-        self._apple_terminal_ime = (
-            sys.platform == "darwin"
-            and os.environ.get("TERM_PROGRAM") == "Apple_Terminal"
-        )
+        self._apple_terminal_ime = False
         self._input_repaint_pending = False
         self._pending_stream_renders: dict[tuple[int, int], ChatMessage] = {}
         self._stream_render_timer = None
@@ -4308,12 +4224,12 @@ class GenericAgentTUI(App[None]):
         self._start_tip_rotator()
         self._apply_responsive_layout()
         # Disable alternate scroll mode (?1007). Textual enables ?1006 SGR mouse but doesn't
-        # turn off ?1007, which on macOS Terminal / iTerm2 makes the wheel emit both mouse
+        # turn off ?1007, which can make the wheel emit both mouse
         # events and ↑/↓ keys — triggering InputArea history nav.
         self._term_write("\x1b[?1007l")
 
     def _tick(self) -> None:
-        # 0.5s poll: refresh clock + detect resizes Windows misses (snap, fullscreen).
+        # 0.5s poll: refresh clock + detect resizes (snap, fullscreen).
         self._refresh_topbar()
         size = (self.size.width, self.size.height)
         if size != self._last_size:
@@ -9047,32 +8963,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return argparse.ArgumentParser(description="GenericAgent TUI v2 (refined visual style)")
 
 
-def _warn_mintty():
-    """Warn only for direct Git Bash/mintty, not Git Bash inside Windows Terminal."""
-    if sys.platform != 'win32':
-        return
-    # Direct Git Bash uses mintty. Git Bash hosted by Windows Terminal still sets
-    # MSYSTEM, but has WT_SESSION and renders Textual correctly, so do not block it.
-    term_prog = os.environ.get('TERM_PROGRAM', '').lower()
-    wt_session = os.environ.get('WT_SESSION', '')
-    direct_mintty = term_prog == 'mintty' and not wt_session
-    if direct_mintty:
-        print(
-            "\033[33m[ga-tui] WARNING: direct Git Bash/mintty detected.\033[0m\n"
-            "  Textual TUI requires a modern terminal with full VT/xterm support.\n"
-            "  Direct mintty can cause rendering issues (blank screen, garbled output).\n"
-            "\n"
-            "  Recommended alternatives:\n"
-            "    - Windows Terminal Git Bash: wt -p \"Git Bash\" python frontends/tuiapp_v2.py\n"
-            "    - Windows Terminal:          wt python frontends/tuiapp_v2.py\n"
-            "    - CMD:                       python frontends\\tuiapp_v2.py\n"
-            "    - PowerShell:                python frontends/tuiapp_v2.py\n"
-            "\n"
-            "  To continue anyway, set GA_TUI_FORCE=1",
-            file=sys.stderr,
-        )
-        if not os.environ.get('GA_TUI_FORCE'):
-            raise SystemExit(1)
 
 
 
@@ -9791,7 +9681,6 @@ class RewindTreeScreen(ModalScreen):
 
 def main(argv: Optional[list[str]] = None) -> int:
     build_arg_parser().parse_args(argv)
-    _warn_mintty()
     GenericAgentTUI().run()
     return 0
 

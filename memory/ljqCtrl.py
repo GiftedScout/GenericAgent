@@ -1,177 +1,350 @@
 """
-CRITICAL: 严禁在此工具链中 import pyautogui (会污染 win32api 导致逻辑冲突)。
+ljqCtrl — Ubuntu GUI 键鼠/窗口/截图控制（未完成，暂停验收，禁止主动调用）
+  X11 = xdotool+mss; GNOME Wayland = window ScreenCast + uinput pointer
+CRITICAL: 严禁在此工具链中 import pyautogui。
 ljqCtrl Quick Reference:
-- dpi_scale: float (Logical = Physical * dpi_scale)
-- Click(x, y, check=True): Use Physical Coordinates. check=True → 自动比前后像素变化，返回周边图像
-- SetCursorPos(z): Use Physical Coordinates z=(x, y)
-- Press(cmd, staytime=0): Keyboard shortcuts (e.g. 'ctrl+v')
-- FindBlock(fn, wrect=None, threshold=0.8) -> (obj_center_phys, is_found)
-- MouseDClick(staytime=0.05), MouseClick(staytime=0.05)
-- GrabWindow(hwnd) -> PIL Image: DPI-safe window screenshot (needs foreground)
-- GrabWindowBg(hwnd_or_name) -> PIL Image: WGC background capture (Win10+, pip install windows-capture)
+- dpi_scale: float (Logical = Physical * dpi_scale; Ubuntu X11 通常为 1.0)
+- ListWindows(name=None) -> [dict]: 枚举可见窗口 {'id','title','rect':(l,t,r,b),'visible'}
+- Activate(hwnd_or_name): 激活窗口 (name=标题子串), 操作前必做
+- Click(x, y, check=True): 物理坐标; check=True → 自动比前后像素变化
+- SetCursorPos(z); MouseClick(staytime); MouseDClick(staytime)
+- Press(cmd, staytime=0): 键盘快捷键 (e.g. 'ctrl+v')
+- GrabWindow(hwnd_or_name) -> PIL Image: 窗口客户区截图 (先激活, 不含标题栏)
+- GrabWindowBg(hwnd_or_name): Linux 同 GrabWindow (无后台截图)
+- FindBlock(fn, wrect=None, threshold=0.8) -> (obj_center, max_val)
+- ScreenCapAt(x, y, r=100) -> PIL Image
 """
-import os, sys, time, random, math, win32api, win32con, win32gui, ctypes
-import numpy as np
+import sys
 
-print('[TIPS] always use physical coordinates!')
+if sys.platform.startswith('linux'):
+    import os, time, re, subprocess
+    import numpy as np
+    from PIL import Image
+    import cv2
 
-dpi_scale = 1
-try:
-	from PIL import ImageGrab, Image, ImageEnhance, ImageFilter, ImageDraw
-	import cv2
-except: pass
+    print('[TIPS] always use physical coordinates! (Linux/X11)')
 
-ctypes.windll.user32.SetProcessDPIAware()
+    def _xdotool(*args, check=True):
+        r = subprocess.run(['xdotool', *[str(a) for a in args]], capture_output=True, text=True)
+        if check and r.returncode != 0:
+            raise RuntimeError(f'xdotool {" ".join(map(str, args[:4]))} failed: {r.stderr.strip()[:200]}')
+        return r.stdout.strip()
 
-_hdc = ctypes.windll.user32.GetDC(0)
-swidth = ctypes.windll.gdi32.GetDeviceCaps(_hdc, 118)   # DESKTOPHORZRES (物理)
-sheight = ctypes.windll.gdi32.GetDeviceCaps(_hdc, 117)   # DESKTOPVERTRES
-ctypes.windll.user32.ReleaseDC(0, _hdc)
-cwidth = win32api.GetSystemMetrics(win32con.SM_CXSCREEN)  # 逻辑
-cheight = win32api.GetSystemMetrics(win32con.SM_CYSCREEN)
-dpi_scale = cwidth / swidth
-print('Screen width & height:', swidth, sheight)
-print('dpi_scale:', dpi_scale)
+    # ---------- 屏幕几何 ----------
+    _wayland = os.environ.get('XDG_SESSION_TYPE', '').lower() == 'wayland'
+    if _wayland:
+        swidth, sheight = 0, 0  # 等待用户授权的 Portal 图像确定实际像素尺寸
+    else:
+        _geo = _xdotool('getdisplaygeometry').split()
+        swidth, sheight = int(_geo[0]), int(_geo[1])
+    dpi_scale = 1.0
+    cwidth, cheight = swidth, sheight
+    if _wayland:
+        print('Wayland: 截图坐标需先调用 _grab() 初始化（Portal 可能要求用户授权）')
+    else:
+        print('Screen width & height:', swidth, sheight)
+        print('dpi_scale:', dpi_scale)
 
-def MouseDown(): win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN,0,0) 
-def MouseUp(): win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP,0,0)
+    # ---------- 截图 (GNOME Wayland: portal; X11: mss) ----------
+    def _portal_grab():
+        import dbus, dbus.mainloop.glib
+        from gi.repository import GLib
+        from urllib.parse import urlparse, unquote
+        dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+        bus = dbus.SessionBus()
+        desktop = bus.get_object('org.freedesktop.portal.Desktop', '/org/freedesktop/portal/desktop')
+        shot = dbus.Interface(desktop, 'org.freedesktop.portal.Screenshot')
+        result, loop = {}, GLib.MainLoop()
+        token = 'ga_' + os.urandom(8).hex()
+        request_path = '/org/freedesktop/portal/desktop/request/' + bus.get_unique_name()[1:].replace('.', '_') + '/' + token
+        def respond(code, values):
+            result['code'], result['values'] = int(code), values
+            loop.quit()
+        receiver = bus.add_signal_receiver(respond, signal_name='Response',
+            dbus_interface='org.freedesktop.portal.Request', path=request_path)
+        timer = None
+        try:
+            handle = shot.Screenshot('', {'handle_token': dbus.String(token),
+                'interactive': dbus.Boolean(False)}, timeout=10)
+            if str(handle) != request_path:
+                raise RuntimeError(f'portal request path mismatch: {handle}')
+            timer = GLib.timeout_add_seconds(20, lambda: (loop.quit(), False)[1])
+            loop.run()
+            if result.get('code') != 0:
+                raise RuntimeError(f'截图未获授权或超时 (portal response={result.get("code")})')
+            uri = str(result['values']['uri'])
+            parsed = urlparse(uri)
+            if parsed.scheme != 'file' or parsed.netloc not in ('', 'localhost'):
+                raise RuntimeError('portal 未返回本地截图文件')
+            with Image.open(unquote(parsed.path)) as source:
+                img = source.convert('RGB')
+            return img
+        finally:
+            receiver.remove()
+            if timer is not None:
+                GLib.source_remove(timer) if GLib.main_context_default().find_source_by_id(timer) else None
 
-def MouseClick(staytime=0.05):
-	MouseDown(); time.sleep(staytime)
-	MouseUp(); time.sleep(0.05)
+    def _grab(bbox=None):
+        if _wayland:
+            img = _portal_grab()
+            global swidth, sheight, cwidth, cheight
+            swidth, sheight = img.size  # portal 输出像素，与 Xwayland 虚拟几何可能不同
+            cwidth, cheight = img.size
+            if bbox is not None:
+                l, t, r, b = [int(v) for v in bbox]
+                img = img.crop((max(0, l), max(0, t), min(swidth, r), min(sheight, b)))
+        else:
+            import mss
+            if bbox is None: bbox = (0, 0, swidth, sheight)
+            l, t, r, b = [int(v) for v in bbox]
+            with mss.mss() as sct:
+                raw = sct.grab({'left': l, 'top': t, 'width': max(r-l, 1), 'height': max(b-t, 1)})
+                img = Image.frombytes('RGB', raw.size, raw.rgb)
+        if img.getextrema() == ((0, 0), (0, 0), (0, 0)):
+            raise RuntimeError('截图全黑，拒绝返回无法识别的图像')
+        return img
 
-def MouseDClick(staytime=0.05):
-	MouseDown(); MouseUp() 
-	MouseDown(); MouseUp() 
-	time.sleep(0.05)
+    # ---------- 窗口枚举/激活 ----------
+    # xwininfo -root -tree 行格式: '  0x28022c5 "标题": ("wmclass" "WmClass")  2566x2002+1582+320  +1582+320'
+    # 顶层窗口 = root 的直接子窗口, 恰为 5 个空格缩进; 更深处是子窗, 跳过
+    _XW_RE = re.compile(r'^     (0x[0-9a-f]+)(?: "([^"]*)":|\(has no name\)) .*?(\d+)x(\d+)\+(-?\d+)\+(-?\d+)')
+    def ListWindows(name=None):
+        """枚举顶层可见窗口。X11/Xwayland 窗口可见; 纯Wayland原生窗口不在列表(需 hyprctl/swaymsg 另查)"""
+        r = subprocess.run(['xwininfo', '-root', '-tree', '-stats'], capture_output=True, text=True)
+        rows, seen = [], set()
+        for line in r.stdout.splitlines():
+            m = _XW_RE.search(line)
+            if not m: continue
+            wid = int(m.group(1), 16)
+            title = m.group(2) or ''
+            w, h, l, t = int(m.group(3)), int(m.group(4)), int(m.group(5)), int(m.group(6))
+            if wid in seen or w < 40 or h < 40: continue  # 过滤 1x1 代理子窗
+            seen.add(wid)
+            if name and name not in title: continue
+            rows.append({'id': wid, 'title': title, 'rect': (l, t, l + w, t + h)})
+        return rows
+    def FindWindow(cls, name):
+        """按标题子串/正则找窗口 → id (int); 无则 0。cls 忽略(X11无类名快速查)"""
+        out = _xdotool('search', '--name', re.escape(name) if name else '', check=False)
+        ids = [int(x) for x in out.split() if x.isdigit()]
+        return ids[0] if ids else 0
+    def GetForegroundTitle():
+        try: return _xdotool('getactivewindow', 'getwindowname')
+        except Exception: return ''
+    def Activate(hwnd_or_name):
+        """激活窗口到前台。传 id(int) 或标题子串(str)。"""
+        if isinstance(hwnd_or_name, str):
+            wid = FindWindow(None, hwnd_or_name)
+            assert wid, f'窗口未找到: {hwnd_or_name}'
+            hwnd_or_name = wid
+        _xdotool('windowactivate', '--sync', hwnd_or_name, check=False)
+        _xdotool('windowfocus', hwnd_or_name, check=False)
+        time.sleep(0.2)
+    activate = Activate
 
-def SetCursorPos(z):
-	z = tuple(map(lambda v:int(v*dpi_scale), z))
-	win32api.SetCursorPos(z)
-	time.sleep(0.05) 
+    # ---------- 鼠标 ----------
+    _mouse_fd = None
+    def _mouse():
+        """创建纯指针设备；ydotool 的键盘+鼠标混合设备在 GNOME 下被当成键盘。"""
+        global _mouse_fd
+        if _mouse_fd is None:
+            import fcntl, struct, atexit
+            fd = os.open('/dev/uinput', os.O_WRONLY | os.O_NONBLOCK)
+            try:
+                for code in (1, 3): fcntl.ioctl(fd, 0x40045564, code)  # EV_KEY, EV_ABS
+                fcntl.ioctl(fd, 0x40045565, 272)  # BTN_LEFT
+                for code in (0, 1): fcntl.ioctl(fd, 0x40045567, code)  # ABS_X, ABS_Y
+                # uinput_user_dev: setup 包含 ABS_X/Y 范围
+                name = b'GA Wayland Pointer'
+                setup = struct.pack('80sHHHHI' + 'i'*64*4, name, 3, 0x2333, 0x6666, 1, 0,
+                    *([65535, 65535] + [0]*62), *([0]*64), *([0]*64), *([0]*64))
+                os.write(fd, setup)
+                fcntl.ioctl(fd, 0x5501)  # UI_DEV_CREATE
+            except Exception:
+                os.close(fd)
+                raise
+            _mouse_fd = fd
+            def close_mouse():
+                fcntl.ioctl(fd, 0x5502)  # UI_DEV_DESTROY
+                os.close(fd)
+            atexit.register(close_mouse)
+            time.sleep(0.7)  # 等待 GNOME/libinput 识别设备
+        return _mouse_fd
+    def _mouse_event(typ, code, value):
+        import struct
+        os.write(_mouse(), struct.pack('llHHi', 0, 0, typ, code, value))
+        os.write(_mouse(), struct.pack('llHHi', 0, 0, 0, 0, 0))  # SYN_REPORT
+    def MouseDown():
+        if _wayland: _mouse_event(1, 272, 1)
+        else: _xdotool('mousedown', 1)
+    def MouseUp():
+        if _wayland: _mouse_event(1, 272, 0)
+        else: _xdotool('mouseup', 1)
+    def MouseClick(staytime=0.05):
+        if _wayland:
+            MouseDown(); time.sleep(max(staytime, 0.02)); MouseUp()
+        else: _xdotool('click', 1)
+        time.sleep(staytime)
+    def MouseDClick(staytime=0.05):
+        if _wayland: MouseClick(staytime); MouseClick(staytime)
+        else:
+            _xdotool('click', '--repeat', 2, '--delay', '50', 1)
+            time.sleep(staytime)
+    def SetCursorPos(z):
+        if _wayland:
+            x, y = [int(v) for v in z]
+            if not (0 <= x < swidth and 0 <= y < sheight):
+                raise ValueError(f'坐标不在 Portal 截图范围内: {(x, y)} / {(swidth, sheight)}')
+            _mouse_event(3, 0, round(x * 65535 / swidth))
+            _mouse_event(3, 1, round(y * 65535 / sheight))
+        else:
+            z = tuple(map(lambda v: int(v * dpi_scale), z))
+            _xdotool('mousemove', '--sync', z[0], z[1])
+        time.sleep(0.05)
 
-def Click(x, y=None, check=True):
-	if type(x) is type(tuple()): x, y = int(x[0]), int(x[1])
-	if check: before, fg_before = ScreenCapAt(x, y), win32gui.GetForegroundWindow()
-	SetCursorPos( (x, y) )
-	MouseClick()
-	if check:
-		time.sleep(0.5)
-		after = ScreenCapAt(x, y)
-		b, a = np.array(before), np.array(after)
-		diff = np.sum(np.any(b != a, axis=2))
-		total = b.shape[0] * b.shape[1]
-		fg_after = win32gui.GetForegroundWindow()
-		fg_title = win32gui.GetWindowText(fg_after)
-		fg_changed = fg_before != fg_after
-		print(f'[Click check] {diff}/{total} px changed ({diff/total*100:.1f}%) | fg: "{fg_title}" {"⚠️CHANGED" if fg_changed else ""}')
-		return after
-click = Click
-	
-def Press(cmd, staytime=0):
-	if type(cmd) is list: cmds = [x.lower() for x in cmd]
-	else: cmds = cmd.lower().split('+')
-	for z in cmds: 
-		win32api.keybd_event(VK_CODE[z], 0, 0, 0)
-		time.sleep(staytime)
-	for z in reversed(cmds):
-		time.sleep(staytime)
-		win32api.keybd_event(VK_CODE[z], 0, win32con.KEYEVENTF_KEYUP, 0)
-press = Press
+    def ScreenCapAt(x, y, r=100):
+        """物理坐标(x,y)为中心±r的屏幕截图 → PIL Image"""
+        return _grab((x - r, y - r, x + r, y + r))
 
-VK_CODE = {'backspace':0x08, 'tab':0x09, 'clear':0x0C, 'enter':0x0D, 'shift':0x10, 'ctrl':0x11, 'alt':0x12, 'pause':0x13, 'caps_lock':0x14, 'esc':0x1B, 'escape':0x1B, 'space':0x20, 'page_up':0x21, 'page_down':0x22, 'end':0x23, 'home':0x24, 'left_arrow':0x25, 'up_arrow':0x26, 'right_arrow':0x27, 'down_arrow':0x28, 'select':0x29, 'print':0x2A, 'execute':0x2B, 'print_screen':0x2C, 'ins':0x2D, 'del':0x2E, 'help':0x2F, '0':0x30, '1':0x31, '2':0x32, '3':0x33, '4':0x34, '5':0x35, '6':0x36, '7':0x37, '8':0x38, '9':0x39, 'a':0x41, 'b':0x42, 'c':0x43, 'd':0x44, 'e':0x45, 'f':0x46, 'g':0x47, 'h':0x48, 'i':0x49, 'j':0x4A, 'k':0x4B, 'l':0x4C, 'm':0x4D, 'n':0x4E, 'o':0x4F, 'p':0x50, 'q':0x51, 'r':0x52, 's':0x53, 't':0x54, 'u':0x55, 'v':0x56, 'w':0x57, 'x':0x58, 'y':0x59, 'z':0x5A, 'numpad_0':0x60, 'numpad_1':0x61, 'numpad_2':0x62, 'numpad_3':0x63, 'numpad_4':0x64, 'numpad_5':0x65, 'numpad_6':0x66, 'numpad_7':0x67, 'numpad_8':0x68, 'numpad_9':0x69, 'multiply_key':0x6A, 'add_key':0x6B, 'separator_key':0x6C, 'subtract_key':0x6D, 'decimal_key':0x6E, 'divide_key':0x6F, 'F1':0x70, 'F2':0x71, 'F3':0x72, 'F4':0x73, 'F5':0x74, 'F6':0x75, 'F7':0x76, 'F8':0x77, 'F9':0x78, 'F10':0x79, 'F11':0x7A, 'F12':0x7B, 'F13':0x7C, 'F14':0x7D, 'F15':0x7E, 'F16':0x7F, 'F17':0x80, 'F18':0x81, 'F19':0x82, 'F20':0x83, 'F21':0x84, 'F22':0x85, 'F23':0x86, 'F24':0x87, 'num_lock':0x90, 'scroll_lock':0x91, 'left_shift':0xA0, 'right_shift ':0xA1, 'left_control':0xA2, 'right_control':0xA3, 'left_menu':0xA4, 'right_menu':0xA5, 'browser_back':0xA6, 'browser_forward':0xA7, 'browser_refresh':0xA8, 'browser_stop':0xA9, 'browser_search':0xAA, 'browser_favorites':0xAB, 'browser_start_and_home':0xAC, 'volume_mute':0xAD, 'volume_Down':0xAE, 'volume_up':0xAF, 'next_track':0xB0, 'previous_track':0xB1, 'stop_media':0xB2, 'play/pause_media':0xB3, 'start_mail':0xB4, 'select_media':0xB5, 'start_application_1':0xB6, 'start_application_2':0xB7, 'attn_key':0xF6, 'crsel_key':0xF7, 'exsel_key':0xF8, 'play_key':0xFA, 'zoom_key':0xFB, 'clear_key':0xFE, '+':0xBB, ',':0xBC, '-':0xBD, '.':0xBE, '/':0xBF, '`':0xC0, ';':0xBA, '[':0xDB, '\\':0xDC, ']':0xDD, "'":0xDE} 
-VK_CODE = {k.lower():v for k,v in VK_CODE.items()}
+    def Click(x, y=None, check=True):
+        if type(x) is type(tuple()): x, y = int(x[0]), int(x[1])
+        if check: before, fg_before = ScreenCapAt(x, y), GetForegroundTitle()
+        SetCursorPos((x, y))
+        MouseClick()
+        if check:
+            time.sleep(0.5)
+            after = ScreenCapAt(x, y)
+            b, a = np.array(before), np.array(after)
+            diff = np.sum(np.any(b != a, axis=2))
+            total = b.shape[0] * b.shape[1]
+            fg_after = GetForegroundTitle()
+            fg_changed = fg_before != fg_after
+            print(f'[Click check] {diff}/{total} px changed ({diff/total*100:.1f}%) | fg: "{fg_after}" {"⚠️CHANGED" if fg_changed else ""}')
+            return after
+    click = Click
 
-def Activate(hwnd):
-	"""稳定切换前台窗口。绕过Windows前台锁限制。"""
-	# 如果窗口最小化先恢复
-	if ctypes.windll.user32.IsIconic(hwnd):
-		ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-	# 发假Alt-up骗过前台锁
-	ctypes.windll.user32.keybd_event(0x12, 0, 2, 0)  # VK_MENU up
-	time.sleep(0.02)
-	try:
-		win32gui.SetForegroundWindow(hwnd)
-	except Exception:
-		# fallback: BringWindowToTop + SetFocus
-		ctypes.windll.user32.BringWindowToTop(hwnd)
-		ctypes.windll.user32.SetFocus(hwnd)
-	time.sleep(0.15)
-activate = Activate
+    # ---------- 键盘 ----------
+    _XKEY = {
+        'backspace': 'BackSpace', 'tab': 'Tab', 'enter': 'Return', 'return': 'Return',
+        'shift': 'shift', 'ctrl': 'ctrl', 'control': 'ctrl', 'alt': 'alt', 'alt_gr': 'AltGr',
+        'esc': 'Escape', 'escape': 'Escape', 'space': 'space',
+        'page_up': 'Page_Up', 'page_down': 'Page_Down', 'end': 'End', 'home': 'Home',
+        'left_arrow': 'Left', 'up_arrow': 'Up', 'right_arrow': 'Right', 'down_arrow': 'Down',
+        'left': 'Left', 'up': 'Up', 'right': 'Right', 'down': 'Down',
+        'del': 'Delete', 'delete': 'Delete', 'ins': 'Insert', 'insert': 'Insert',
+        'print_screen': 'Print', 'print': 'Print', 'pause': 'Pause', 'clear': 'Clear',
+        'caps_lock': 'Caps_Lock', 'num_lock': 'Num_Lock', 'scroll_lock': 'Scroll_Lock',
+        'menu': 'Menu', 'win': 'super', 'command': 'super', 'super': 'super',
+        'left_shift': 'shift_L', 'right_shift': 'shift_R', 'right_shift ': 'shift_R',
+        'left_control': 'ctrl_L', 'right_control': 'ctrl_R',
+        'left_alt': 'alt_L', 'right_alt': 'alt_R',
+        'left_super': 'super_L', 'right_super': 'super_R',
+        'plus': 'plus', 'minus': 'minus', 'asterisk': 'asterisk', 'slash': 'slash',
+        'comma': 'comma', 'period': 'period', 'semicolon': 'semicolon',
+        'apostrophe': 'apostrophe', 'bracketleft': 'bracketleft', 'bracketright': 'bracketright',
+        'backslash': 'backslash', 'grave': 'grave', 'equal': 'equal',
+    }
+    def _xkey(k):
+        if k in _XKEY: return _XKEY[k]
+        if re.fullmatch(r'numpad_\d', k): return k.replace('_', '')
+        return k
+    def Press(cmd, staytime=0):
+        if type(cmd) is list: cmds = [x.lower() for x in cmd]
+        else: cmds = cmd.lower().split('+')
+        keys = [_xkey(z) for z in cmds]
+        if _wayland:
+            # xdotool 仅送到 Xwayland；从当前 X keymap 换算 Linux evdev 扫描码，
+            # 再通过 ydotool 的 keyboard 设备输入原生 Wayland 窗口。
+            mapping = {}
+            for line in subprocess.check_output(['xmodmap', '-pke'], text=True).splitlines():
+                m = re.match(r'keycode\s+(\d+)\s+=\s+(.*)', line)
+                if m:
+                    for name in m.group(2).split():
+                        if name != 'NoSymbol': mapping.setdefault(name.lower(), int(m.group(1)) - 8)
+            aliases = {'ctrl': 'control_l', 'control': 'control_l', 'shift': 'shift_l',
+                       'alt': 'alt_l', 'super': 'super_l', 'win': 'super_l',
+                       'altgr': 'alt_r', 'space': 'space'}
+            codes = []
+            for key in keys:
+                key = aliases.get(key.lower(), key.lower())
+                if key not in mapping or mapping[key] < 0:
+                    raise ValueError(f'当前键盘布局不支持按键: {key}')
+                codes.append(mapping[key])
+            seq = [f'{code}:1' for code in codes] + [f'{code}:0' for code in reversed(codes)]
+            if staytime:
+                subprocess.run(['ydotool', 'key', *seq[:len(codes)]], check=True)
+                try: time.sleep(staytime)
+                finally: subprocess.run(['ydotool', 'key', *seq[len(codes):]], check=True)
+            else:
+                subprocess.run(['ydotool', 'key', *seq], check=True)
+        else:
+            joined = '+'.join(keys)
+            if staytime:
+                _xdotool('keydown', joined, check=False)
+                time.sleep(staytime)
+                _xdotool('keyup', joined, check=False)
+            else:
+                _xdotool('key', joined)
+    press = Press
 
-def GrabWindow(hwnd):
-	if isinstance(hwnd, str): hwnd = win32gui.FindWindow(None, hwnd); assert hwnd, f'窗口未找到'
-	Activate(hwnd); time.sleep(0.25)
-	# 只截客户区(不含标题栏边框), 与GrabWindowBg一致 → 截图内坐标统一用ClientToScreen原点做偏移
-	l, t = win32gui.ClientToScreen(hwnd, (0, 0))
-	cr = win32gui.GetClientRect(hwnd)  # (0,0,w,h)
-	bbox = (l, t, l + cr[2], t + cr[3])
-	bbox = tuple(int(v / dpi_scale) for v in bbox)
-	return ImageGrab.grab(bbox)
+    # ---------- 窗口截图 ----------
+    def GrabWindow(hwnd_or_name):
+        """窗口客户区截图；Wayland使用持久授权的单窗口ScreenCast，不走全屏截图。"""
+        if _wayland:
+            if not isinstance(hwnd_or_name, str):
+                raise TypeError('Wayland原生窗口需传窗口标题，不接受X11窗口ID')
+            from wayland_window_capture import capture_window
+            return capture_window(hwnd_or_name)
+        if isinstance(hwnd_or_name, str):
+            wid = FindWindow(None, hwnd_or_name)
+            assert wid, f'窗口未找到: {hwnd_or_name}'
+            hwnd_or_name = wid
+        Activate(hwnd_or_name)
+        g = {}
+        for _ in range(5):  # 激活瞬间几何可能未就绪, 重试
+            out = _xdotool('getwindowgeometry', '--shell', hwnd_or_name, check=False)
+            g = dict(kv.split('=', 1) for kv in out.splitlines() if '=' in kv)
+            if 'WIDTH' in g and int(g.get('WIDTH', 0)) > 0: break
+            time.sleep(0.15)
+        if 'WIDTH' not in g: raise RuntimeError(f'getwindowgeometry 失败: {hwnd_or_name}')
+        l, t, w, h = int(g['X']), int(g['Y']), int(g['WIDTH']), int(g['HEIGHT'])
+        return _grab((l, t, l + w, t + h))
+    def GrabWindowBg(hwnd_or_name, timeout=5):
+        """Linux: 无WGC后台截图, 等同 GrabWindow(需窗口可见)"""
+        return GrabWindow(hwnd_or_name)
 
-def GrabWindowBg(hwnd_or_name, timeout=5):
-	"""WGC后台截图(Win10+), 传hwnd(int)或窗口标题(str), 返回PIL Image"""
-	import threading, tempfile
-	from windows_capture import WindowsCapture, Frame, CaptureControl
-	tmp = tempfile.mktemp(suffix='.png')
-	done = threading.Event()
-	kw = {'window_hwnd': hwnd_or_name} if isinstance(hwnd_or_name, int) else {'window_name': hwnd_or_name}
-	cap = WindowsCapture(cursor_capture=False, draw_border=False, **kw)
-	@cap.event
-	def on_frame_arrived(frame: Frame, capture_control: CaptureControl):
-		frame.save_as_image(tmp)
-		capture_control.stop(); done.set()
-	@cap.event
-	def on_closed(): done.set()
-	cap.start_free_threaded()
-	done.wait(timeout=timeout)
-	if os.path.exists(tmp):
-		img = Image.open(tmp); img.load(); os.remove(tmp); return img
+    def imshow(mt, sec=0):
+        cv2.imshow('cc', mt); cv2.waitKey(sec)
 
-def imshow(mt, sec=0):
-	cv2.imshow('cc', mt)
-	cv2.waitKey(sec)
-	
-def GetWRect(sr):
-	num = int(sr[-1])
-	l, u, r, b = 0, 0, swidth, sheight
-	if 'left' in sr: r = swidth // num
-	if 'right' in sr: l = swidth * (num-1) // num 
-	if 'top' in sr: b = sheight // num
-	if 'bottom' in sr: u = sheight * (num-1) // num
-	return [l, u, r, b]
+    def GetWRect(sr):
+        num = int(sr[-1])
+        l, u, r, b = 0, 0, swidth, sheight
+        if 'left' in sr: r = swidth // num
+        if 'right' in sr: l = swidth * (num - 1) // num
+        if 'top' in sr: b = sheight // num
+        if 'bottom' in sr: u = sheight * (num - 1) // num
+        return [l, u, r, b]
 
-def FindBlock(fn, wrect=None, verbose=0, threshold=0.8):
-	tic = time.process_time()
-	if wrect is not None and isinstance(wrect, Image.Image): 
-		scr, wrect = wrect, None
-	else:
-		if isinstance(wrect, str): wrect = GetWRect(wrect)
-		scr = ImageGrab.grab(wrect)
-	blc = Image.open(fn) if isinstance(fn, str) else fn
-	T = cv2.cvtColor(np.array(blc), cv2.COLOR_RGB2BGR)
-	B = cv2.cvtColor(np.array(scr), cv2.COLOR_RGB2BGR)
-	tsh, tsw = T.shape[:2]
-	if verbose: print('T.shape:', T.shape, '\t', 'B.shape:', B.shape)
-	res = cv2.matchTemplate(B, T, cv2.TM_CCOEFF_NORMED)
-	min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
-	oj, oi = max_loc
-	if wrect is None: wrect = [0, 0, scr.size[0], scr.size[1]]
-	obj = (oj + wrect[0] + tsw//2, oi + wrect[1] + tsh//2)
-	if verbose:
-		print(f'Max match: {max_val:.4f} at ({oj}, {oi}) cost: {time.process_time() - tic:.3f}s')
-		#sscr = scr.crop([oj, oi, oj+tsw, oi+tsh])
-		#sscr.show()
-	return obj, max_val
+    def FindBlock(fn, wrect=None, verbose=0, threshold=0.8):
+        tic = time.process_time()
+        if wrect is not None and isinstance(wrect, Image.Image):
+            scr, wrect = wrect, None
+        else:
+            if isinstance(wrect, str): wrect = GetWRect(wrect)
+            scr = _grab(wrect)
+        blc = Image.open(fn) if isinstance(fn, str) else fn
+        T = cv2.cvtColor(np.array(blc), cv2.COLOR_RGB2BGR)
+        B = cv2.cvtColor(np.array(scr), cv2.COLOR_RGB2BGR)
+        tsh, tsw = T.shape[:2]
+        if verbose: print('T.shape:', T.shape, '\t', 'B.shape:', B.shape)
+        res = cv2.matchTemplate(B, T, cv2.TM_CCOEFF_NORMED)
+        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
+        oj, oi = max_loc
+        if wrect is None: wrect = [0, 0, scr.size[0], scr.size[1]]
+        obj = (oj + wrect[0] + tsw // 2, oi + wrect[1] + tsh // 2)
+        if verbose:
+            print(f'Max match: {max_val:.4f} at ({oj}, {oi}) cost: {time.process_time() - tic:.3f}s')
+        return obj, max_val
 
-def ScreenCapAt(x, y, r=100):
-	"""物理坐标(x,y)为中心±r的屏幕截图 → PIL Image"""
-	from PIL import ImageGrab
-	return ImageGrab.grab((x-r, y-r, x+r, y+r))
-
-if __name__ == '__main__':
-	#time.sleep(3)
-	#SetCursorPos( (1640, 131) )
-	#MouseClick()
-	#print(FindBlock('z:/z.png', [1638, 214, 5838, 414], verbose=1))
-	print('completed %.3f' % time.process_time())
+    if __name__ == '__main__':
+        print('completed %.3f' % time.process_time())

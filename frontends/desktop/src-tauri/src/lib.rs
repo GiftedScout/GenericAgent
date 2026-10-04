@@ -10,13 +10,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
 
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
-
-#[cfg(windows)]
-use tauri::menu::{MenuBuilder, MenuItemBuilder};
-#[cfg(windows)]
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
 static BRIDGE_PROCESS: Mutex<Option<Child>> = Mutex::new(None);
 static BRIDGE_LOG_READERS: Mutex<Vec<thread::JoinHandle<()>>> = Mutex::new(Vec::new());
@@ -144,11 +137,8 @@ fn classify_listener_identity(
     }
     let same_root = {
         let (reported, expected) = (norm_path(reported_root), norm_path(project_dir));
-        #[cfg(windows)]
-        {
-            reported.eq_ignore_ascii_case(&expected)
-        }
-        #[cfg(not(windows))]
+
+
         {
             reported == expected
         }
@@ -160,10 +150,6 @@ fn classify_listener_identity(
     }
 }
 
-#[cfg(any(windows, test))]
-fn should_retry_without_breakaway(raw_os_error: Option<i32>) -> bool {
-    raw_os_error == Some(5)
-}
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -238,15 +224,8 @@ struct BootstrapSnapshot {
 }
 
 fn current_platform() -> String {
-    #[cfg(windows)]
-    {
-        "windows".to_string()
-    }
-    #[cfg(target_os = "macos")]
-    {
-        "macos".to_string()
-    }
-    #[cfg(all(not(windows), not(target_os = "macos")))]
+
+
     {
         "linux".to_string()
     }
@@ -393,11 +372,10 @@ fn project_root() -> PathBuf {
 }
 
 /// Directory next to which a self-contained bundle keeps its runtime/ folder.
-/// Windows: the exe's folder. Linux: the .AppImage's folder ($APPIMAGE) when launched as an
+/// Linux: the .AppImage's folder ($APPIMAGE) when launched as an
 /// AppImage (current_exe would otherwise point inside the read-only squashfs mount).
-/// macOS portable package: the folder containing GenericAgent.app and runtime/.
 fn bundle_anchor_dir() -> Option<PathBuf> {
-    #[cfg(not(windows))]
+
     {
         if let Some(p) = std::env::var_os("APPIMAGE") {
             if let Some(d) = PathBuf::from(p).parent() {
@@ -408,33 +386,6 @@ fn bundle_anchor_dir() -> Option<PathBuf> {
 
     let exe = std::env::current_exe().ok()?;
 
-    #[cfg(target_os = "macos")]
-    {
-        // current_exe() inside a bundle is:
-        //   <package>/GenericAgent.app/Contents/MacOS/GenericAgent
-        // Prefer the standard macOS layout where runtime is embedded in the app:
-        //   GenericAgent.app/Contents/Resources/runtime/app/agentmain.py
-        // Fall back to the old portable layout for compatibility:
-        //   <package>/runtime/app/agentmain.py
-        let mut d = exe.parent();
-        while let Some(dir) = d {
-            if dir.extension().and_then(|s| s.to_str()) == Some("app") {
-                let resources = dir.join("Contents").join("Resources");
-                if resources
-                    .join("runtime")
-                    .join("app")
-                    .join("agentmain.py")
-                    .exists()
-                {
-                    return Some(resources);
-                }
-                if let Some(parent) = dir.parent() {
-                    return Some(parent.to_path_buf());
-                }
-            }
-            d = dir.parent();
-        }
-    }
 
     Some(exe.parent()?.to_path_buf())
 }
@@ -442,9 +393,8 @@ fn bundle_anchor_dir() -> Option<PathBuf> {
 /// Embedded interpreter inside the bundle's runtime/python (base python, before venv).
 fn bundle_python() -> Option<PathBuf> {
     let root = bundle_root()?;
-    #[cfg(windows)]
-    let p = root.join("python").join("python.exe");
-    #[cfg(not(windows))]
+
+
     let p = root.join("python").join("bin").join("python3");
     if p.exists() {
         Some(p)
@@ -454,22 +404,16 @@ fn bundle_python() -> Option<PathBuf> {
 }
 
 fn platform_python_name() -> &'static str {
-    #[cfg(windows)]
-    {
-        "python"
-    }
-    #[cfg(not(windows))]
+
+
     {
         "python3"
     }
 }
 
 fn project_venv_python(project: &Path) -> PathBuf {
-    #[cfg(windows)]
-    {
-        project.join(".venv").join("Scripts").join("python.exe")
-    }
-    #[cfg(not(windows))]
+
+
     {
         project.join(".venv").join("bin").join("python")
     }
@@ -477,9 +421,8 @@ fn project_venv_python(project: &Path) -> PathBuf {
 
 fn portable_python(project: &Path) -> Option<PathBuf> {
     let root = project.join(".portable").join("uv-python");
-    #[cfg(windows)]
-    let direct = root.join("python.exe");
-    #[cfg(not(windows))]
+
+
     let direct = root.join("bin").join("python3");
     if direct.is_file() {
         return Some(direct);
@@ -493,9 +436,8 @@ fn portable_python(project: &Path) -> Option<PathBuf> {
         .collect::<Vec<_>>();
     children.sort();
     children.into_iter().find_map(|path| {
-        #[cfg(windows)]
-        let python = path.join("python.exe");
-        #[cfg(not(windows))]
+
+
         let python = path.join("bin").join("python3");
         python.is_file().then_some(python)
     })
@@ -554,25 +496,7 @@ fn python_interpreter_resolves(python_path: &str) -> bool {
         if directory.join(python_path).is_file() {
             return true;
         }
-        #[cfg(windows)]
-        {
-            let extensions =
-                std::env::var("PATHEXT").unwrap_or_else(|_| ".EXE;.CMD;.BAT".to_string());
-            for extension in extensions
-                .split(';')
-                .filter(|extension| !extension.is_empty())
-            {
-                if directory
-                    .join(format!("{python_path}{extension}"))
-                    .is_file()
-                    || directory
-                        .join(format!("{python_path}{}", extension.to_ascii_lowercase()))
-                        .is_file()
-                {
-                    return true;
-                }
-            }
-        }
+
     }
     false
 }
@@ -616,7 +540,6 @@ fn resolve_settings_path(home_dir: Option<PathBuf>, e2e_override: Option<&str>) 
 
 /// Settings file path: ~/.ga_desktop_settings.json.
 ///
-/// Windows resolves the home directory through Known Folders and ignores an overridden
 /// USERPROFILE. E2E builds therefore accept an explicit sandbox-owned settings file; the
 /// production feature set never reads this override.
 fn settings_path() -> PathBuf {
@@ -656,40 +579,6 @@ fn read_settings() -> serde_json::Map<String, serde_json::Value> {
     read_settings_from(&settings_path())
 }
 
-#[cfg(windows)]
-fn atomic_replace(source: &Path, destination: &Path) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-
-    #[link(name = "Kernel32")]
-    extern "system" {
-        fn MoveFileExW(
-            existing_file_name: *const u16,
-            new_file_name: *const u16,
-            flags: u32,
-        ) -> i32;
-    }
-
-    const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
-    const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
-    let source_wide: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
-    let destination_wide: Vec<u16> = destination
-        .as_os_str()
-        .encode_wide()
-        .chain(Some(0))
-        .collect();
-    let result = unsafe {
-        MoveFileExW(
-            source_wide.as_ptr(),
-            destination_wide.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if result == 0 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
-}
 
 struct SettingsFileLock {
     path: PathBuf,
@@ -771,7 +660,7 @@ impl Drop for SettingsFileLock {
     }
 }
 
-#[cfg(not(windows))]
+
 fn atomic_replace(source: &Path, destination: &Path) -> std::io::Result<()> {
     std::fs::rename(source, destination)
 }
@@ -804,7 +693,7 @@ fn write_settings_atomically(path: &Path, value: &serde_json::Value) -> std::io:
         file.write_all(b"\n")?;
         file.sync_all()?;
         atomic_replace(&temporary, path)?;
-        #[cfg(unix)]
+
         std::fs::File::open(parent)?.sync_all()?;
         Ok(())
     })();
@@ -890,52 +779,9 @@ fn write_shortcut_pref(enabled: bool) -> Result<(), String> {
 
 /// Create (or overwrite) a desktop shortcut pointing at the CURRENT exe. Overwriting on every
 /// enabled launch is what makes the portable bundle relocatable: move the folder, relaunch, and
-/// the shortcut is rewritten to the new path. Windows-only (uses a .lnk via WScript.Shell).
-#[cfg(windows)]
-fn ensure_desktop_shortcut() {
-    let Ok(exe) = std::env::current_exe() else {
-        return;
-    };
-    let Some(desktop) = dirs::desktop_dir() else {
-        return;
-    };
-    let lnk = desktop.join("GenericAgent.lnk");
-    let work_dir = exe
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| exe.clone());
+/// the .desktop shortcut is rewritten to the new path.
 
-    let exe_s = exe.to_string_lossy().replace('\'', "''");
-    let lnk_s = lnk.to_string_lossy().replace('\'', "''");
-    let work_s = work_dir.to_string_lossy().replace('\'', "''");
 
-    // Build the shortcut via WScript.Shell COM, consistent with the existing powershell usage
-    // elsewhere in this file. No extra crate needed.
-    let script = format!(
-        "$ws = New-Object -ComObject WScript.Shell; \
-         $sc = $ws.CreateShortcut('{lnk}'); \
-         $sc.TargetPath = '{exe}'; \
-         $sc.WorkingDirectory = '{work}'; \
-         $sc.IconLocation = '{exe}'; \
-         $sc.Save()",
-        lnk = lnk_s,
-        exe = exe_s,
-        work = work_s
-    );
-
-    let mut cmd = Command::new("powershell.exe");
-    cmd.args([
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-Command",
-        &script,
-    ]);
-    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    let _ = cmd.status();
-}
-
-#[cfg(target_os = "linux")]
 fn ensure_desktop_shortcut() {
     // Launch target: the AppImage path when running as one, else the current exe. Writing the
     // current path on every enabled launch keeps a relocated bundle's launcher valid.
@@ -981,31 +827,6 @@ fn ensure_desktop_shortcut() {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn ensure_desktop_shortcut() {
-    // The .app is the launchable unit; drop a symlink to it on the Desktop.
-    let Ok(exe) = std::env::current_exe() else {
-        return;
-    };
-    let mut app: Option<PathBuf> = None;
-    let mut d = exe.parent();
-    while let Some(dir) = d {
-        if dir.extension().and_then(|s| s.to_str()) == Some("app") {
-            app = Some(dir.to_path_buf());
-            break;
-        }
-        d = dir.parent();
-    }
-    let (Some(app), Some(desktop)) = (app, dirs::desktop_dir()) else {
-        return;
-    };
-    let link = desktop.join("GenericAgent.app");
-    let _ = std::fs::remove_file(&link);
-    let _ = std::os::unix::fs::symlink(&app, &link);
-}
-
-#[cfg(all(not(windows), not(target_os = "linux"), not(target_os = "macos")))]
-fn ensure_desktop_shortcut() {}
 
 /// First-run shortcut handling for portable bundles (all platforms). Self-heals the shortcut
 /// path on every enabled launch (cheap, no UI). The first-run ASK is driven by the frontend
@@ -1039,16 +860,6 @@ fn shortcut_decide(create: bool) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
-fn running_inside_app_bundle() -> bool {
-    std::env::current_exe()
-        .ok()
-        .map(|path| {
-            path.components()
-                .any(|component| component.as_os_str().to_string_lossy().ends_with(".app"))
-        })
-        .unwrap_or(false)
-}
 
 /// User-set external GenericAgent core. The desktop bridge and conductor remain package-owned;
 /// this path is only injected as GA_ROOT. A moved or deleted core falls back to the bundled one.
@@ -1395,14 +1206,7 @@ fn refresh_runtime_copy_from_legacy(
 }
 
 fn builtin_ga_root(project_dir: &str) -> PathBuf {
-    #[cfg(target_os = "macos")]
-    {
-        if running_inside_app_bundle() {
-            if let Some(data_dir) = dirs::data_dir() {
-                return data_dir.join("GenericAgent").join("runtime").join("app");
-            }
-        }
-    }
+
     PathBuf::from(project_dir)
 }
 
@@ -1430,11 +1234,8 @@ fn ensure_builtin_ga_root(project_dir: &str) -> Result<(), String> {
 fn same_path(a: &Path, b: &Path) -> bool {
     let a = a.canonicalize().unwrap_or_else(|_| a.to_path_buf());
     let b = b.canonicalize().unwrap_or_else(|_| b.to_path_buf());
-    #[cfg(windows)]
-    {
-        display_path(&a).eq_ignore_ascii_case(&display_path(&b))
-    }
-    #[cfg(not(windows))]
+
+
     {
         a == b
     }
@@ -1442,12 +1243,7 @@ fn same_path(a: &Path, b: &Path) -> bool {
 
 fn display_path(path: &Path) -> String {
     let value = path.to_string_lossy().to_string();
-    #[cfg(windows)]
-    {
-        if let Some(rest) = value.strip_prefix("\\\\?\\") {
-            return rest.to_string();
-        }
-    }
+
     value
 }
 
@@ -1471,12 +1267,9 @@ pub fn get_or_discover_config() -> (String, String) {
         }
     }
 
-    #[cfg(target_os = "macos")]
-    let trust_settings = !running_inside_app_bundle();
-    #[cfg(not(target_os = "macos"))]
+
     let trust_settings = true;
 
-    // A packaged macOS app never trusts a stale path from a previous install/translocation.
     if trust_settings && path.exists() {
         if let Ok(content) = std::fs::read_to_string(&path) {
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
@@ -1522,7 +1315,7 @@ pub fn get_or_discover_config() -> (String, String) {
     (python, project)
 }
 
-/// Self-contained bundle support dir: holds python/, wheels/, install_windows.ps1 and app/.
+/// Self-contained bundle support dir: holds python/, wheels/, Linux installer and app/.
 /// Typical portable layout keeps only the exe (+README) at the top level and tucks everything
 /// else under <exe dir>/runtime/. Returns None when this is not a bundle (e.g. dev build).
 fn bundle_root() -> Option<PathBuf> {
@@ -1571,7 +1364,7 @@ fn sanitize_bundle_env(cmd: &mut Command, project_dir: &str) {
     cmd.env("BRIDGE_PORT", endpoint.port.to_string());
 }
 
-/// Run the offline prepare (install_windows.ps1 -Mode PrepareOnly) using bundled python + wheels.
+/// Run offline Linux preparation using bundled Python and wheels.
 /// Streams the script's stdout and forwards GAPROGRESS markers to `report(pct, message)`.
 /// Blocking; intended to run on a background thread. Writes ~/.ga_desktop_settings.json.
 fn run_offline_prepare(
@@ -1582,17 +1375,7 @@ fn run_offline_prepare(
     let root = bundle_root().ok_or("cannot locate bundle root")?;
     let wheels = root.join("wheels");
 
-    #[cfg(windows)]
-    let (script, py) = (
-        root.join("install_windows.ps1"),
-        root.join("python").join("python.exe"),
-    );
-    #[cfg(target_os = "macos")]
-    let (script, py) = (
-        root.join("install_macos.sh"),
-        root.join("python").join("bin").join("python3"),
-    );
-    #[cfg(all(not(windows), not(target_os = "macos")))]
+
     let (script, py) = (
         root.join("install_linux.sh"),
         root.join("python").join("bin").join("python3"),
@@ -1602,25 +1385,7 @@ fn run_offline_prepare(
         return Err(format!("prepare resources missing under {:?}", root));
     }
 
-    #[cfg(windows)]
-    let mut cmd = {
-        let mut c = Command::new("powershell.exe");
-        c.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
-            .arg(&script)
-            .arg("-PythonPath")
-            .arg(&py)
-            .arg("-ProjectDir")
-            .arg(project_dir)
-            .arg("-WheelDir")
-            .arg(&wheels)
-            .arg("-ExtraPipPackages")
-            .arg("fastapi uvicorn websockets")
-            // -NoVenv: install deps straight into the embedded python (no venv) so the
-            // bundle is relocatable. See prepared_marker / find_python.
-            .args(["-Mode", "PrepareOnly", "-SkipNpmInstall", "-NoVenv"]);
-        c
-    };
-    #[cfg(not(windows))]
+
     let mut cmd = {
         let mut c = Command::new("bash");
         c.arg(&script)
@@ -1640,8 +1405,7 @@ fn run_offline_prepare(
 
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     sanitize_bundle_env(&mut cmd, project_dir);
-    #[cfg(windows)]
-    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+     // CREATE_NO_WINDOW
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("failed to launch prepare: {}", e))?;
@@ -2052,35 +1816,11 @@ fn spawn_bridge_process(
     }
 
     let mut command = bridge_command(python_path, project_dir)?;
-    #[cfg(windows)]
-    command.creation_flags(0x08000000 | 0x01000000); // CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB
+     // CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB
 
     let spawn_result = command.spawn();
-    #[cfg(windows)]
-    let mut child = match spawn_result {
-        Ok(child) => child,
-        Err(error) if should_retry_without_breakaway(error.raw_os_error()) => {
-            record_diagnostic_log(
-                app_handle,
-                "Windows denied CREATE_BREAKAWAY_FROM_JOB; retrying with CREATE_NO_WINDOW.",
-            );
-            let mut fallback = bridge_command(python_path, project_dir)?;
-            fallback.creation_flags(0x08000000); // CREATE_NO_WINDOW
-            fallback.spawn().map_err(|fallback_error| {
-                bootstrap_failure(
-                    BootstrapFailureCode::SpawnFailed,
-                    format!("bridge spawn fallback failed: {fallback_error}"),
-                )
-            })?
-        }
-        Err(error) => {
-            return Err(bootstrap_failure(
-                BootstrapFailureCode::SpawnFailed,
-                format!("bridge spawn failed: {error}"),
-            ));
-        }
-    };
-    #[cfg(not(windows))]
+
+
     let mut child = spawn_result.map_err(|error| {
         bootstrap_failure(
             BootstrapFailureCode::SpawnFailed,
@@ -2513,10 +2253,7 @@ fn pick_directory(title: Option<String>) -> Option<String> {
 #[tauri::command]
 fn pick_python_interpreter(title: Option<String>) -> Result<Option<String>, String> {
     let mut dialog = rfd::FileDialog::new();
-    #[cfg(windows)]
-    {
-        dialog = dialog.add_filter("Python", &["exe"]);
-    }
+
     if let Some(value) = title.filter(|value| !value.is_empty()) {
         dialog = dialog.set_title(&value);
     }
@@ -2567,20 +2304,8 @@ fn reveal_in_file_manager(path: String) -> Result<(), String> {
     if !target.is_file() {
         return Err("the selected file is unavailable".to_string());
     }
-    #[cfg(target_os = "macos")]
-    let mut command = {
-        let mut command = Command::new("open");
-        command.arg("-R").arg(&target);
-        command
-    };
-    #[cfg(windows)]
-    let mut command = {
-        let mut command = Command::new("explorer");
-        command.arg("/select,").arg(&target);
-        command.creation_flags(0x08000000);
-        command
-    };
-    #[cfg(all(unix, not(target_os = "macos")))]
+
+
     let mut command = {
         let mut command = Command::new("xdg-open");
         command.arg(target.parent().unwrap_or(Path::new(".")));
@@ -2620,8 +2345,7 @@ fn probe_ga_source(dir: &str) -> Result<(), String> {
     command.arg(probe).arg(dir);
     sanitize_bundle_env(&mut command, &bundle_project);
     command.env("GA_ROOT", dir);
-    #[cfg(windows)]
-    command.creation_flags(0x08000000);
+
     let output = command
         .output()
         .map_err(|error| format!("compatibility probe failed to run: {error}"))?;
@@ -2729,101 +2453,6 @@ async fn clear_ga_source(app_handle: tauri::AppHandle) -> Result<String, String>
     apply_ga_source_with_rollback(app_handle, None, previous_override).await
 }
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct MacosTitlebarMetrics {
-    traffic_light_center_y: f64,
-    traffic_light_right_x: f64,
-}
-
-#[cfg(target_os = "macos")]
-fn measure_macos_titlebar_metrics(
-    webview: &tauri::webview::PlatformWebview,
-) -> Result<MacosTitlebarMetrics, String> {
-    use objc2_app_kit::{NSView, NSWindow, NSWindowButton};
-
-    let ns_window = webview.ns_window();
-    let webview_handle = webview.inner();
-    if ns_window.is_null() || webview_handle.is_null() {
-        return Err("macOS titlebar native handles are unavailable".to_string());
-    }
-
-    // SAFETY: Tauri documents these handles as the NSWindow and WKWebView for
-    // this callback. with_webview schedules the callback on the main thread.
-    let window = unsafe { &*ns_window.cast::<NSWindow>() };
-    let content_view = unsafe { &*webview_handle.cast::<NSView>() };
-    let bounds = content_view.bounds();
-
-    let mut min_y = f64::INFINITY;
-    let mut max_x = f64::NEG_INFINITY;
-    let mut max_y = f64::NEG_INFINITY;
-    for kind in [
-        NSWindowButton::CloseButton,
-        NSWindowButton::MiniaturizeButton,
-        NSWindowButton::ZoomButton,
-    ] {
-        let button = window
-            .standardWindowButton(kind)
-            .ok_or_else(|| "macOS titlebar button is unavailable".to_string())?;
-        // SAFETY: AppKit owns the standard button and its superview for the
-        // lifetime of this main-thread callback.
-        let superview = unsafe { button.superview() }
-            .ok_or_else(|| "macOS titlebar button has no superview".to_string())?;
-        let rect = content_view.convertRect_fromView(button.frame(), Some(&superview));
-        min_y = min_y.min(rect.origin.y);
-        max_x = max_x.max(rect.origin.x + rect.size.width);
-        max_y = max_y.max(rect.origin.y + rect.size.height);
-    }
-
-    let appkit_center_y = min_y + (max_y - min_y) / 2.0;
-    let traffic_light_center_y = if content_view.isFlipped() {
-        appkit_center_y - bounds.origin.y
-    } else {
-        bounds.origin.y + bounds.size.height - appkit_center_y
-    };
-    let metrics = MacosTitlebarMetrics {
-        traffic_light_center_y,
-        traffic_light_right_x: max_x - bounds.origin.x,
-    };
-    if !metrics.traffic_light_center_y.is_finite()
-        || !metrics.traffic_light_right_x.is_finite()
-        || metrics.traffic_light_center_y < 0.0
-        || metrics.traffic_light_right_x < 0.0
-    {
-        return Err("macOS titlebar metrics are invalid".to_string());
-    }
-    Ok(metrics)
-}
-
-#[tauri::command]
-async fn get_macos_titlebar_metrics(
-    window: tauri::WebviewWindow,
-) -> Result<Option<MacosTitlebarMetrics>, String> {
-    #[cfg(target_os = "macos")]
-    {
-        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-        window
-            .with_webview(move |webview| {
-                let _ = sender.send(measure_macos_titlebar_metrics(&webview));
-            })
-            .map_err(|error| format!("cannot schedule macOS titlebar measurement: {error}"))?;
-        return tauri::async_runtime::spawn_blocking(move || {
-            receiver
-                .recv_timeout(Duration::from_secs(1))
-                .map_err(|_| "macOS titlebar measurement timed out".to_string())?
-                .map(Some)
-        })
-        .await
-        .map_err(|error| format!("macOS titlebar measurement task failed: {error}"))?;
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = window;
-        Ok(None)
-    }
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let args: Vec<String> = std::env::args().collect();
@@ -2878,7 +2507,6 @@ pub fn run() {
             validate_ga_source,
             set_ga_source,
             clear_ga_source,
-            get_macos_titlebar_metrics,
             shortcut_should_ask,
             shortcut_decide
         ])
@@ -2886,57 +2514,11 @@ pub fn run() {
             // Show the loading window immediately so the first-run prepare isn't a blank screen.
             // The window starts on loading.html (a local page), so no "connection refused" flash.
             if let Some(w) = app.get_webview_window("main") {
-                // Windows: remove native decorations at runtime (config keeps them for macOS
-                // traffic lights). titleBarStyle:"Overlay" is macOS-only in Tauri v2.
-                #[cfg(windows)]
-                let _ = w.set_decorations(false);
+
                 let _ = w.show();
             }
 
-            // Windows: system tray so the app can hide-on-close instead of exiting.
-            #[cfg(windows)]
-            {
-                let show_item = MenuItemBuilder::with_id("show", "显示主窗口").build(app)?;
-                let quit_item = MenuItemBuilder::with_id("quit", "退出").build(app)?;
-                let menu = MenuBuilder::new(app)
-                    .item(&show_item)
-                    .separator()
-                    .item(&quit_item)
-                    .build()?;
 
-                let _tray = TrayIconBuilder::new()
-                    .icon(app.default_window_icon().unwrap().clone())
-                    .tooltip("GenericAgent")
-                    .menu(&menu)
-                    .on_menu_event(|app, event| match event.id().as_ref() {
-                        "show" => {
-                            if let Some(w) = app.get_webview_window("main") {
-                                let _ = w.show();
-                                let _ = w.unminimize();
-                                let _ = w.set_focus();
-                            }
-                        }
-                        "quit" => {
-                            app.exit(0);
-                        }
-                        _ => {}
-                    })
-                    .on_tray_icon_event(|tray, event| {
-                        if let TrayIconEvent::Click {
-                            button: MouseButton::Left,
-                            button_state: MouseButtonState::Up,
-                            ..
-                        } = event
-                        {
-                            if let Some(w) = tray.app_handle().get_webview_window("main") {
-                                let _ = w.show();
-                                let _ = w.unminimize();
-                                let _ = w.set_focus();
-                            }
-                        }
-                    })
-                    .build(app)?;
-            }
 
             let handle = app.handle().clone();
             let python_path = eff_py.clone();
@@ -2968,13 +2550,8 @@ pub fn run() {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let label = window.label();
                 if label == "main" {
-                    #[cfg(windows)]
-                    {
-                        // Windows: hide to tray instead of exiting. Bridge stays alive.
-                        api.prevent_close();
-                        let _ = window.hide();
-                    }
-                    #[cfg(not(windows))]
+
+
                     {
                         let _ = api;
                         window.app_handle().exit(0);
@@ -3199,12 +2776,6 @@ mod tests {
         server.join().unwrap();
     }
 
-    #[test]
-    fn breakaway_fallback_is_limited_to_access_denied() {
-        assert!(should_retry_without_breakaway(Some(5)));
-        assert!(!should_retry_without_breakaway(Some(2)));
-        assert!(!should_retry_without_breakaway(None));
-    }
 
     #[test]
     fn python_validation_rejects_an_unresolvable_explicit_path() {
@@ -3227,13 +2798,11 @@ mod tests {
         ));
         let portable_a = root.join(".portable").join("uv-python").join("a");
         let portable_z = root.join(".portable").join("uv-python").join("z");
-        #[cfg(windows)]
-        let portable_a_python = portable_a.join("python.exe");
-        #[cfg(not(windows))]
+
+
         let portable_a_python = portable_a.join("bin").join("python3");
-        #[cfg(windows)]
-        let portable_z_python = portable_z.join("python.exe");
-        #[cfg(not(windows))]
+
+
         let portable_z_python = portable_z.join("bin").join("python3");
         std::fs::create_dir_all(portable_a_python.parent().unwrap()).unwrap();
         std::fs::create_dir_all(portable_z_python.parent().unwrap()).unwrap();
@@ -3274,16 +2843,16 @@ mod tests {
 
     #[test]
     fn main_ui_url_keeps_the_platform_asset_origin() {
-        let windows = main_ui_url_from_current(
+        let asset_http = main_ui_url_from_current(
             tauri::Url::parse("http://tauri.localhost/loading.html?phase=ready#status").unwrap(),
         )
         .unwrap();
-        assert_eq!(windows.as_str(), "http://tauri.localhost/index.html");
+        assert_eq!(asset_http.as_str(), "http://tauri.localhost/index.html");
 
-        let macos =
+        let asset_custom =
             main_ui_url_from_current(tauri::Url::parse("tauri://localhost/loading.html").unwrap())
                 .unwrap();
-        assert_eq!(macos.as_str(), "tauri://localhost/index.html");
+        assert_eq!(asset_custom.as_str(), "tauri://localhost/index.html");
 
         let dev = main_ui_url_from_current(
             tauri::Url::parse("http://localhost:5173/loading.html").unwrap(),

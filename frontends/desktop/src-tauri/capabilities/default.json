@@ -21,7 +21,6 @@
     "allow-validate-ga-source",
     "allow-set-ga-source",
     "allow-clear-ga-source",
-    "allow-get-macos-titlebar-metrics",
     "allow-shortcut-should-ask",
     "allow-shortcut-decide",
     "opener:allow-open-url",

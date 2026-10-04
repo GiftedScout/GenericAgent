@@ -5,7 +5,7 @@ _R = Path(__file__).resolve().parent.parent
 _BBS, _MAIN = _R/"assets/agent_bbs.py", _R/"agentmain.py"
 _W_RE, _M_RE = _R/"reflect/agent_team_worker.py", _R/"reflect/checklist_master.py"
 _PK = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
-if sys.platform == "win32": _PK["creationflags"] = 0x200
+_PK["start_new_session"] = True
 
 class CL:
     def __init__(self, folder, goal="", workers=0):

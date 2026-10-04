@@ -1,4 +1,4 @@
-import webview, threading, subprocess, sys, time, os, ctypes, atexit, socket, random
+import webview, threading, subprocess, sys, time, os, atexit, socket, random
 
 WINDOW_WIDTH, WINDOW_HEIGHT, RIGHT_PADDING, TOP_PADDING = 1200, 900, 0, 50
 
@@ -12,9 +12,6 @@ def find_free_port(lo=18501, hi=18599):
         except OSError: continue
     raise RuntimeError(f'No free port in {lo}-{hi}')
 
-def get_screen_width():
-    try: return ctypes.windll.user32.GetSystemMetrics(0)
-    except: return 1920
 
 def start_streamlit(port):
     global proc
@@ -66,52 +63,49 @@ if __name__ == '__main__':
     threading.Thread(target=start_streamlit, args=(port,), daemon=True).start()
 
     if args.tg:
-        tgproc = subprocess.Popen([sys.executable, os.path.join(frontends_dir, "tgapp.py")], creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0)
+        tgproc = subprocess.Popen([sys.executable, os.path.join(frontends_dir, "tgapp.py")])
         atexit.register(tgproc.kill)
         print('[Launch] Telegram Bot started')
     else: print('[Launch] Telegram Bot not enabled (use --tg to start)')
 
     if args.qq:
-        qqproc = subprocess.Popen([sys.executable, os.path.join(frontends_dir, "qqapp.py")], creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0)
+        qqproc = subprocess.Popen([sys.executable, os.path.join(frontends_dir, "qqapp.py")])
         atexit.register(qqproc.kill)
         print('[Launch] QQ Bot started')
     else: print('[Launch] QQ Bot not enabled (use --qq to start)')
 
     if args.feishu:
-        fsproc = subprocess.Popen([sys.executable, os.path.join(frontends_dir, "fsapp.py")], creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0)
+        fsproc = subprocess.Popen([sys.executable, os.path.join(frontends_dir, "fsapp.py")])
         atexit.register(fsproc.kill)
         print('[Launch] Feishu Bot started')
     else: print('[Launch] Feishu Bot not enabled (use --feishu to start)')
 
     if args.wechat:
-        wxproc = subprocess.Popen([sys.executable, os.path.join(frontends_dir, 'wechatapp.py')], creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0)
+        wxproc = subprocess.Popen([sys.executable, os.path.join(frontends_dir, 'wechatapp.py')])
         atexit.register(wxproc.kill)
         print('[Launch] WeChat Bot started')
     else: print('[Launch] WeChat Bot not enabled (use --wechat to start)')
 
     if args.wecom:
-        wcproc = subprocess.Popen([sys.executable, os.path.join(frontends_dir, "wecomapp.py")], creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0)
+        wcproc = subprocess.Popen([sys.executable, os.path.join(frontends_dir, "wecomapp.py")])
         atexit.register(wcproc.kill)
         print('[Launch] WeCom Bot started')
     else: print('[Launch] WeCom Bot not enabled (use --wecom to start)')
 
     if args.dingtalk:
-        dtproc = subprocess.Popen([sys.executable, os.path.join(frontends_dir, "dingtalkapp.py")], creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0)
+        dtproc = subprocess.Popen([sys.executable, os.path.join(frontends_dir, "dingtalkapp.py")])
         atexit.register(dtproc.kill)
         print('[Launch] DingTalk Bot started')
     else: print('[Launch] DingTalk Bot not enabled (use --dingtalk to start)')
     
     if args.sched:
-        scheduler_proc = subprocess.Popen([sys.executable, os.path.join(script_dir, "agentmain.py"), "--reflect", os.path.join(script_dir, "reflect", "scheduler.py"), "--llm_no", str(args.llm_no)], creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0)
+        scheduler_proc = subprocess.Popen([sys.executable, os.path.join(script_dir, "agentmain.py"), "--reflect", os.path.join(script_dir, "reflect", "scheduler.py"), "--llm_no", str(args.llm_no)])
         atexit.register(scheduler_proc.kill)
         print('[Launch] Task Scheduler started (duplicate prevented by scheduler port lock)')
     else: print('[Launch] Task Scheduler not enabled (--sched)')
 
     threading.Thread(target=paste_hook_injector, daemon=True).start()
-    if os.name == 'nt':
-        screen_width = get_screen_width()
-        x_pos = screen_width - WINDOW_WIDTH - RIGHT_PADDING
-    else: x_pos = 100
+    x_pos = 100
     time.sleep(2) 
     window = webview.create_window(
         title='GenericAgent', url=f'http://localhost:{port}',

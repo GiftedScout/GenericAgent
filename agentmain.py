@@ -23,7 +23,7 @@ def _close_think_envelope(s):
 def load_tool_schema(suffix=''):
     global TOOLS_SCHEMA
     TS = open(os.path.join(script_dir, f'assets/tools_schema{suffix}.json'), 'r', encoding='utf-8').read()
-    TOOLS_SCHEMA = json.loads(TS if os.name == 'nt' else TS.replace('powershell', 'bash'))
+    TOOLS_SCHEMA = json.loads(TS)
     TOOLS_SCHEMA = [t for t in TOOLS_SCHEMA if t.get('function', {}).get('name') not in BANNED_TOOLS]
 load_tool_schema()
 
@@ -451,7 +451,6 @@ if __name__ == '__main__':
             err = open(os.path.join(d, 'stderr.log'), 'w', encoding='utf-8')
         else: out, err = subprocess.DEVNULL, subprocess.DEVNULL
         p = subprocess.Popen(cmd, cwd=script_dir,
-            creationflags=0x08000000 if platform.system() == 'Windows' else 0,
             stdout=out, stderr=err)
         print('PID:', p.pid); sys.exit(0)
 

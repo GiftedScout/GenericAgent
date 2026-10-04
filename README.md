@@ -1,3 +1,7 @@
+> **Ubuntu personal fork / Ubuntu个人定制**：仅支持 Linux。computer-use 未完成、暂停验收，禁止主动调用其原子工具；图片文件 OCR 仍可用。
+>
+> 本定制版请使用 `git clone --branch cleanup/win-adb-redundancy https://github.com/GiftedScout/GenericAgent.git`。下文官方安装器/下载链接是上游渠道，不会自动安装此分支。Use this fork's branch explicitly; upstream installers do not install these customizations.
+
 <div align="center">
 
 <img src="assets/images/bar.jpg" width="880" alt="GenericAgent Banner"/>
@@ -33,7 +37,7 @@
 
 ## 🌟 Overview
 
-**GenericAgent** is a minimal, self-evolving autonomous agent framework. Its core is just **~3K lines of code**. Through **9 atomic tools + a ~100-line Agent Loop**, it grants any LLM system-level control over a local computer — covering terminal, filesystem, keyboard/mouse input, screen vision, and mobile devices (ADB).
+**GenericAgent** is a minimal, self-evolving autonomous agent framework. Its core is just **~3K lines of code**. Through **9 atomic tools + a ~100-line Agent Loop**, it grants any LLM system-level control over a local computer — covering terminal, filesystem, local command execution and image OCR (computer-use remains unfinished).
 
 > Design philosophy — **don't preload skills, evolve them.**
 
@@ -102,7 +106,7 @@ Every time GenericAgent solves a new task, it automatically crystallizes the exe
     <td align="center"><img src="assets/demo/wechat_batch.png" width="65%" alt="WeChat Batch"></td>
   </tr>
   <tr>
-    <td><sub><i>"Find expenses over ¥2K in the last 3 months"</i> — drives Alipay via ADB.</sub></td>
+    <td><sub><i>"Find expenses over ¥2K in the last 3 months"</i> — Upstream mobile demo; not supported in this Ubuntu fork.</sub></td>
     <td><sub>Sends bulk WeChat messages, fully driving the WeChat client.</sub></td>
   </tr>
 </table>
@@ -146,13 +150,7 @@ python launch.pyw            # Streamlit web UI
 
 Sets up a self-contained directory with an isolated Python environment, Git, and a ready-to-run package. The script is in [`assets/`](assets/) if you'd like to read it first.
 
-**Windows PowerShell**
-
-```powershell
-powershell -ExecutionPolicy Bypass -c "$env:GLOBAL=1; irm https://raw.githubusercontent.com/lsdefine/GenericAgent/main/assets/ga_install.ps1 | iex"
-```
-
-**Linux / macOS**
+**Ubuntu / Linux**
 
 ```bash
 GLOBAL=1 bash -c "$(curl -fsSL https://raw.githubusercontent.com/lsdefine/GenericAgent/main/assets/ga_install.sh)"
@@ -174,17 +172,6 @@ A lightweight, scrollback-first terminal interface built on `prompt_toolkit` + `
 python frontends/tui_v3.py
 ```
 
-<details>
-<summary><b>⚠️ Windows TUI Troubleshooting</b></summary>
-
-TUI rendering on Windows can be flaky depending on terminal + font. Common causes:
-
-1. `prompt_toolkit` / `rich` are not on the latest version — `pip install -U prompt_toolkit rich` first.
-2. PowerShell / cmd ship with terminals that have rough Unicode + key-binding support. **Prefer Git Bash on Windows**, which is much better behaved.
-3. If it still looks broken, ask GA itself to fix it:
-   > *"My experience using `frontends/tui_v3.py` in PowerShell / cmd / Git Bash on Windows is very poor — lots of incompatibility. Please refer to Claude Code's best practices for the Windows terminal and fix all font and rendering incompatibilities."*
-
-</details>
 
 #### Streamlit UI
 
@@ -219,16 +206,14 @@ and persist the result into its own memory.
 | 🌐 Web automation | *"Set up your web automation capability."* — GA guides you through the one manual step: dragging the bundled Chrome extension into `chrome://extensions`. |
 | 🔤 OCR | *"Set up your OCR capability with rapidocr and save it to memory."* |
 | 👁️ Vision | *"Set up your vision capability from the template in memory/."* — GA copies the template, wires it to your existing LLM keys, and self-tests. |
-| 🖱️ Computer use | *"Probe this system and set up your computer-use capability."* |
+| 🖱️ Computer use | Unfinished; paused. Do not proactively invoke its atomic tools. |
 
 > 💡 **About language**: the pre-installed SOPs are written in Chinese — GA reads them
 > natively, so this never blocks you. If you prefer an English knowledge base, just say:
 > *"Read your pre-installed SOPs and rewrite them in English (keep code, paths and error
 > strings verbatim)."*
 >
-> 🌍 **About platforms**: the SOPs were honed on Windows, but cross-platform adaptation is
-> itself a GA task — on macOS/Linux, GA swaps in the platform equivalents (window
-> enumeration, input control, screenshots) on its own. Same self-evolution principle.
+> 🌍 **Platform**: Ubuntu / Linux only. Computer-use is unfinished and must not be invoked proactively.
 
 ---
 
@@ -260,7 +245,7 @@ The entire core loop is just **~100 lines of code** ([`agent_loop.py`](agent_loo
 
 | Tool | Function |
 | :--- | :--- |
-| `code_run` | Execute arbitrary code (Python / PowerShell) |
+| `code_run` | Execute arbitrary code (Python / Bash) |
 | `file_read` | Read files |
 | `file_write` | Write / create / overwrite files |
 | `file_patch` | Patch / modify files |
@@ -316,7 +301,7 @@ After a few weeks, your agent instance will have a skill tree no one else in the
 | :--- | :---: | :---: | :---: |
 | **Codebase** | ~3K lines | ~530,000 lines | Open-sourced (large) |
 | **Deployment** | `pip install` + API Key | Multi-service orchestration | CLI + subscription |
-| **OS Control** | Mouse/kbd, vision, ADB | Multi-agent delegation | File + terminal |
+| **OS Control** | Ubuntu commands + image OCR | Multi-agent delegation | File + terminal |
 | **Self-Evolution** | Autonomous skill growth | Plugin ecosystem | Stateless between sessions |
 | **Out of the Box** | Few core files + starter skills | Hundreds of modules | Rich CLI toolset |
 
@@ -357,7 +342,7 @@ Baselines across these dimensions include **Claude Code**, **OpenAI CodeX**, and
 - **2026-05-23** — 🆕 **TUI v3 released** (`frontends/tui_v3.py`). Block-based scrollback with proper resize reflow, per-terminal color profile for cross-terminal parity, and feature parity with v2.
 - **2026-05-18** — 🆕 **Morphling mode**. Project-level skill absorption — extract goal + tests from any external repo, then decide per component: call, rewrite, or discard. See `memory/morphling_sop.md`.
 - **2026-05-17** — 🆕 **Goal Hive mode**. Multi-worker cooperative Goal mode — BBS-coordinated master/workers running long-horizon objectives in parallel. See `memory/goal_hive_sop.md`.
-- **2026-05-15** — 🖥️ **Desktop GUI released**. One-line installs ship a ready-to-run desktop app (`frontends/GenericAgent.exe`). Developers launch via `python launch.pyw`.
+- **2026-05-15** — 🖥️ **Desktop GUI released**. Ubuntu checkout launch: `python3 launch.pyw`; native packaging is Linux-only.
 - **2026-05-14** — 🆕 **Conductor sub-agent orchestration**. Spawn, supervise, and auto-clean parallel sub-agents; first-class delegation primitives complementing `/btw` side-questions.
 - **2026-05-12** — 🆕 **TUI v2 released** (`frontends/tuiapp_v2.py`). Refined Textual frontend with image-paste folding, file paste, block-delete, Ctrl+C copy, history navigation, and `/llm` / `/export` / `/continue` pickers.
 - **2026-05-08** — 🆕 **Goal mode** (`reflect/goal_mode.py`). Time-budget-driven self-driven loop — "keep optimizing X for N hours" with no premature delivery.
@@ -401,7 +386,7 @@ Distributed under the **MIT License**. See [`LICENSE`](LICENSE) for full text.
 
 ## 🌟 项目简介
 
-**GenericAgent** 是一个极简、可自我进化的自主 Agent 框架。核心仅 **~3K 行代码**，通过 **9 个原子工具 + ~100 行 Agent Loop**，赋予任意 LLM 对本地计算机的系统级控制能力，覆盖终端、文件系统、键鼠输入、屏幕视觉及移动设备（ADB）。
+**GenericAgent** 是一个极简、可自我进化的自主 Agent 框架。核心仅 **~3K 行代码**，通过 **9 个原子工具 + ~100 行 Agent Loop**，赋予任意 LLM 对本地计算机的系统级控制能力，覆盖终端、文件系统、命令执行与图片 OCR（computer-use 未完成）。
 
 > 设计哲学 —— **不预设技能，靠进化获得能力。**
 
@@ -461,7 +446,7 @@ Distributed under the **MIT License**. See [`LICENSE`](LICENSE) for full text.
   </tr>
   <tr>
     <td><sub>自主浏览并定时汇总网页信息</sub></td>
-    <td><sub><i>"查找近 3 个月超 ¥2K 的支出"</i> — 通过 ADB 驱动支付宝</sub></td>
+    <td><sub><i>"查找近 3 个月超 ¥2K 的支出"</i> — 上游移动端演示；本 Ubuntu 分支不支持</sub></td>
   </tr>
   <tr>
     <td align="center" colspan="2"><b>💬 批量消息</b></td>
@@ -496,13 +481,7 @@ curl -fsSL https://raw.githubusercontent.com/lsdefine/GenericAgent/refs/heads/ma
 
 一键安装会自动准备独立 Python 环境、Git、项目文件和桌面端，不污染系统环境。
 
-**Windows PowerShell**
-
-```powershell
-powershell -ExecutionPolicy Bypass -c "irm http://fudankw.cn:9000/files/ga_install.ps1 | iex"
-```
-
-**Linux / macOS**
+**Ubuntu / Linux**
 
 ```bash
 curl -fsSL http://fudankw.cn:9000/files/ga_install.sh | bash
@@ -510,8 +489,7 @@ curl -fsSL http://fudankw.cn:9000/files/ga_install.sh | bash
 
 安装完成后启动：
 
-- **Windows** — 双击 `frontends/GenericAgent.exe`
-- **Linux / macOS** — 在安装目录运行 `python launch.pyw`
+- **Ubuntu / Linux** — 在安装目录运行 `python launch.pyw`
 
 #### 方法二 — Python 安装 *（开发者）*
 
@@ -538,11 +516,7 @@ python launch.pyw
 
 #### 桌面端
 
-一键安装自带桌面端（Windows），双击：
-
-```text
-frontends/GenericAgent.exe
-```
+本分支仅面向 Ubuntu / Linux；使用 `ga tui`，或运行 `python3 launch.pyw`。
 
 #### 终端 UI
 
@@ -552,15 +526,6 @@ frontends/GenericAgent.exe
 python frontends/tuiapp_v2.py
 ```
 
-<details>
-<summary><b>⚠️ Windows 上 TUI 显示异常的排查思路</b></summary>
-
-1. `textual` 版本太旧，先 `pip install -U textual`；
-2. PowerShell / cmd 自带终端对 Unicode 和键位的支持比较糟糕，**Windows 上推荐用 Git Bash**，体验明显更稳；
-3. 仍然显示异常时，可以让 GA 自己修一遍，参考 Prompt：
-   > *"我在 Windows 的 PowerShell / cmd / Git Bash 中使用 `frontends/tuiapp_v2.py` 体验非常差，出现了一堆不兼容问题。请参考 Claude Code 在 Windows 终端的最佳配置，把所有字体和显示不兼容的问题修一遍。"*
-
-</details>
 
 #### Streamlit UI
 
@@ -614,7 +579,7 @@ GenericAgent 通过 **分层记忆 × 最小工具集 × 自主执行循环** �
 
 | 工具 | 功能 |
 | :--- | :--- |
-| `code_run` | 执行任意代码（Python / PowerShell） |
+| `code_run` | 执行任意代码（Python / Bash） |
 | `file_read` | 读取文件 |
 | `file_write` | 写入 / 创建 / 覆盖文件 |
 | `file_patch` | 修改文件 |
@@ -668,7 +633,7 @@ GenericAgent 通过 **分层记忆 × 最小工具集 × 自主执行循环** �
 | :--- | :---: | :---: | :---: |
 | **代码量** | ~3K 行 | ~530,000 行 | 已开源（体量大） |
 | **部署方式** | `pip install` + API Key | 多服务编排 | CLI + 订阅 |
-| **OS 控制** | 键鼠、视觉、ADB | 多 Agent 委派 | 文件 + 终端 |
+| **OS 控制** | Ubuntu 命令 + 图片 OCR | 多 Agent 委派 | 文件 + 终端 |
 | **自我进化** | 自主生长 Skill 和工具 | 插件生态 | 会话间无状态 |
 | **出厂配置** | 几个核心文件 + 少量初始 Skills | 数百模块 | 丰富 CLI 工具集 |
 
@@ -709,7 +674,7 @@ GenericAgent 通过 **分层记忆 × 最小工具集 × 自主执行循环** �
 - **2026-05-23** — 🆕 **TUI v3 正式发布**（`frontends/tui_v3.py`）。基于块的滚屏回看 + 正确的 resize 重排，每终端独立配色保证跨终端一致，并与 v2 达成功能对齐。
 - **2026-05-18** — 🆕 **Morphling 模式**。项目级能力吞噬 —— 从任意外部仓库抽取目标与测例后，对每个核心组件分别决定调用、重写或舍弃。详见 `memory/morphling_sop.md`。
 - **2026-05-17** — 🆕 **Goal Hive 模式**。多 worker 协作版 Goal —— Master/Worker 通过 BBS 协同推进长程目标。详见 `memory/goal_hive_sop.md`。
-- **2026-05-15** — 🖥️ **桌面 GUI 发布**。一键安装会自带可直接运行的桌面端（`frontends/GenericAgent.exe`），开发者也可用 `python launch.pyw` 启动。
+- **2026-05-15** — 🖥️ **桌面 GUI 发布**。Ubuntu 源码启动：`python3 launch.pyw`；原生打包仅面向 Linux。
 - **2026-05-14** — 🆕 **Conductor 子 Agent 编排**。派发、监督、自动清理并行子 Agent；与 `/btw` 旁路子 Agent 互补，提供一等公民级的任务委派原语。
 - **2026-05-12** — 🆕 **TUI v2 正式发布**（`frontends/tuiapp_v2.py`）。重做视觉风格的 Textual 前端，支持图片粘贴折叠、文件粘贴、块删除、Ctrl+C 复制、历史导航，以及 `/llm` / `/export` / `/continue` 选择器。
 - **2026-05-08** — 🆕 **Goal 模式**（`reflect/goal_mode.py`）。时间预算驱动的自驱循环 —— "持续优化 X N 小时"，预算没到不准提前交付。

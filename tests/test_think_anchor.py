@@ -1,3 +1,4 @@
+from pathlib import Path
 # -*- coding: utf-8 -*-
 """Regression: anchored inline-CoT splitter (_visible_content).
 
@@ -18,7 +19,7 @@ is exactly the failure class under test.
 import json
 import sys
 
-sys.path.insert(0, '/home/pushuai/GenericAgent')
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import llmcore
 
 # tag literals, assembled at runtime (never written contiguously in source)

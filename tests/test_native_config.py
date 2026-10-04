@@ -1,3 +1,4 @@
+from pathlib import Path
 # -*- coding: utf-8 -*-
 """Regression: the single-dict `native_config` provider layout must be exactly
 equivalent to the legacy flat layout, so nothing downstream changes.
@@ -18,7 +19,7 @@ Asserts:
   5. a file carrying both layouts keeps both
 """
 import sys
-sys.path.insert(0, '/home/pushuai/GenericAgent')
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import llmcore
 
 PASS = FAIL = 0
@@ -86,15 +87,21 @@ o2 = expand(both)
 check("extra flat key survives", 'native_oai_config_extra' in profiles(o2), profiles(o2))
 check("expanded entries still present", 'native_oai_config_aihub1' in profiles(o2))
 
-print("[6] real mykey.py still loads through the same path")
-try:
-    mk, _changed = llmcore.reload_mykeys()
-    n = len(profiles(mk))
-    check("mykey.py yields model profiles", n > 0, f"profiles={n}")
-    check("no bogus 'native_config' profile", 'native_config' not in profiles(mk))
-    check("LLM_CATALOG available for the TUI picker", isinstance(mk.get('LLM_CATALOG'), dict))
-except Exception as exc:
-    check("mykey.py loads", False, repr(exc))
+print("[6] isolated mykey fixture loads through the same path")
+import tempfile
+with tempfile.TemporaryDirectory() as td:
+    fixture = Path(td) / 'mykey.py'
+    fixture.write_text('native_config = ' + repr(new['native_config']), encoding='utf-8')
+    sys.path.insert(0, td)
+    try:
+        llmcore._mykey_path = llmcore._mykey_mtime = None
+        mk, _changed = llmcore.reload_mykeys()
+        check("fixture yields model profiles", len(profiles(mk)) > 0)
+        check("no bogus native_config profile", 'native_config' not in profiles(mk))
+        check("LLM_CATALOG available", isinstance(mk.get('LLM_CATALOG'), dict))
+    finally:
+        sys.path.remove(td)
+        sys.modules.pop('mykey', None)
 
 print("[7] connect_timeout is actually honoured (and the old 'timeout' still is)")
 _base = {'apikey': 'k', 'apibase': 'https://x.example', 'model': 'm'}

@@ -1,7 +1,6 @@
 import importlib.util
 import io
 import json
-import plistlib
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -49,8 +48,6 @@ def complete_report(platform: str = "linux"):
         for index, scenario in enumerate(sorted(evidence.SUCCESSFUL_APPLICATION_SCENARIOS))
     }
     checks["portRecovery"] = "release-then-production-restart"
-    if platform == "macos":
-        checks["macAppImmutable"] = True
     bootstrap = {
         name: {"phase": "failed" if name == "foreign-port" else "ready"}
         for name in (
@@ -91,52 +88,17 @@ def test_automated_gate_ignores_manual_evidence_but_rejects_commit_mismatch():
     assert any("commit" in failure for failure in failures)
 
 
-def test_combined_gate_ignores_platform_and_windows_native_manual_review(
-    tmp_path, monkeypatch
-):
-    report_paths = {}
-    for platform in ("windows", "linux", "macos"):
-        report = complete_report(platform)
-        report["manualChecklist"] = {"nativeVisuals": "pending"}
-        report["screenshots"] = []
-        path = tmp_path / f"{platform}.json"
-        path.write_text(json.dumps(report), encoding="utf-8")
-        report_paths[platform] = path
-
-    windows_native = tmp_path / "windows-native.json"
-    windows_native.write_text(
-        json.dumps(
-            {
-                "success": True,
-                "checks": {"portConflictRecovery": True, "settingsRestored": True},
-                "manualChecklist": {"nativeVisuals": "manual"},
-            }
-        ),
-        encoding="utf-8",
-    )
+def test_linux_gate_preserves_pending_manual_review(tmp_path, monkeypatch):
+    report = complete_report()
+    report["manualChecklist"] = {"nativeVisuals": "pending"}
+    report["screenshots"] = []
+    source = tmp_path / "linux.json"
+    source.write_text(json.dumps(report), encoding="utf-8")
     output = tmp_path / "manifest.json"
-    monkeypatch.setattr(
-        evidence.sys,
-        "argv",
-        [
-            "verify_release_evidence.py",
-            "--expected-commit",
-            "abc1234",
-            "--windows",
-            str(report_paths["windows"]),
-            "--linux",
-            str(report_paths["linux"]),
-            "--macos",
-            str(report_paths["macos"]),
-            "--windows-native-report",
-            str(windows_native),
-            "--output",
-            str(output),
-        ],
-    )
-
+    monkeypatch.setattr("sys.argv", ["verify_release_evidence.py", "--expected-commit",
+                         "abc1234", "--linux", str(source), "--output", str(output)])
     assert evidence.main() == 0
-    assert json.loads(output.read_text(encoding="utf-8"))["gate"] == "pass"
+    assert json.loads(output.read_text())["gate"] == "pass"
 
 
 def test_candidate_report_contract_rejects_partial_or_unowned_conductor_evidence():
@@ -176,62 +138,22 @@ def test_stdlib_fake_model_emits_sse_and_redacts_auth_in_transcript():
         fake.stop()
 
 
-def write_info_plist(root: Path, **overrides):
-    contents = root / "Contents"
-    contents.mkdir(parents=True, exist_ok=True)
-    values = {
-        "CFBundleShortVersionString": "0.2.1",
-        "CFBundleVersion": "0.2.1",
-        **overrides,
-    }
-    with (contents / "Info.plist").open("wb") as stream:
-        plistlib.dump(values, stream)
 
 
-def test_macos_package_version_comes_from_both_native_bundle_keys(tmp_path):
-    write_info_plist(tmp_path)
-    assert journey.read_macos_bundle_versions(tmp_path) == ("0.2.1", "0.2.1")
 
 
-@pytest.mark.parametrize("key", ["CFBundleShortVersionString", "CFBundleVersion"])
-@pytest.mark.parametrize("value", ["0.2.0", 200])
-def test_macos_package_version_rejects_wrong_or_non_string_keys(tmp_path, key, value):
-    write_info_plist(tmp_path, **{key: value})
-    with pytest.raises(journey.JourneyFailure, match=key):
-        journey.read_macos_bundle_versions(tmp_path)
 
 
-@pytest.mark.parametrize("key", ["CFBundleShortVersionString", "CFBundleVersion"])
-def test_macos_package_version_rejects_missing_keys(tmp_path, key):
-    write_info_plist(tmp_path)
-    path = tmp_path / "Contents" / "Info.plist"
-    with path.open("rb") as stream:
-        values = plistlib.load(stream)
-    del values[key]
-    with path.open("wb") as stream:
-        plistlib.dump(values, stream)
-    with pytest.raises(journey.JourneyFailure, match=key):
-        journey.read_macos_bundle_versions(tmp_path)
 
 
-@pytest.mark.parametrize("payload", [b"not a plist", b"", plistlib.dumps([])])
-def test_macos_package_version_rejects_invalid_or_empty_plist(tmp_path, payload):
-    contents = tmp_path / "Contents"
-    contents.mkdir()
-    (contents / "Info.plist").write_bytes(payload)
-    with pytest.raises(journey.JourneyFailure, match="missing or invalid"):
-        journey.read_macos_bundle_versions(tmp_path)
 
 
-def test_macos_package_version_rejects_missing_plist(tmp_path):
-    with pytest.raises(journey.JourneyFailure, match="missing or invalid"):
-        journey.read_macos_bundle_versions(tmp_path)
 
 
 def test_package_shape_rejects_excluded_source_package_json(tmp_path):
-    package_root = tmp_path / "GenericAgent.app"
-    runtime_root = package_root / "Contents" / "Resources" / "runtime"
-    application = package_root / "Contents" / "MacOS" / "GenericAgent"
+    package_root = tmp_path / "GenericAgent-Linux"
+    runtime_root = package_root / "runtime"
+    application = package_root / "GenericAgent"
     for path in [
         application,
         runtime_root / "app" / "agentmain.py",
@@ -243,10 +165,9 @@ def test_package_shape_rejects_excluded_source_package_json(tmp_path):
     ]:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("{}", encoding="utf-8")
-    write_info_plist(package_root)
 
     candidate = object.__new__(journey.Journey)
-    candidate.args = type("Args", (), {"platform": "macos"})()
+    candidate.args = type("Args", (), {"platform": "linux"})()
     candidate.package_root = package_root
     candidate.runtime_root = runtime_root
     candidate.application = application
@@ -258,8 +179,6 @@ def test_package_shape_rejects_excluded_source_package_json(tmp_path):
     (runtime_root / "app" / "frontends" / "desktop" / "package.json").unlink()
     candidate.check_package_shape()
     assert candidate.report["checks"] == {
-        "packagedVersion": "0.2.1",
-        "packagedBundleVersion": "0.2.1",
         "packageShape": True,
     }
 

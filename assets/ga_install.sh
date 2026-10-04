@@ -42,8 +42,6 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then usage; exit 0; fi
 OS="$(uname -s)"
 ARCH="$(uname -m)"
 case "$OS:$ARCH" in
-  Darwin:x86_64) uv_file="uv-x86_64-apple-darwin.tar.gz" ;;
-  Darwin:arm64) uv_file="uv-aarch64-apple-darwin.tar.gz" ;;
   Linux:x86_64) uv_file="uv-x86_64-unknown-linux-gnu.tar.gz" ;;
   Linux:aarch64|Linux:arm64) uv_file="uv-aarch64-unknown-linux-gnu.tar.gz" ;;
   *) die "Unsupported platform: $OS $ARCH" ;;

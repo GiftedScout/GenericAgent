@@ -167,7 +167,7 @@ def render_sidebar():
         st.toast("Stop signal sent")
         st.rerun(scope="app")
     if st.button(T('desktop_pet')):
-        kwargs = {'creationflags': 0x08} if sys.platform == 'win32' else {}
+        kwargs = {}
         pet_script = os.path.join(script_dir, 'desktop_pet_v2.pyw')
         if not os.path.exists(pet_script):
             st.error("desktop_pet_v2.pyw not found")
@@ -369,8 +369,8 @@ try:
     _embed_html = lambda html, **kw: _st_iframe(html, **{k: max(v, 1) if isinstance(v, int) else v for k, v in kw.items()})
 except (ImportError, AttributeError):
     from streamlit.components.v1 import html as _embed_html  # ≤1.55
-# IME composition fix (macOS only) - prevents Enter from submitting during CJK input
-_js_ime_fix = ("" if os.name == 'nt' else
+# IME composition fix - prevents Enter from submitting during CJK input
+_js_ime_fix = (
     "!function(){if(window.parent.__imeFix)return;window.parent.__imeFix=1;"
     "var d=window.parent.document,c=0;"
     "d.addEventListener('compositionstart',()=>c=1,!0);"

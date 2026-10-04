@@ -36,55 +36,13 @@ _USER_SHELL: tuple[list[str], str] | None = None
 COMMIT_SIGNATURE_PROMPT = 'When you create a git commit, append "Co-Authored-By: GenericAgent <bot@gaagent.ai>" as the final line of the commit message.'
 
 def detect_user_shell() -> tuple[list[str], str]:
-    """Return `([executable, ...flags_for_-c], display_name)` for the user's
-    interactive shell.  Cached after first call.
-
-    `!cmd` in tui_v2 / tui_v3 invokes this so commands like `ls`, pipes,
-    globs, and shell builtins behave the way the user expects in whatever
-    shell launched the app, instead of hardcoding cmd.exe / /bin/sh.
-
-    Resolution order:
-      1. `$SHELL` if it points to an existing file (Unix, Git Bash, WSL)
-      2. Windows only: Git Bash at the canonical install paths
-      3. `bash` anywhere on PATH (WSL bash, Cygwin, MSYS2, etc.)
-      4. Windows only: `pwsh` then `powershell.exe` on PATH
-      5. Unix `/bin/sh` / Windows `%COMSPEC%` (cmd.exe) — last resort
-    """
+    """Use the user's executable $SHELL; fall back to Bash, then /bin/sh."""
     global _USER_SHELL
-    if _USER_SHELL is not None:
-        return _USER_SHELL
-
-    s = os.environ.get("SHELL")
-    if s and os.path.exists(s):
-        name = os.path.basename(s)
-        if name.lower().endswith(".exe"):
-            name = name[:-4]
-        _USER_SHELL = ([s, "-c"], name)
-        return _USER_SHELL
-
-    if sys.platform == "win32":
-        for p in (
-            r"C:\Program Files\Git\bin\bash.exe",
-            r"C:\Program Files (x86)\Git\bin\bash.exe",
-        ):
-            if os.path.exists(p):
-                _USER_SHELL = ([p, "-c"], "bash")
-                return _USER_SHELL
-        bash = shutil.which("bash")
-        if bash:
-            _USER_SHELL = ([bash, "-c"], "bash")
-            return _USER_SHELL
-        for name in ("pwsh", "powershell"):
-            p = shutil.which(name)
-            if p:
-                # -NoProfile keeps each `!cmd` snappy + reproducible.
-                _USER_SHELL = ([p, "-NoProfile", "-Command"], name)
-                return _USER_SHELL
-        cmd = os.environ.get("COMSPEC", "cmd.exe")
-        _USER_SHELL = ([cmd, "/d", "/s", "/c"], "cmd")
-        return _USER_SHELL
-
-    _USER_SHELL = (["/bin/sh", "-c"], "sh")
+    if _USER_SHELL is None:
+        shell = os.environ.get("SHELL")
+        if not shell or not os.path.isfile(shell) or not os.access(shell, os.X_OK):
+            shell = shutil.which("bash") or "/bin/sh"
+        _USER_SHELL = ([shell, "-c"], os.path.basename(shell))
     return _USER_SHELL
 
 
@@ -397,9 +355,7 @@ def list_launchable_services() -> list[dict]:
 
 
 def start_service(name: str) -> tuple[bool, str]:
-    """Launch a service from list_launchable_services(), detached & window-less
-    (CONSTITUTION rule 14: creationflags at the launch layer only, never via
-    subprocess.Popen monkeypatch).
+    """Launch a service from list_launchable_services(), detached in a new session.
 
     `name` accepts the hub-style path ('reflect/foo.py') or a bare reflect stem
     ('foo') for backward-compat with `/scheduler start <stem>`.
@@ -412,13 +368,10 @@ def start_service(name: str) -> tuple[bool, str]:
     if svc is None:
         return False, f"未知服务: {name}"
     try:
-        flags = 0
-        if os.name == "nt":
-            flags = 0x00000200 | 0x08000000  # NEW_PROCESS_GROUP | NO_WINDOW
         proc = subprocess.Popen(
             svc["cmd"],
             cwd=str(_ROOT),
-            creationflags=flags,
+            start_new_session=True,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -516,7 +469,7 @@ def running_services(use_cache: bool = True) -> dict[str, int]:
 def stop_service(name: str) -> tuple[bool, str]:
     """Terminate the service `name` if running.  Returns (ok, message).
 
-    Sends SIGTERM-equivalent (Popen.terminate on Windows = TerminateProcess),
+    Sends SIGTERM,
     waits up to 3s, then escalates to kill.  Also reaps obvious children
     (e.g. `python -m streamlit` spawns the actual streamlit worker) so we
     don't leave orphans behind.
@@ -580,21 +533,16 @@ def start_reflect_task(name: str) -> tuple[bool, str]:
     """Spawn `python reflect/<name>.py` detached.  Returns (ok, message).
 
     Detached because reflect tasks are long-running; we don't want them to die
-    with the TUI.  On Windows we use CREATE_NEW_PROCESS_GROUP|CREATE_NO_WINDOW
-    so no console pops up (per CONSTITUTION rule 14: only at launch layer, no
-    monkeypatching subprocess.Popen).
+    with the TUI. Linux detaches using start_new_session=True.
     """
     script = _ROOT / "reflect" / f"{name}.py"
     if not script.is_file():
         return False, f"reflect/{name}.py 不存在"
     try:
-        flags = 0
-        if os.name == "nt":
-            flags = 0x00000200 | 0x08000000  # NEW_PROCESS_GROUP | NO_WINDOW
         subprocess.Popen(
             [sys.executable, str(script)],
             cwd=str(_ROOT),
-            creationflags=flags,
+            start_new_session=True,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

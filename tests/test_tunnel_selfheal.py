@@ -1,3 +1,4 @@
+from pathlib import Path
 # -*- coding: utf-8 -*-
 """A: tunnel-death self-heal regression.
 
@@ -15,7 +16,7 @@ Tests (no real ssh, no real network):
 3. no ssh_tunnel -> no rebuild attempt on connection error
 """
 import sys, types
-sys.path.insert(0, '/home/pushuai/GenericAgent')
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import llmcore
 import requests as _req
 

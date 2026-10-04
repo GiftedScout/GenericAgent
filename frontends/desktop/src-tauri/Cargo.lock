@@ -1256,7 +1256,6 @@ name = "ga-desktop"
 version = "0.2.1"
 dependencies = [
  "dirs 5.0.1",
- "objc2-app-kit",
  "rfd",
  "serde",
  "serde_json",
