@@ -131,6 +131,8 @@ def _parse_native_history(pairs):
         if not isinstance(blocks, list): return None
         history.append(user_msg)  # runtime history 尊重日志真实 prompt(含 project-mode 当轮注入)
         history.append({'role': 'assistant', 'content': blocks})
+    from llmcore import repair_missing_tool_results
+    repair_missing_tool_results(history)
     return history
 
 

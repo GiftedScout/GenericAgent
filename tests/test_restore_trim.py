@@ -136,6 +136,9 @@ class RestoreTrimTests(unittest.TestCase):
         try:
             content, _, _ = interrupted_log()
             original = continue_cmd._parse_native_history(continue_cmd._pairs(content))
+            original[3:3] = [message('assistant', [{'type': 'tool_use', 'id': 'abandoned_http',
+                               'name': 'write', 'input': {'value': 'do not repeat'}}]),
+                             message('user', [text('new task after interruption')])]
             for cls, mode in ((llmcore.NativeOAISession, 'chat_completions'),
                               (llmcore.NativeOAISession, 'responses'),
                               (llmcore.NativeClaudeSession, 'messages')):
