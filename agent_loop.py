@@ -12,6 +12,8 @@ except ImportError: _hook = lambda *a, **k: None
 SETTLEMENT_NOTICE = "\n\n🧠 记忆结算中（后台维护记忆，请勿关闭终端）…\n"
 
 
+
+
 @dataclass
 class StepOutcome:
     data: Any
@@ -21,6 +23,8 @@ class StepOutcome:
     # separate from should_exit: the tool must still let the model finish the
     # approved file_read/file_patch/file_write memory update before stopping.
     settlement: bool = False
+
+
 def try_call_generator(func, *args, **kwargs):
     ret = func(*args, **kwargs)
     if hasattr(ret, '__iter__') and not isinstance(ret, (str, bytes, dict, list)): ret = yield from ret
@@ -52,21 +56,6 @@ def get_pretty_json(data):
         data = data.copy(); data["script"] = data["script"].replace("; ", ";\n  ")
     return json.dumps(data, indent=2, ensure_ascii=False).replace('\\n', '\n')
 
-def _settlement_tools(tools_schema):
-    """Return only tools allowed after start_long_term_update."""
-    allowed = {"file_read", "file_patch", "file_write"}
-    if not isinstance(tools_schema, (list, tuple)):
-        return []
-    result = []
-    for spec in tools_schema:
-        if not isinstance(spec, dict):
-            continue
-        fn = spec.get("function") if isinstance(spec.get("function"), dict) else spec
-        if fn.get("name") in allowed:
-            result.append(spec)
-    return result
-
-
 def agent_runner_loop(client, system_prompt, user_input, handler, tools_schema, 
                       max_turns=40, verbose=True, initial_user_content=None, yield_info=False):
     messages = [
@@ -74,17 +63,9 @@ def agent_runner_loop(client, system_prompt, user_input, handler, tools_schema,
         {"role": "user", "content": initial_user_content if initial_user_content is not None else user_input}
     ]
     turn = 0;  handler.max_turns = max_turns
-    settlement_mode = False
-    settlement_turns = 0
-    settlement_schema = _settlement_tools(tools_schema)
     _hook('agent_before', locals())
     while turn < handler.max_turns:
-        if settlement_mode and settlement_turns >= 8:
-            exit_reason = {'result': 'MEMORY_SETTLEMENT_LIMIT'}
-            break
         turn += 1
-        if settlement_mode:
-            settlement_turns += 1
         turnstr = f'LLM Running (Turn {turn}) ...'
         if handler.parent.task_dir:
             turnstr = f'Turn {turn} ...'
@@ -95,8 +76,7 @@ def agent_runner_loop(client, system_prompt, user_input, handler, tools_schema,
         if turn%10 == 0: client.last_tools = ''  # 每10轮重置一次工具描述
         _hook('turn_before', locals())
         _hook('llm_before', locals())
-        active_tools = settlement_schema if settlement_mode else tools_schema
-        response_gen = client.chat(messages=messages, tools=active_tools)
+        response_gen = client.chat(messages=messages, tools=tools_schema)
         if verbose:
             response = yield from response_gen
             yield '\n\n'
@@ -106,6 +86,9 @@ def agent_runner_loop(client, system_prompt, user_input, handler, tools_schema,
             if cleaned: yield cleaned + '\n'
         _hook('llm_after', locals())
 
+        if getattr(response, 'error', None):
+            handler._last_exit = {'result': 'MODEL_ERROR', 'error': response.error}
+            return
         if not response.tool_calls: tool_calls = [{'tool_name': 'no_tool', 'args': {}}]
         else: tool_calls = [{'tool_name': tc.function.name, 'args': json.loads(tc.function.arguments), 'id': tc.id}
                           for tc in response.tool_calls]
@@ -114,7 +97,7 @@ def agent_runner_loop(client, system_prompt, user_input, handler, tools_schema,
         for ii, tc in enumerate(tool_calls):
             tool_name, args, tid = tc['tool_name'], tc['args'], tc.get('id', '')
             if tool_name == 'no_tool': pass
-            else: 
+            else:
                 if verbose: yield f"🛠️ Tool: `{tool_name}`  📥 args:\n````text\n{get_pretty_json(args)}\n````\n"
                 else: yield f"🛠️ {tool_name}({_compact_tool_args(tool_name, args)})\n"
             handler.current_turn = turn
@@ -142,18 +125,6 @@ def agent_runner_loop(client, system_prompt, user_input, handler, tools_schema,
             
             if outcome.should_exit:
                 exit_reason = {'result': 'EXITED', 'data': outcome.data}; break
-            if outcome.settlement:
-                settlement_mode = True
-                handler._done_hooks.clear()
-                # 通知外层（agentmain）：进入后台记忆维护。注意结算轮的正文在拿到
-                # outcome 之前已经流出（yield from response_gen 先于 dispatch），
-                # agentmain 据此把显示缓冲回退到本轮起点并冻结显示通道——
-                # 结算/记忆维护的文本不再进入 TUI，避免"记忆吞掉答案"。
-                yield {"settlement": True, "turn": turn}
-                if os.environ.get("GA_DEBUG_SETTLE"):
-                    import time as _t
-                    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp", "settle_debug.log"), "a") as _f:
-                        _f.write(f"[{_t.strftime('%H:%M:%S')}] agent_loop EMIT settlement turn={turn} current_turn={handler.current_turn}\n")
             if not outcome.next_prompt:
                 exit_reason = {'result': 'CURRENT_TASK_DONE', 'data': outcome.data}; break
             if outcome.next_prompt.startswith('未知工具'): client.last_tools = ''
@@ -173,7 +144,8 @@ def agent_runner_loop(client, system_prompt, user_input, handler, tools_schema,
         next_prompt = handler.turn_end_callback(response, tool_calls, tool_results, turn, '\n'.join(next_prompts), exit_reason)
         _hook('turn_after', locals())
         messages = [{"role": "user", "content": next_prompt, "tool_results": tool_results}]   # just new message, history is kept in *Session
-    if exit_reason: handler.turn_end_callback(response, tool_calls, tool_results, turn, '', exit_reason)
+    if exit_reason:
+        handler.turn_end_callback(response, tool_calls, tool_results, turn, '', exit_reason)
     _hook('agent_after', locals())
     handler._last_exit = exit_reason or {'result': 'MAX_TURNS_EXCEEDED'}
     return handler._last_exit

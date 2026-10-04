@@ -18,6 +18,15 @@ import time
 
 NATIVE_CONFIG_VAR = "native_config"
 
+# Interface-grouped layout (mykey.py since 2026-09): group variable →
+# default api_mode.  llmcore._expand_nested_groups flattens it at load.
+NESTED_GROUPS = (
+    ("native_oai_config", "responses"),
+    ("native_claude_config", "claude"),
+    ("native_chat_config", "chat_completions"),
+    ("native_image_config", "images/generations"),
+)
+
 # Written into new entries; the rest of BaseSession's knobs stay optional.
 PROTOCOLS = ("oai", "claude")
 # Shown by the TUI form so users know what they may type.  Full list lives in
@@ -28,6 +37,9 @@ FIELD_HINTS = (
     ("apibase", "接口地址（必填）"),
     ("model", "模型名（必填）"),
     ("protocol", "oai | claude"),
+    ("api_mode", "responses | chat_completions | images/generations（缺省按 protocol 推）"),
+    ("type", "厂商（TUI 分组，缺省按 protocol 推）"),
+    ("router", "路由/渠道（TUI 分组，缺省=apibase 主机名）"),
 )
 
 KNOWN_FIELDS = (
@@ -232,6 +244,126 @@ def native_var_parts(var: str):
     return None
 
 
+# ── interface-grouped layout ───────────────────────────────────────────────
+
+def group_for(cfg: dict) -> str:
+    """Which nested group variable an entry belongs to."""
+    proto = str(cfg.get("protocol") or "oai").lower()
+    if proto == "claude":
+        return "native_claude_config"
+    mode = str(cfg.get("api_mode") or "responses").lower().replace("-", "_")
+    if mode == "images/generations":
+        return "native_image_config"
+    if mode in ("responses", "response"):
+        return "native_oai_config"
+    return "native_chat_config"
+
+
+def has_nested_groups(text: str) -> bool:
+    for var, _mode in NESTED_GROUPS:
+        if re.search(rf"^{re.escape(var)}\s*=\s*\{{", text, re.M):
+            return True
+    return False
+
+
+def _entry_text(key: str, cfg: dict, indent: int = 12) -> str:
+    body = format_dict(cfg, indent + 4)
+    return f"{' ' * indent}{repr(key)}: {body},"
+
+
+def _group_span(text: str, group: str):
+    """Char span (start .. closing brace) of the REAL `group = {...}` dict.
+
+    AST-based on purpose: mykey.py's header docstring contains a sample
+    snippet starting with `native_oai_config = {`, so a text/regex search
+    would anchor inside the docstring and corrupt it.
+    """
+    import ast as _ast
+    for node in _ast.parse(text).body:
+        if (isinstance(node, _ast.Assign)
+                and len(node.targets) == 1
+                and getattr(node.targets[0], "id", "") == group
+                and isinstance(node.value, _ast.Dict)):
+            d = node.value
+            first_line = text.split("\n")[node.lineno - 1]
+            ob = first_line.index("{")
+            start = _line_offset(text, node.lineno) + ob
+            last_line = text.split("\n")[d.end_lineno - 1]
+            cb = last_line.rindex("}")
+            end = _line_offset(text, d.end_lineno) + cb
+            return start, end
+    return None
+
+
+def _line_offset(text: str, lineno: int) -> int:
+    """Offset of the start of 1-based `lineno` within `text`."""
+    return sum(len(l) + 1 for l in text.split("\n")[:lineno - 1])
+
+
+def _block_range(block: str, open_idx: int) -> int:
+    """Index of the brace/bracket matching the one at `open_idx`."""
+    opener, closer = (("{", "}") if block[open_idx] == "{" else ("[", "]"))
+    depth, i = 0, open_idx
+    while i < len(block):
+        if block[i] == opener:
+            depth += 1
+        elif block[i] == closer:
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    raise ValueError("unbalanced block")
+
+
+def insert_nested_entry(text: str, cfg: dict, group: str) -> str:
+    """Append an entry to `group = {vendor: {router: [entry, ...]}}`.
+
+    Entries are keyless list items; new vendor/router layers are created as
+    needed, existing ones are reused."""
+    vendor = str(cfg.get("type") or "未标注")
+    router = str(cfg.get("router") or "未标注")
+    # entry = a dict literal (no key) indented for the list position
+    entry = "            " + format_dict(cfg, 20).rstrip() + ",\n"
+
+    span = _group_span(text, group)
+    if span is None:
+        return (text.rstrip() + f"\n{group} = {{\n"
+                f"    {repr(vendor)}: {{\n        {repr(router)}: [\n"
+                f"{entry}        ],\n    }},\n}}\n")
+    gs, gc = span
+    body = text[gs:gc]
+    mv = re.search(rf"^[ \t]*{re.escape(repr(vendor))}[ \t]*:\s*\{{", body, re.M)
+    if mv:
+        vi = _block_range(body, body.index("{", mv.end() - 1))
+        vbody = body[mv.end():vi]
+        mr = re.search(rf"^[ \t]*{re.escape(repr(router))}[ \t]*:\s*[\{{\[]", vbody, re.M)
+        if mr:
+            rj = vbody.index(vbody[mr.end() - 1], mr.end() - 1)
+            ri = _block_range(vbody, rj)
+            new_vbody = vbody[:ri] + entry + vbody[ri:]
+            new_body = body[:mv.end()] + new_vbody + body[vi:]
+        else:
+            new_vbody = vbody.rstrip() + f"\n        {repr(router)}: [\n{entry}        ],\n"
+            new_body = body[:mv.end()] + new_vbody + body[vi:]
+    else:
+        new_body = body.rstrip() + (f"\n    {repr(vendor)}: {{\n"
+                                    f"        {repr(router)}: [\n{entry}        ],\n"
+                                    f"    }},\n")
+    return text[:gs] + new_body + text[gc:]
+
+
+def default_type_router(cfg: dict) -> None:
+    """Fill `type`/`router` defaults so the TUI picker can group the entry."""
+    if not cfg.get("type"):
+        model = str(cfg.get("model") or "").lower()
+        cfg["type"] = ("Claude" if "claude" in model else
+                       "本地模型" if str(cfg.get("apibase", "")).startswith(("http://127.", "http://localhost"))
+                       else "其他模型")
+    if not cfg.get("router"):
+        host = str(cfg.get("apibase") or "").split("//")[-1].split("/", 1)[0]
+        cfg["router"] = host or "未标注路由"
+
+
 # ── high-level write ───────────────────────────────────────────────────────
 
 def add_provider(cfg: dict, path: str = "", root: str = "") -> tuple[str, str]:
@@ -253,6 +385,15 @@ def add_provider(cfg: dict, path: str = "", root: str = "") -> tuple[str, str]:
             var = f"{var}_{n}"
         text = text.rstrip() + f"\n{var} = {format_dict(cfg)}\n"
         entry_key = var
+    elif has_nested_groups(text):
+        entry = dict(cfg)
+        default_type_router(entry)          # fills type/router for group placement
+        # type/router are structural (vendor/router keys), not entry fields
+        entry.pop("protocol", None)
+        entry.pop("type", None)
+        entry.pop("router", None)
+        text = insert_nested_entry(text, entry, group_for(cfg))
+        entry_key = f"{group_for(cfg)}/{entry.get('name', entry.get('model'))}"
     else:
         import llmcore
         try:

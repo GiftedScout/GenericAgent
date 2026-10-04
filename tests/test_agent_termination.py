@@ -45,20 +45,20 @@ schema = [
     {"type":"function", "function":{"name":"file_patch"}},
     {"type":"function", "function":{"name":"code_run"}},
 ]
-# Final answer -> memory marker -> one settlement no-tool finalizes.
+# Memory maintenance stays in the normal loop with the complete tool schema.
 client = Client([
-    Resp([Call("start_long_term_update")], "final answer"),
-    Resp([], "memory settled"),
+    Resp([Call("start_long_term_update")], "\n\n调用记忆结算前不输出原答。"),
+    Resp([], "这是对原始问题的最终回答。"),
 ])
 handler = Handler([
-    StepOutcome("L0", next_prompt="summarize memory", settlement=True),
+    StepOutcome("L0", next_prompt="summarize memory", settlement=False),
     StepOutcome("done", next_prompt=None),
 ])
 events = list(agent_runner_loop(client, "sys", "user", handler, schema, max_turns=20, verbose=False))
 assert len(client.calls) == 2, len(client.calls)
-assert client.calls[1][1] == [schema[0], schema[1]], client.calls[1][1]
-assert events[-1] == "memory settled\n", events[-1]
-assert not handler._done_hooks
+assert client.calls[1][1] == schema, client.calls[1][1]
+assert events[-1] == "这是对原始问题的最终回答。\n", events[-1]
+assert handler._done_hooks == ["SHOULD NEVER RUN"]
 
 # A normal terminal no-tool answer must not consume a completion hook.
 client2 = Client([Resp([], "answer")])

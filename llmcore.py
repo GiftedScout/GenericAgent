@@ -1,6 +1,11 @@
 import os, json, re, time, requests, sys, threading, urllib3, base64, importlib, uuid, pathlib, copy
 from datetime import datetime
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+_INFLIGHT = {}  # thread ident -> live socket; lets abort() close it even before response headers arrive
+_orig_conn_request = urllib3.connection.HTTPConnection.request
+def _conn_request_hook(self, *a, **k):  # after request() the socket is connected+sent; conn.sock may later be None'd by http.client
+    r = _orig_conn_request(self, *a, **k); _INFLIGHT[threading.get_ident()] = self.sock; return r
+urllib3.connection.HTTPConnection.request = _conn_request_hook
 _RESP_CACHE_KEY = str(uuid.uuid4()); _RESP_CODEX_KEY = str(uuid.uuid4())
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 if _ROOT not in sys.path: sys.path.append(_ROOT)
@@ -52,12 +57,111 @@ def _expand_native_config(mk):
     return out
 
 
+# Interface-grouped mykey.py layout (preferred since 2026-09): providers are
+# grouped by API interface, then vendor, then router:
+#
+#     native_oai_config    = { 'OpenAI': { 'aihub': { 'aihub0': {...} } }, ... }
+#     native_claude_config = { 'Claude': { '4router': { 'opus5': {...} } }, ... }
+#     native_chat_config   = { 'Gemini': { 'Google': { 'google': {...} } }, ... }
+#     native_image_config  = { 'OpenAI': { 'aihub': { 'image2': {...} } }, ... }
+#
+# The group variable name pins both the api_mode default (entries may omit
+# `api_mode` / `protocol` entirely) and the session class, exactly like the
+# legacy flat `native_oai_config_<key>` variable names.
+_NESTED_GROUPS = (
+    ('native_oai_config',    'native_oai_config',    'responses',          'oai'),
+    ('native_claude_config', 'native_claude_config', 'claude',             'claude'),
+    ('native_chat_config',   'native_chat_config',   'chat_completions',   'oai'),
+    ('native_image_config',  'native_image_config',  'images/generations', 'oai'),
+)
+
+
+def _expand_nested_groups(mk):
+    """Flatten the interface-grouped nested layout into legacy flat keys.
+
+    Preferred shape (mykey.py, 2026-09): entries are keyless lists —
+    `{vendor: {router: [ {entry}, {entry} ]}}` — so the file itself carries
+    no per-entry name, type or router: those are read off the structure
+    (vendor key = type, router key = router) and land in LLM_CATALOG.  A
+    router may also hold a keyed dict (older intermediate form); explicit
+    `type`/`router` fields on an entry still win over the structural ones.
+    Group variables that are NOT nested (legacy flat files) pass through
+    untouched, and only variables actually flattened are dropped.
+    """
+    if not isinstance(mk, dict):
+        return mk
+    nested = {}
+    for var, _p, _m, _pr in _NESTED_GROUPS:
+        v = mk.get(var)
+        if isinstance(v, dict) and v and any(isinstance(c, (dict, list)) for c in v.values()):
+            nested[var] = v
+    if not nested:
+        return mk
+    # Drop only the variables that were actually flattened as nested groups —
+    # legacy flat files still carry `native_oai_config_<key>` top-level
+    # variables, and those must survive.
+    out = {k: v for k, v in mk.items() if k not in nested}
+    catalog = dict(out.get('LLM_CATALOG') or {})
+
+    def _safe(s):
+        return re.sub(r'[^0-9A-Za-z]+', '_', str(s)).strip('_') or 'x'
+
+    for var, prefix, default_mode, proto in _NESTED_GROUPS:
+        if var not in nested:
+            continue
+        counters = {}
+
+        def is_entry(d):
+            return isinstance(d, dict) and any(k in d for k in ('model', 'apibase', 'apikey'))
+
+        def emit(path, cfg):
+            entry = dict(cfg)
+            entry.setdefault('protocol', proto)
+            entry.setdefault('api_mode', default_mode)
+            meta = {'type': path[0]} if path else {}
+            if len(path) > 1:
+                meta['router'] = path[1]
+            for m in ('type', 'router'):
+                if entry.get(m):
+                    meta[m] = entry.pop(m)      # explicit field wins
+                entry.pop(m, None)              # structural dupes don't ship
+            group = '_'.join(_safe(p) for p in path)
+            i = counters.get(group, 0)
+            counters[group] = i + 1
+            flat = f'{prefix}_{group}_{i}'
+            out[flat] = entry
+            catalog[flat] = meta
+
+        def walk(d, path):
+            for k, v in d.items():
+                kp = path + (str(k),)
+                if isinstance(v, list):
+                    for e in v:
+                        if is_entry(e):
+                            emit(kp, e)
+                elif isinstance(v, dict):
+                    if is_entry(v):
+                        emit(kp, v)
+                    else:
+                        walk(v, kp)
+
+        walk(nested[var], ())
+    if catalog:
+        out['LLM_CATALOG'] = catalog
+    return out
+
+
+def _expand_mykey_layout(mk):
+    """Apply every mykey.py layout migration in order (nested groups first)."""
+    return _expand_native_config(_expand_nested_groups(mk))
+
+
 def _load_mykeys():
     global _mykey_path
     try:
         sys.modules.pop('mykey', None)
         import mykey; _mykey_path = mykey.__file__
-        return _expand_native_config({k: v for k, v in vars(mykey).items() if not k.startswith('_')})
+        return _expand_mykey_layout({k: v for k, v in vars(mykey).items() if not k.startswith('_')})
     except ImportError as e:
         if getattr(e, 'name', None) != 'mykey':
             raise Exception(f'[ERROR] mykey.py found but failed to import: {e}') from e
@@ -66,8 +170,8 @@ def _load_mykeys():
     p = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mykey.json')
     if not os.path.exists(p): raise Exception('[ERROR] mykey.py not found in sys.path and mykey.json not found. Run "python configure_mykey.py" or copy mykey_template.py to mykey.py and fill in your keys.')
     with open(_mykey_path := p, encoding='utf-8') as f: mk = json.load(f)
-    if isinstance(mk, dict) and 'remote_url' in mk: return _expand_native_config(requests.get(mk['remote_url'], timeout=10).json())
-    return _expand_native_config(mk)
+    if isinstance(mk, dict) and 'remote_url' in mk: return _expand_mykey_layout(requests.get(mk['remote_url'], timeout=10).json())
+    return _expand_mykey_layout(mk)
 
 _mykey_lock = threading.Lock()
 _mykey_path = _mykey_mtime = None
@@ -110,15 +214,8 @@ def compress_history_tags(messages, keep_recent=10, max_len=800, force=False, in
                 if not isinstance(b, dict): continue
                 t = b.get('type')
                 if t == 'text' and isinstance(b.get('text'), str): b['text'] = _trunc(b['text'])
-                elif t == 'thinking' and isinstance(b.get('thinking'), str): b['thinking'] = _trunc_str(b['thinking'])
-                elif t == 'tool_result':
-                    tc = b.get('content')
-                    if isinstance(tc, str): b['content'] = _trunc_str(tc)
-                    elif isinstance(tc, list):
-                        for sub in tc:
-                            if isinstance(sub, dict) and sub.get('type') == 'text': sub['text'] = _trunc_str(sub.get('text'))
-                elif t == 'tool_use' and isinstance(b.get('input'), dict):
-                    for k, v in b['input'].items(): b['input'][k] = _trunc_str(v)
+                # Native calls, results and signed reasoning are replay records.
+                # Never rewrite their payload while retaining their identity.
     print(f"[Cut] {_before} -> {sum(len(json.dumps(m, ensure_ascii=False)) for m in messages)}")
     return messages
 
@@ -147,13 +244,12 @@ print = safeprint
 
 STATS = {}
 
-def trim_messages_history(history, sess):
+def trim_messages_history(history, sess, force=False):
     # Most legacy backends configure `context_win` as GA's historical
     # character-scale heuristic.  A backend may instead provide an explicit
     # safe character budget when its configured context is a server token
     # ceiling (the Qwen SSH backend does this below).
     cap = int(getattr(sess, 'history_char_limit', sess.context_win * 3))
-    target = int(cap * getattr(sess, 'trim_keep_rate', 0.6))
     kp = sess.trim_keep_prefix
     def cost(ms): return sum(len(json.dumps(m, ensure_ascii=False)) for m in ms)
     # 缓存前缀保护：未超限时绝不改写历史（含按节奏的旧消息截断）。前缀逐字节
@@ -161,25 +257,35 @@ def trim_messages_history(history, sess):
     # 使前缀反复变化、缓存持续失效，缓存命中价极低的模型实际成本反而更高。
     c = cost(history)
     STATS.update(ctx=c, msgs=len(history)); print(f'[Debug] Current context: {c} chars, {len(history)} messages.')
-    if c <= cap: return
+    target = int((c if force else cap) * getattr(sess, 'trim_keep_rate', 0.6))
+    if not force and c <= cap: return
     compress_history_tags(history, interval=getattr(sess, 'cut_msg_interval', 7), counter_owner=sess)
     compress_history_tags(history, keep_recent=4, force=True, counter_owner=sess)
-    if cost(history) <= target: return
-    pre, post = history[:kp], history[kp:]; costs = [len(json.dumps(m, ensure_ascii=False)) for m in post]; c = cost(pre) + sum(costs); i = 0
-    while len(post) - i > 9 and c > target:
-        c -= costs[i]; i += 1
-        while i < len(post) and post[i].get('role') != 'user': c -= costs[i]; i += 1
-        if i < len(post): old = costs[i]; post[i] = _sanitize_leading_user_msg(post[i]); costs[i] = len(json.dumps(post[i], ensure_ascii=False)); c += costs[i] - old
-    post = post[i:]
-    if kp and pre:
-        m = pre[-1]
-        if m.get('role') == 'assistant' and isinstance(m.get('content'), list):
-            m['content'] = [b for b in m['content'] if not (isinstance(b, dict) and b.get('type') == 'tool_use')] or [{"type": "text", "text": "..."}]
-        _d = lambda: [{"type": "text", "text": "..."}]
-        gap = [{"role": "assistant", "content": _d()}] if m.get('role') == 'user' else [{"role": "user", "content": _d()}, {"role": "assistant", "content": _d()}]
-        history[:] = pre + gap + post
-    else: history[:] = pre + post
-    STATS.update(ctx=(c := cost(history)), msgs=len(history)); print(f'[Debug] Trimmed context, current: {c} chars, {len(history)} messages.')
+    if cost(history) <= target:
+        STATS.update(ctx=cost(history), msgs=len(history))
+        return
+    # Cut only at protocol-closed boundaries. A retained prefix must also end
+    # outside a tool transaction; role boundaries alone are not sufficient.
+    pending = set()
+    boundaries = [0]
+    for i, msg in enumerate(history):
+        for block in msg.get('content', []) if isinstance(msg.get('content'), list) else []:
+            if not isinstance(block, dict): continue
+            if block.get('type') == 'tool_use': pending.add(block.get('id'))
+            elif block.get('type') == 'tool_result': pending.discard(block.get('tool_use_id'))
+        if not pending: boundaries.append(i + 1)
+    prefix = max((i for i in boundaries if i <= kp), default=0)
+    cut = prefix
+    for end in boundaries:
+        if end <= prefix or end >= len(history): continue
+        # Keep at least the latest four messages, extending to a closed boundary.
+        if len(history) - end < 4: break
+        cut = end
+        if cost(history[:prefix] + history[end:]) <= target: break
+    if cut > prefix:
+        history[:] = history[:prefix] + history[cut:]
+    STATS.update(ctx=cost(history), msgs=len(history))
+
 
 def auto_make_url(base, path):
     b, p = base.rstrip('/'), path.strip('/')
@@ -480,7 +586,7 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
                 emsg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
                 _raise_if_retryable_overload(emsg)
                 if emsg: content_text += f"!!!Error: {emsg}"; yield f"!!!Error: {emsg}"
-                break
+                return [{"type": "text", "text": content_text, "_error": {"stage": "stream", "code": err.get("code") if isinstance(err, dict) else None, "message": emsg}}]
             elif etype == "response.completed":
                 usage = evt.get("response", {}).get("usage", {})
                 _record_usage(usage, api_mode)
@@ -502,7 +608,7 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
                 emsg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
                 _raise_if_retryable_overload(emsg)
                 if emsg: content_text += f"!!!Error: {emsg}"; yield f"!!!Error: {emsg}"
-                break
+                return [{"type": "text", "text": content_text, "_error": {"stage": "stream", "code": err.get("code") if isinstance(err, dict) else None, "message": emsg}}]
         _ft = _esc.flush()
         if _ft: yield _ft
         if think_open: yield "\n</thinking>\n"
@@ -517,7 +623,7 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
             for i, inp in enumerate(inps):
                 bid = fc["id"] or ''
                 if len(inps) > 1: bid = f"{bid}_{i}" if bid else f"split_{i}"
-                blocks.append({"type": "tool_use", "id": bid, "name": fc["name"], "input": inp})
+                blocks.append({"type": "tool_use", "id": bid, "name": fc["name"], "input": inp, **({"_raw_arguments": fc["args"]} if len(inps) == 1 else {})})
         return blocks
     else:
         tc_buf = {}  # index -> {id, name, args}
@@ -532,6 +638,13 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
             if data_str == "[DONE]": break
             try: evt = json.loads(data_str)
             except: continue
+            if evt.get("error"):
+                detail = evt["error"]
+                msg = detail.get("message", str(detail)) if isinstance(detail, dict) else str(detail)
+                err = "!!!Error: " + msg
+                yield err
+                return [{"type": "text", "text": content_text + err,
+                         "_error": {"stage": "stream", "message": msg}}]
             ch = (evt.get("choices") or [{}])[0]
             delta = ch.get("delta") or {}
             if ch.get("finish_reason"): finish_reason = ch["finish_reason"]
@@ -583,7 +696,7 @@ def _parse_openai_sse(resp_lines, api_mode="chat_completions", omit_thinking=Fal
             for i, inp in enumerate(inps):
                 bid = tc["id"] or ''
                 if len(inps) > 1: bid = f"{bid}_{i}" if bid else f"split_{i}"
-                blocks.append({"type": "tool_use", "id": bid, "name": tc["name"], "input": inp})
+                blocks.append({"type": "tool_use", "id": bid, "name": tc["name"], "input": inp, **({"_raw_arguments": tc["args"]} if len(inps) == 1 else {})})
         return blocks
 
 def _record_usage(usage, api_mode):
@@ -686,13 +799,14 @@ def _rebuild_ssh_tunnel(sess):
     try:
         import ssh_tunnel as _st
         _st.close_tunnel(name)
-        _st.ensure_tunnel(name)
+        _st.ensure_tunnel(name, getattr(sess, 'ssh_port', None))
         print(f"[Tunnel] rebuilt {name} before retry")
     except Exception as re_:
         print(f"[Tunnel] rebuild failed for {name}: {re_}")
 
 def _stream_with_retry(sess, url, headers, payload, parse_fn):
     STATS['session'] = sess.name
+    sess.last_error = None
     _RETRYABLE = {408, 409, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526, 527, 529}
     cap = float(getattr(sess, 'max_retry_after', 60.0))
     def _delay(resp, attempt):
@@ -712,6 +826,7 @@ def _stream_with_retry(sess, url, headers, payload, parse_fn):
         STATS.update(t_start=time.time(), t_ttft=None)
         if not sess.stream: STATS['t_ttft'] = STATS['t_start']
         try:
+            sess._tid = threading.get_ident()  # abort() looks up _INFLIGHT[_tid]
             with requests.post(url, headers=headers, json=payload, stream=sess.stream, 
                                timeout=(sess.connect_timeout, sess.read_timeout), proxies=sess.proxies, verify=sess.verify) as r:
                 sess.active_response = r
@@ -725,7 +840,19 @@ def _stream_with_retry(sess, url, headers, payload, parse_fn):
                     try: body = r.text.strip()[:500]
                     except: body = ""
                     err = f"!!!Error: HTTP {r.status_code}" + (f" (retry-after > {cap:.0f}s)" if d is None and r.status_code in _RETRYABLE and attempt < sess.max_retries else "") + (f": {body}" if body else "")
-                    yield err; return [{"type": "text", "text": err}]
+                    try: detail = r.json().get('error', {})
+                    except Exception: detail = {}
+                    sess.last_error = {"stage": "http", "status": r.status_code,
+                                       "code": detail.get('code') if isinstance(detail, dict) else None,
+                                       "message": err, "request_id": r.headers.get('x-request-id')}
+                    yield err; return [{"type": "text", "text": err, "_error": sess.last_error}]
+                if sess.stream:  # TTFT = first SSE event (prefill done), not first visible chunk; hidden thinking must count in decode window
+                    _il = r.iter_lines
+                    def _probe(*a, **k):
+                        for line in _il(*a, **k):
+                            if line and STATS.get('t_ttft') is None: STATS['t_ttft'] = time.time()
+                            yield line
+                    r.iter_lines = _probe
                 gen = parse_fn(r)
                 try:
                     while True:
@@ -750,10 +877,10 @@ def _stream_with_retry(sess, url, headers, payload, parse_fn):
                 print(f"[LLM Retry] {type(e).__name__}, retry in {d:.1f}s ({attempt+1}/{sess.max_retries+1})")
                 if _sleep(d): return []
                 continue
-            yield err; return [{"type": "text", "text": err}]
+            yield err; return [{"type": "text", "text": err, "_error": {"stage": "transport", "message": err}}]
         except Exception as e:
             err = f"\n\n[!!! 流异常中断 {type(e).__name__}: {e} !!!]" if streamed else f"!!!Error: {type(e).__name__}: {e}"
-            yield err; return [{"type": "text", "text": err}]
+            yield err; return [{"type": "text", "text": err, "_error": {"stage": "transport", "message": err}}]
 
 def _openai_stream(sess, messages):
     model, api_mode = sess.model, sess.api_mode
@@ -863,7 +990,7 @@ def _msgs_claude2oai(messages):
                 elif b.get("type") == "tool_use":
                     tool_calls.append({
                         "id": b.get("id") or '', "type": "function",
-                        "function": {"name": b.get("name", ""), "arguments": json.dumps(b.get("input", {}), ensure_ascii=False)}
+                        "function": {"name": b.get("name", ""), "arguments": b.get("_raw_arguments", json.dumps(b.get("input", {}), ensure_ascii=False))}
                     })
             m = {"role": "assistant"}
             if reasoning: m["reasoning_content"] = reasoning
@@ -899,14 +1026,20 @@ class BaseSession:
         self.api_key = cfg['apikey']
         self.api_base = cfg['apibase'].rstrip('/')
         self.model = cfg.get('model', '')
-        default_context_win = 35000; default_cut_msg_interval = 7
+        default_context_win = 38000; default_cut_msg_interval = 8
         self.ssh_tunnel = cfg.get('ssh_tunnel')
+        # auto-tunnels derive the forward port from apibase
+        # (e.g. http://127.0.0.1:18082/v1 -> 18082)
+        self.ssh_port = cfg.get('ssh_port')
+        if not self.ssh_port and self.ssh_tunnel:
+            m = re.search(r':(\d+)(?:/|$)', str(cfg.get('apibase', '')))
+            self.ssh_port = int(m.group(1)) if m else None
         # Local-SSH-tunnel models (qwen3.8-27b, ornith1.5-35B-A3B, ...) have
         # the same long-reasoning history profile as DeepSeek.
         deepseek_style_history = 'deepseek' in self.model.lower() or self.ssh_tunnel is not None
         if deepseek_style_history:
             default_context_win = 80000; default_cut_msg_interval = 25
-            self.trim_keep_rate = float(cfg.get('trim_keep_rate', 0.6))
+        self.trim_keep_rate = float(cfg.get('trim_keep_rate', 0.6))
         self.context_win = cfg.get('context_win', default_context_win)
         # The configured context is the backend's real token window while GA
         # tracks history in chars; convert uniformly at ~3 chars/token.
@@ -917,7 +1050,8 @@ class BaseSession:
             # 折算成本地序列化历史预算（保守方向）。隧道后端不再特殊化。
             self.history_char_limit = max(1, int(self.context_win or 35000) * 3)
         self.maxlen_multiplier = min(max(self.context_win / default_context_win * 0.75, 1.0), 3.0)
-        self.cut_msg_interval = int(default_cut_msg_interval * self.maxlen_multiplier)
+        self.cut_msg_interval = max(1, int(cfg.get('cut_msg_interval',
+                                                   int(default_cut_msg_interval * self.maxlen_multiplier))))
         self.trim_keep_prefix = max(0, int(cfg.get('trim_keep_prefix', 0) or 0))
         self.history = []; self.lock = threading.Lock(); self.system = ""
         self.name = cfg.get('name', self.model)
@@ -956,7 +1090,7 @@ class BaseSession:
         self.api_mode = 'responses' if mode in ('responses', 'response') else 'chat_completions'
         self.temperature = cfg.get('temperature', 1)
         self.max_tokens = cfg.get('max_tokens')
-        self.default_ua = "claude-cli/2.1.251 (external, cli)"
+        self.default_ua = "claude-cli/2.1.280 (external, cli)"
         self.user_agent = cfg.get("user_agent", self.default_ua)
     def _apply_claude_thinking(self, payload):
         if self.thinking_type:
@@ -1068,7 +1202,7 @@ def _fix_messages(messages):
     return merged
 
 class NativeClaudeSession(BaseSession):
-    native_ua = "claude-cli/2.1.251 (native, cli)"
+    native_ua = "claude-cli/2.1.280 (native, cli)"
     def __init__(self, cfg):
         super().__init__(cfg)
         self.fake_cc_system_prompt = cfg.get("fake_cc_system_prompt", False)
@@ -1082,6 +1216,9 @@ class NativeClaudeSession(BaseSession):
         if self.max_tokens is None: self.max_tokens = 8192
         model = self.model
         messages = _fix_messages(messages)
+        for message in messages:
+            for block in message.get('content', []):
+                if isinstance(block, dict): block.pop('_raw_arguments', None)
         if 'claude' in model.lower(): messages = _drop_unsigned_thinking(messages)
         messages = _ensure_thinking_blocks(messages, self.model)
         beta_parts = ["claude-code-20250219", "interleaved-thinking-2025-05-14", "redact-thinking-2026-02-12", "thinking-token-count-2026-05-13", "context-management-2025-06-27", "prompt-caching-scope-2026-01-05", "mid-conversation-system-2026-04-07", "effort-2025-11-24", "fallback-credit-2026-06-01"]
@@ -1123,17 +1260,26 @@ class NativeClaudeSession(BaseSession):
         parse_fn = (lambda r: _parse_claude_sse(r.iter_lines())) if self.stream else (lambda r: _parse_claude_json(r.json()))
         return (yield from _stream_with_retry(self, url, headers, payload, parse_fn))
 
-    def ask(self, msg):
-        assert type(msg) is dict
+    def ask(self, msg, retry_notice=None):
+        assert retry_notice is not None or type(msg) is dict
         with self.lock:
-            self.history.append(msg)
-            trim_messages_history(self.history, self)
-            messages = [{"role": m["role"], "content": list(m["content"])} for m in self.history]
+            if retry_notice is None:
+                self.history.append(msg)
+                trim_messages_history(self.history, self)
+            messages = copy.deepcopy(self.history)
+        if retry_notice:
+            messages.append({"role": "user", "content": [{"type": "text", "text": retry_notice}]})
         content_blocks = None
         gen = self.raw_ask(messages)
         try:
             while True: yield next(gen)
         except StopIteration as e: content_blocks = e.value or []
+        error = next((b.get('_error') for b in content_blocks if b.get('_error')), None)
+        self.last_error = error
+        if error:
+            response = MockResponse('', error.get('message', 'Model request failed'), [], repr(content_blocks))
+            response.error = error
+            return response
         if self.omit_thinking:
             # Some compatible servers put CoT in either a thinking block or
             # literal <think> tags.  Neither belongs in Qwen history.
@@ -1169,8 +1315,8 @@ class NativeOAISession(NativeClaudeSession):
         tunnel = None
         if self.ssh_tunnel:
             from ssh_tunnel import ensure_tunnel, release_tunnel
-            ensure_tunnel(self.ssh_tunnel)
-            tunnel = lambda: release_tunnel(self.ssh_tunnel)
+            ensure_tunnel(self.ssh_tunnel, self.ssh_port)
+            tunnel = lambda: release_tunnel(self.ssh_tunnel, self.ssh_port)
         try:
             messages = _fix_messages(messages)
             messages = _ensure_thinking_blocks(messages, self.model)
@@ -1499,6 +1645,14 @@ class NativeToolClient:
         self.backend.system = combined
     def chat(self, messages, tools=None):
         if tools: self.backend.tools = tools
+        retry_notice = getattr(self, '_retry_requested', None)
+        if retry_notice:
+            self._retry_requested = None
+            resp = yield from self.backend.ask(None, retry_notice=retry_notice)
+            if resp and not getattr(resp, 'error', None):
+                self._pending_tool_ids = [tc.id for tc in resp.tool_calls]
+            if resp: _write_llm_log('Response', resp.raw, self.log_path, model=self.backend.model)
+            return resp
         if not self.backend.history: self._pending_tool_ids = []
         combined_content = []; resp = None; tool_results = []
         for msg in messages:

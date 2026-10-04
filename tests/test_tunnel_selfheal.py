@@ -41,6 +41,8 @@ def run_with_fails(n_fail, tunnel_name, err=_req.ConnectionError("Max retries ex
     llmcore._rebuild_ssh_tunnel = lambda s: rebuilt.append(1)
     class FakeResp:
         status_code = 200; headers = {}
+        def iter_lines(self):
+            yield b'data: ok'
     class FakePost:
         def __init__(self, *a, **k): pass
         def __enter__(self):

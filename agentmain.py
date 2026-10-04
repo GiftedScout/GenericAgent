@@ -43,6 +43,17 @@ def get_system_prompt():
     prompt += get_global_memory()
     return prompt
 
+def _settlement_safe_chunks(gen, state):
+    """Keep a post-settlement backend failure from replacing the user answer."""
+    try:
+        yield from gen
+    except Exception as exc:
+        if state.get('seen'):
+            yield {'_settlement_error': exc}
+        else:
+            raise
+
+
 def iter_display_events(gen, source, turn_resps, stop_check=None):
     """Consume the agent_runner_loop chunk stream; yield UI display events.
 
@@ -61,14 +72,19 @@ def iter_display_events(gen, source, turn_resps, stop_check=None):
     full_resp = ""; display_resp = ""; display_pos = 0
     curr_turn = 0
     settle = None      # (full_len, disp_len): 结算（记忆维护）冻结点
-    for chunk in gen:
+    settlement_state = {'seen': False}
+    for chunk in _settlement_safe_chunks(gen, settlement_state):
         if stop_check and stop_check():
             break
         if isinstance(chunk, dict):
+            if '_settlement_error' in chunk:
+                # 结算是后台维护；用户答案已冻结，失败只结束后台流。
+                break
             if 'settlement' in chunk:
                 # 结算状态是 UI 独立事件：答案正文和历史不得混入提示文本。
                 # 结算前的内容已经完整流出；之后的维护轮次仅保留在审计历史，
                 # display_resp 冻结在这里，done 只返回用户真正看到的答案。
+                settlement_state['seen'] = True
                 settle = (len(full_resp), len(display_resp))
                 if os.environ.get("GA_DEBUG_SETTLE"):
                     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp", "settle_debug.log"), "a") as _f:
@@ -117,6 +133,17 @@ def iter_display_events(gen, source, turn_resps, stop_check=None):
 # agent = GenericAgent(); threading.Thread(target=agent.run, daemon=True).start()
 # output1_queue = agent.put_task(prompt1)
 # output2_queue = agent.put_task(prompt2)
+def _is_settlement_prompt(msg):
+    """Whether a backend user message is the internal memory-maintenance turn."""
+    if not isinstance(msg, dict) or msg.get('role') != 'user':
+        return False
+    content = msg.get('content')
+    if isinstance(content, str):
+        return '[后台记忆维护]' in content
+    return any('[后台记忆维护]' in str(b.get('text', ''))
+               for b in (content or []) if isinstance(b, dict))
+
+
 class GenericAgent:
     def __init__(self):
         os.makedirs(os.path.join(script_dir, 'temp'), exist_ok=True)
@@ -219,12 +246,10 @@ class GenericAgent:
         if self.handler is not None: self.handler.code_stop_signal.append(1)
         for sess in getattr(self.llmclient.backend, '_sessions', [self.llmclient.backend]):
             sess.should_stop = lambda: self.stop_sig  # live read; cleared by run()'s finally
-            try:  # wake a recv() blocked in another thread. Verified on Windows: shutdown()/close() do NOT
-                  # wake it (makefile refcount defers real closesocket); _real_close() does -> ChunkedEncodingError
+            try:  # wake a recv() blocked in another thread (waiting headers OR reading stream). Verified on Windows:
+                  # shutdown()/close() do NOT wake it (makefile refcount defers closesocket); _real_close() does
                 import socket as _socket
-                raw = sess.active_response.raw
-                fp = getattr(getattr(raw, '_fp', None), 'fp', None)  # http.client response -> buffered socket file
-                sock = fp.raw._sock if fp else raw.connection.sock   # SocketIO._sock (SSL-wrapped OK); fallback urllib3 conn
+                sock = sys.modules['llmcore']._INFLIGHT[sess._tid]  # socket registered at urllib3 request() time, before headers
                 try: sock.shutdown(_socket.SHUT_RDWR)  # for non-Windows semantics
                 except OSError: pass
                 try: sock._real_close()  # CPython internal; bypasses refcount -> actual closesocket
@@ -250,18 +275,25 @@ class GenericAgent:
             setattr(self.llmclient.backend, k, v)
             display_queue.put({'done': smart_format(f"✅ session.{k} = {repr(v)}", max_str_len=500), 'source': 'system'})
             return None
+        if raw_query.strip() == '/compact':
+            from llmcore import trim_messages_history
+            be = self.llmclient.backend
+            cost = lambda: sum(len(json.dumps(m, ensure_ascii=False)) for m in be.history)
+            before = cost()
+            target = int(before * getattr(be, 'trim_keep_rate', 0.6))
+            trim_messages_history(be.history, be, force=True)
+            after = cost()
+            note = '；受最近消息/前缀/工具边界保护，未达到目标' if after > target else ''
+            display_queue.put({'done': f'✅ /compact: {before / 1000:.2f}K → {after / 1000:.2f}K（目标 {target / 1000:.2f}K）{note}', 'source': 'system'})
+            return None
         if raw_query.strip() == '/resume':
             return r'帮我看看最近有哪些会话可以恢复。读model_responses/目录，按修改时间取最近10个文件，从每个文件里找最后一个<history>...</history>块，用一句话总结每个会话在聊什么，列表给我选。注意读文件后要把字面的\n替换成真换行才能正确匹配。'
         return raw_query
 
     def _prepare_retry(self, display_queue):
         """/retry: 意外中断（网络断连/Ctrl+C//continue 恢复）后续跑，锚点与上下文不变。
-        两种形态（视 history 尾部状态而定）：
-        - 尾=未响应的 user 消息（live 中断，NativeSession.ask 在网络调用前 append）：
-          弹出并重组为 str 原样重发 —— 就好像错误没有发生。
-        - 尾=assistant（/continue 恢复、或 Ctrl+C 打断在工具执行中，中断的 user
-          消息已不在 history）：发一条系统续跑 nudge，不引入新用户指令。
-        返回重发的 raw_query（str，保持 agent_loop 的 user 消息格式），不可重试时返回 None。"""
+        原生请求失败原位重发，保留工具结果和图片，不经过用户提示落盘。
+        非原生与助手尾部中断使用兼容续跑路径。"""
         be = self.llmclient.backend
         hist = getattr(be, 'history', None)
         if not hist or not isinstance(hist[-1], dict):
@@ -273,28 +305,23 @@ class GenericAgent:
             # 这是进度提示而非任务完成；用 next 保持 TUI 消费线程存活，等待真正响应。
             display_queue.put({'next': '🔁 刚才是意外中断，请模型从断点继续（锚点与上下文不变）…\n', 'source': 'system'})
             return '[retry] 上一轮执行因网络中断/意外退出而中断，请从断点继续原任务。不要重新询问用户，直接接着做。'
-        if hist[-1].get('role') != 'user':
+        if hist[-1].get('role') != 'user' and not isinstance(self.llmclient, NativeToolClient):
             display_queue.put({'done': '❌ /retry: 没有可重试的中断请求（上一轮不是未响应就中断的）', 'source': 'system'})
             return None
-        msg = hist.pop()
-        c = msg.get('content')
-        if isinstance(c, str):
-            t = c.strip()
-            return t or '[retry] 继续上次中断的任务'
-        # blocks: tool_result 包 <tool_result> 标签 + 文本块，与 NativeToolClient.chat 的重组规则一致
-        parts = []
-        for b in c or []:
-            if not isinstance(b, dict):
-                continue
-            if b.get('type') == 'tool_result':
-                parts.append(f'<tool_result>{b.get("content", "")}</tool_result>')
-            elif b.get('type') == 'text' and str(b.get('text', '')).strip():
-                parts.append(str(b['text']))
-        t = '\n'.join(parts).strip()
-        if not t:
-            display_queue.put({'done': '❌ /retry: 上一条中断消息无可重发的内容', 'source': 'system'})
+        if _is_settlement_prompt(hist[-1]):
+            # 用户答案已经在 settlement marker 前提交；后台维护失败不可重跑成新任务。
+            display_queue.put({'done': '✅ 用户答案已完成；后台记忆维护未完成，未重跑原任务。', 'source': 'system'})
             return None
-        return t
+        error = getattr(be, 'last_error', None) or {}
+        notice = '[retry] 上次模型请求中断；任务与锚点不变，从当前断点继续。'
+        if error:
+            notice += ' 上次错误：' + str(error.get('status') or '') + ' ' + str(error.get('code') or '') + ' ' + str(error.get('message') or '')[:500]
+        if isinstance(self.llmclient, NativeToolClient) and isinstance(be, (NativeClaudeSession, NativeOAISession)):
+            self.llmclient._retry_requested = notice
+            return notice
+        # Text-only legacy clients have no native tool identities to preserve.
+        c = hist.pop().get('content', '')
+        return c if isinstance(c, str) else '\n'.join(str(b.get('content', '')) if b.get('type') == 'tool_result' else b.get('text', '') for b in c if b.get('type') in ('text', 'tool_result'))
 
     def run(self):
         while True:
@@ -312,28 +339,29 @@ class GenericAgent:
             pending_update = getattr(self, '_pending_update_prompt', None)
             conflict_just_shown = bool(getattr(self, '_update_conflict_just_shown', False))
             self._update_conflict_just_shown = False
-            if pending_update and not conflict_just_shown:
+            if pending_update and not conflict_just_shown and not retrying:
                 raw_query = pending_update + '\n\n用户对上述 /update 冲突的回复：\n' + raw_query
                 self._pending_update_prompt = None
             single_update_turn = bool(getattr(self, '_update_single_turn', False))
             self._update_single_turn = False
             self.is_running = True; self._current_queue = display_queue
-            if len(raw_query) > 2000:
+            if not retrying and len(raw_query) > 2000:
                 task_file = os.path.join(script_dir, 'temp', f'user_prompt_{os.getpid()}_{time.time_ns()}.md')
                 with open(task_file, 'w', encoding='utf-8') as f: f.write(raw_query)
                 raw_query = f'Long user prompt saved to {task_file}. Read and execute.'
             self.all_outputs.append({"input": raw_query, "outputs": []})
             if len(self.all_outputs) > 10000: self.all_outputs = self.all_outputs[-5000:]
             rquery = smart_format(raw_query.replace('\n', ' '), max_str_len=200)
-            self.history.append(f"[USER]: {rquery}")
+            if not retrying: self.history.append(f"[USER]: {rquery}")
             sys_prompt = get_system_prompt() + '\n'.join(self.extra_sys_prompts) + getattr(self.llmclient.backend, 'extra_sys_prompt', '')
             if self.peer_hint: sys_prompt += f"\n[Peer] 用户提及其他会话/后台任务状态时: temp/model_responses/ (只找近期修改的文件尾部)\n"
             # 任务锚点：/retry 与 ask_user 回答继承上一锚点，实质新任务覆盖（见 ga.resolve_task_anchor）
             new_anchor = self.task_anchor if retrying else resolve_task_anchor(raw_query, self.task_anchor, self._prev_exit)
-            handler = GenericAgentHandler(self, self.history, os.path.join(script_dir, 'temp'), original_task=new_anchor)
+            handler = self.handler if retrying and self.handler else GenericAgentHandler(self, self.history, os.path.join(script_dir, 'temp'), original_task=new_anchor)
+            if retrying: handler.code_stop_signal = []
             if retrying: handler._empty_ct = 0  # 上次中断已耗尽的自动重试额度不复用
             if getattr(self, 'no_print', False): handler.print = lambda *a, **k: None
-            if self.handler and 'key_info' in self.handler.working: 
+            if not retrying and self.handler and 'key_info' in self.handler.working:
                 ki = re.sub(r'\n\[SYSTEM\] 此为.*?工作记忆[。\n]*', '', self.handler.working['key_info'])  # 去旧
                 handler.working['key_info'] = ki
                 handler.working['passed_sessions'] = ps = self.handler.working.get('passed_sessions', 0) + 1
@@ -492,6 +520,7 @@ if __name__ == '__main__':
             if task and task == '/exit': break
             if task:
                 print(f'[Reflect] triggered: {task[:80]}')
+                if (_ln := getattr(mod, 'LLM', None)): agent.next_llm(next((i for i, b in enumerate(agent.llmclients) if not isinstance(b, dict) and b.backend.name == _ln), agent.llm_no))
                 dq = agent.put_task(task, source='reflect')
                 try:
                     while 'done' not in (item := dq.get(timeout=2200)): pass
