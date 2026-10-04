@@ -762,7 +762,6 @@ fn write_shortcut_pref(enabled: bool) -> Result<(), String> {
 /// Create (or overwrite) a desktop shortcut pointing at the CURRENT exe. Overwriting on every
 /// enabled launch is what makes the portable bundle relocatable: move the folder, relaunch, and
 /// the .desktop shortcut is rewritten to the new path.
-
 fn ensure_desktop_shortcut() {
     // Launch target: the AppImage path when running as one, else the current exe. Writing the
     // current path on every enabled launch keeps a relocated bundle's launcher valid.
