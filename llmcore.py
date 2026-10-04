@@ -291,15 +291,10 @@ def trim_messages_history(history, sess, force=False):
     STATS.update(ctx=c, msgs=len(history)); print(f'[Debug] Current context: {c} chars, {len(history)} messages.')
     target = int((c if force else cap) * getattr(sess, 'trim_keep_rate', 0.6))
     if not force and c <= cap: return
-    original = history
-    history = copy.deepcopy(original)
-    # Plan on a copy: failed compaction must not repeatedly invalidate caches.
-    # Explicitly protected prefix messages are never tag-rewritten either.
-    compressible = history[kp:]
-    compress_history_tags(compressible, keep_recent=4, force=True, counter_owner=sess)
+    compress_history_tags(history, interval=getattr(sess, 'cut_msg_interval', 7), counter_owner=sess)
+    compress_history_tags(history, keep_recent=4, force=True, counter_owner=sess)
     if cost(history) <= target:
-        original[:] = history
-        STATS.update(ctx=cost(original), msgs=len(original))
+        STATS.update(ctx=cost(history), msgs=len(history))
         return
     # Cut only at protocol-closed boundaries. A retained prefix must also end
     # outside a tool transaction; role boundaries alone are not sufficient.
@@ -321,65 +316,7 @@ def trim_messages_history(history, sess, force=False):
         if cost(history[:prefix] + history[end:]) <= target: break
     if cut > prefix:
         history[:] = history[:prefix] + history[cut:]
-    # Four recent messages and the prefix are preferences, not hard blockers.
-    # If they prevent fitting, retain the largest closed suffix within budget.
-    budget = target if force else cap
-    if cost(history) > budget:
-        for end in boundaries:
-            if end >= len(original): continue
-            candidate = copy.deepcopy(original[end:])
-            if cost(candidate) <= budget:
-                history = candidate
-                break
-    if cost(history) > budget and history:
-        # The latest transaction alone is too large. Keep the actual latest
-        # user input/results as text rather than mutilate call IDs, JSON inputs,
-        # images or signed reasoning in a half-retained transaction.
-        latest = next((m for m in reversed(history) if m.get('role') == 'user'), history[-1])
-        original_live = original[-1].get('role') == 'assistant' and any(
-            isinstance(b, dict) and b.get('type') == 'tool_use'
-            for b in (original[-1].get('content', []) if isinstance(original[-1].get('content'), list) else []))
-        if original_live:
-            start = next((i for i in range(len(original) - 1, -1, -1)
-                          if original[i].get('role') == 'user'), len(original) - 1)
-            history = copy.deepcopy(original[start:])
-        live = original_live
-        if live:
-            # Keep the user context with its pending executable call.
-            budget = max(budget, min(cap, cost(history)))
-        else:
-            latest = copy.deepcopy(latest)
-            content = latest.get('content', '')
-            if isinstance(content, str): content = [{'type': 'text', 'text': content}]
-            blocks = []
-            for b in content if isinstance(content, list) else []:
-                if not isinstance(b, dict): continue
-                if b.get('type') == 'tool_result':
-                    blocks.append({'type': 'text', 'text': str(b.get('content', ''))})
-                else: blocks.append(b)
-            history = [{'role': 'user', 'content': blocks or [{'type': 'text', 'text': '.'}]}]
-        if cost(history) > budget:
-            if live:
-                raise ValueError('Current executable tool call exceeds history budget; cannot truncate its arguments safely.')
-            # Shrink text only; images and other structured blocks stay intact.
-            content = history[0]['content']
-            texts = [(b, b.get('text', '')) for b in content if b.get('type') == 'text']
-            marker = '\n[Context truncated to budget]\n'
-            lo, hi = 0, max((len(v) for _, v in texts), default=0)
-            def shorten(n):
-                for block, value in texts:
-                    block['text'] = value if len(value) <= n else value[:n//2] + marker + (value[-(n-n//2):] if n else '')
-            while lo < hi:
-                n = (lo + hi + 1) // 2
-                shorten(n)
-                if cost(history) <= budget: lo = n
-                else: hi = n - 1
-            shorten(lo)
-            if cost(history) > budget:
-                raise ValueError('Non-text current input exceeds history budget; cannot safely truncate media.')
-        print('[Trim] Recent-message/prefix preference relaxed to enforce history budget.')
-    original[:] = history
-    STATS.update(ctx=cost(original), msgs=len(original))
+    STATS.update(ctx=cost(history), msgs=len(history))
 
 
 def auto_make_url(base, path):

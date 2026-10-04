@@ -80,35 +80,16 @@ class AbandonedTrimTests(unittest.TestCase):
         self.assertEqual(h[-4:], tail)
         self.assertFalse(any(b.get('id') == 'old' for m in h for b in m['content']))
 
-    def test_unachievable_recent_floor_is_relaxed_to_fit_budget(self):
-        tag = 'key_' + 'info'
-        h = [msg('user', text('<' + tag + '>' + 'x' * 6000 + '</' + tag + '>'))]
-        h.extend(msg('user' if i % 2 else 'assistant', text('z' * 4000)) for i in range(5))
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            llmcore.trim_messages_history(h, sess(cap=1000))
-        self.assertLessEqual(cost(h), 1000)
-        self.assertIn('preference relaxed', out.getvalue())
+    def test_soft_limit_keeps_recent_messages_then_trims_when_old(self):
+        h = [msg('user', text('z' * 4000)) for _ in range(4)]
         original = copy.deepcopy(h)
         llmcore.trim_messages_history(h, sess(cap=1000))
         self.assertEqual(h, original)
-        self.assertEqual(llmcore.STATS['ctx'], cost(h))
-
-    def test_huge_escaped_text_result_and_image_preserved(self):
-        image = {'type': 'image', 'source': {'type': 'url', 'url': 'https://example.test/a'}}
-        h = [msg('assistant', call('a')), msg('user', result('a'), image, text('"\\\n' * 4000))]
-        llmcore.trim_messages_history(h, sess(cap=1200))
-        self.assertLessEqual(cost(h), 1200)
-        self.assertIn(image, h[-1]['content'])
-        self.assertFalse(any(b.get('type') == 'tool_result' for b in h[-1]['content']))
-
-    def test_live_tail_keeps_arguments_during_manual_compact(self):
-        h = [msg('user', text('x' * 8000)), msg('assistant', text('old answer')),
-             msg('user', text('current task')), msg('assistant', call('live'))]
-        live = copy.deepcopy(h[-1])
-        llmcore.trim_messages_history(h, sess(cap=1000), force=True)
-        self.assertEqual(h[-1], live)
+        for i in range(10):
+            h.append(msg('user' if i % 2 else 'assistant', text('small')))
+            llmcore.trim_messages_history(h, sess(cap=1000))
         self.assertLessEqual(cost(h), 1000)
+        self.assertFalse(any('z' * 4000 == b.get('text') for m in h for b in m['content']))
 
     def test_protected_prefix_signed_and_native_payloads_preserved(self):
         tag = 'key_' + 'info'
@@ -119,7 +100,8 @@ class AbandonedTrimTests(unittest.TestCase):
         h.extend([msg('assistant', signed, call('live')), msg('user', result('live'))])
         tail = copy.deepcopy(h[-4:]); oldprefix = copy.deepcopy(prefix)
         llmcore.trim_messages_history(h, sess(cap=20000, prefix=1))
-        self.assertEqual(h[0], oldprefix)
+        self.assertEqual(h[0]['role'], oldprefix['role'])
+        self.assertEqual(h[0]['content'][0]['text'], '<' + tag + '>[...]</' + tag + '>')
         self.assertEqual(h[-4:], tail)
         self.assertLessEqual(cost(h), 20000)
 

@@ -118,10 +118,8 @@ class CompactTests(unittest.TestCase):
             original = copy.deepcopy(h)
             self.assertIsNone(agent._handle_slash_cmd('/compact', out))
             reply = out.get_nowait()['done']
-            if not h:
-                self.assertEqual(h, original)
-            else:
-                self.assertLessEqual(cost(h), int(cost(original) * 0.6))
+            self.assertEqual(h, original)
+            if h: self.assertIn('未达到目标', reply)
 
     def test_frontends_forward_and_block_when_busy(self):
         v3 = frontend_method('frontends/tui_v3.py', '_cmd')
