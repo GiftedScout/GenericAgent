@@ -1752,30 +1752,12 @@ def _port_alive(port: Optional[int]) -> bool:
 def _mem_mb(pid: Optional[int]) -> Optional[int]:
     if not pid:
         return None
-    if sys.platform == "win32":
-        import ctypes
-        from ctypes import wintypes
-        class PROCESS_MEMORY_COUNTERS(ctypes.Structure):
-            _fields_ = [
-                ("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD),
-                ("PeakWorkingSetSize", ctypes.c_size_t), ("WorkingSetSize", ctypes.c_size_t),
-                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t), ("QuotaPagedPoolUsage", ctypes.c_size_t),
-                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t), ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
-                ("PagefileUsage", ctypes.c_size_t), ("PeakPagefileUsage", ctypes.c_size_t),
-            ]
-        counters = PROCESS_MEMORY_COUNTERS()
-        counters.cb = ctypes.sizeof(PROCESS_MEMORY_COUNTERS)
-        h = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
-        if not h:
-            return None
-        ok = ctypes.windll.psapi.GetProcessMemoryInfo(h, ctypes.byref(counters), counters.cb)
-        ctypes.windll.kernel32.CloseHandle(h)
-        return round(counters.WorkingSetSize / 1024 / 1024) if ok else None
-    status = Path(f"/proc/{pid}/status")
-    if status.is_file():
-        for line in status.read_text(encoding="utf-8", errors="replace").splitlines():
+    try:
+        for line in Path(f"/proc/{pid}/status").read_text().splitlines():
             if line.startswith("VmRSS:"):
                 return round(int(line.split()[1]) / 1024)
+    except (OSError, ValueError):
+        pass
     return None
 
 
@@ -2014,8 +1996,6 @@ class ServiceManager:
                 cwd=str(self.ga_root), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, encoding="utf-8", errors="replace", bufsize=1, env=env,
             )
-            if sys.platform == "win32":
-                kw["creationflags"] = subprocess.CREATE_NO_WINDOW
             proc = subprocess.Popen(svc["cmd"], **kw)
             self.procs[sid] = proc
             threading.Thread(target=self._reader, args=(sid, proc), daemon=True).start()
@@ -2781,58 +2761,18 @@ async def upload_raw_handler(request):
 
 
 def _open_path_in_editor(target: Path) -> None:
-    """Open a file in the user's editor; Windows .py often has no default association."""
-    import platform
-    path = str(target.resolve())
-    if platform.system() == "Windows":
-        try:
-            os.startfile(path, "edit")
-            return
-        except OSError:
-            pass
-        for cmd in (["notepad.exe", path], ["cursor.cmd", path], ["code.cmd", path], ["cursor", path], ["code", path]):
-            try:
-                subprocess.Popen(cmd, close_fds=True)
-                return
-            except (FileNotFoundError, OSError):
-                continue
-        raise OSError(f"No editor available to open: {path}")
-    if platform.system() == "Darwin":
-        subprocess.Popen(["open", path])
-        return
-    subprocess.Popen(["xdg-open", path])
+    """Use the Ubuntu desktop's file association."""
+    subprocess.Popen(["xdg-open", str(target.resolve())], close_fds=True)
 
 
 def _reveal_path_in_file_manager(target: Path) -> None:
-    """Open the system file manager and select/highlight the target file."""
-    import platform
-    path = str(target.resolve())
-    if platform.system() == "Windows":
-        subprocess.Popen(["explorer", "/select,", path])
-        return
-    if platform.system() == "Darwin":
-        subprocess.Popen(["open", "-R", path])
-        return
-    # Linux: no universal "select file" command; fall back to opening parent dir
-    subprocess.Popen(["xdg-open", str(target.parent)])
+    """Open the containing directory with the Ubuntu file manager."""
+    subprocess.Popen(["xdg-open", str(target.resolve().parent)], close_fds=True)
 
 
 def _open_path_default(target: Path) -> None:
-    """Open a file with the OS default app (default 'open' verb).
-
-    For user uploads. Unlike _open_path_in_editor (which uses Windows' 'edit'
-    verb and falls back to Notepad), this respects each file type's registered
-    default app — PDF viewer, Word, archive tool, etc. — so binaries like pdf
-    or docx no longer land in Notepad as garbage."""
-    import platform
-    path = str(target.resolve())
-    if platform.system() == "Windows":
-        os.startfile(path)  # default "open" verb = double-click behavior
-        return
-    if platform.system() == "Darwin":
-        subprocess.Popen(["open", path])
-        return
-    subprocess.Popen(["xdg-open", path])
+    """Open an uploaded file with its Ubuntu default application."""
+    subprocess.Popen(["xdg-open", str(target.resolve())], close_fds=True)
 
 
 def _mykey_file() -> Path:

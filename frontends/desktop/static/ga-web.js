@@ -6,8 +6,8 @@
   const listeners = new Map();
   let ws = null;
   let cachedBridgeReady = null;
-  const bridgeBase = `${location.protocol}//${location.hostname}:14168`;
-  const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.hostname}:14168/ws`;
+  const bridgeBase = location.origin;
+  const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
 
   function on(channel, cb) {
     if (typeof cb !== 'function') return () => {};
@@ -116,7 +116,7 @@
   }
 
   window.ga = {
-    platform: navigator.platform.toLowerCase().includes('mac') ? 'darwin' : 'win32',
+    platform: 'linux',
     startBridge: async () => { connectWs(); return http('/status'); },
     stopBridge: async () => ({ ok: true }),
     checkStatus: () => rpc('app/status', {}),

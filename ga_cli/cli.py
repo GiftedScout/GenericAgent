@@ -5,9 +5,6 @@ ga_cli/cli.py - GenericAgent 命令行分发系统
 """
 import os, sys, subprocess, argparse, textwrap
 
-# Windows GBK 终端兼容
-if sys.platform == "win32" and sys.stdout.encoding and sys.stdout.encoding.lower() in ("gbk", "gb2312"):
-    sys.stdout.reconfigure(errors="replace") if hasattr(sys.stdout, "reconfigure") else None
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)

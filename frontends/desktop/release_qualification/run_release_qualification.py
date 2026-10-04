@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cross-platform release qualification for GenericAgent Desktop 2.0.
+"""Linux release qualification for GenericAgent Desktop 2.0.
 
 This runner deliberately exercises a production binary and its packaged runtime.  It does
 not import product code from the checkout and it does not require network access.  The
@@ -8,8 +8,7 @@ application/runtime paths here.
 
 The production binary uses the real per-user settings file, so the runner refuses to start
 without an explicit acknowledgement.  It backs up that file byte-for-byte and restores it in
-``finally``.  Run this only in a dedicated OS test account: macOS may also create its normal
-stable writable runtime under Application Support during the stale-override fallback test.
+``finally``.  Run this only in a dedicated Linux test account.
 """
 
 from __future__ import annotations
@@ -22,7 +21,6 @@ import http.server
 import json
 import os
 import platform
-import plistlib
 import shutil
 import socket
 import subprocess
@@ -83,26 +81,6 @@ def read_json(path: Path, default: Any = None) -> Any:
 def write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
-
-def read_macos_bundle_versions(package_root: Path) -> tuple[str, str]:
-    info_path = package_root / "Contents" / "Info.plist"
-    try:
-        with info_path.open("rb") as stream:
-            info = plistlib.load(stream)
-    except (OSError, plistlib.InvalidFileException, TypeError, ValueError) as error:
-        raise JourneyFailure(f"macOS application Info.plist is missing or invalid: {info_path}") from error
-    if not isinstance(info, dict):
-        raise JourneyFailure(f"macOS application Info.plist is missing or invalid: {info_path}")
-
-    values = {
-        "CFBundleShortVersionString": info.get("CFBundleShortVersionString"),
-        "CFBundleVersion": info.get("CFBundleVersion"),
-    }
-    for key, value in values.items():
-        if not isinstance(value, str) or value != RELEASE_VERSION:
-            raise JourneyFailure(f"macOS {key} is {value!r}; expected {RELEASE_VERSION!r}")
-    return values["CFBundleShortVersionString"], values["CFBundleVersion"]
 
 
 def request_json(method: str, path: str, body: Any = None, timeout: float = 5.0) -> Any:
@@ -395,22 +373,11 @@ def fake_mykey(base_url: str) -> str:
     )
 
 
-def tree_snapshot(root: Path) -> dict[str, tuple[int, int]]:
-    snapshot: dict[str, tuple[int, int]] = {}
-    for path in sorted(root.rglob("*")):
-        if path.is_file() and not path.is_symlink():
-            stat = path.stat()
-            snapshot[path.relative_to(root).as_posix()] = (stat.st_size, stat.st_mtime_ns)
-    return snapshot
-
-
 def capture_screenshot(target: Path) -> bool:
     target.parent.mkdir(parents=True, exist_ok=True)
     system = platform.system()
     commands: list[list[str]] = []
-    if system == "Darwin":
-        commands = [["screencapture", "-x", str(target)]]
-    elif system == "Linux":
+    if system == "Linux":
         commands = [
             ["gnome-screenshot", "-f", str(target)],
             ["scrot", str(target)],
@@ -449,7 +416,6 @@ class Journey:
         self.foreign_server: http.server.ThreadingHTTPServer | None = None
         self.foreign_thread: threading.Thread | None = None
         self.screenshots: list[str] = []
-        self.app_snapshot: dict[str, tuple[int, int]] | None = None
         self.report: dict[str, Any] = {
             "schemaVersion": 1,
             "startedAt": utc_now(),
@@ -482,24 +448,8 @@ class Journey:
             "nativeDirectoryPicker": "pending",
             "noVisualRegression": "pending",
         }
-        platform_items = {
-            "windows": {
-                "framelessTitlebarAndThreeButtons": "pending",
-                "trayAndCloseHides": "pending",
-                "shortcutSelfHealsAfterMove": "pending",
-            },
-            "linux": {
-                "appImageExecutableAndDesktopLauncher": "pending",
-                "windowDragAndCloseBehavior": "pending",
-                "retryButtonAfterPortRelease": "pending",
-            },
-            "macos": {
-                "gatekeeperOrOpenAnyway": "pending",
-                "trafficLightsAndWindowFocus": "pending",
-                "retryButtonAfterPortRelease": "pending",
-            },
-        }
-        return {**common, **platform_items[system]}
+        return {**common, "appImageExecutableAndDesktopLauncher": "pending",
+                "windowDragAndCloseBehavior": "pending", "retryButtonAfterPortRelease": "pending"}
 
     def check_package_shape(self) -> None:
         required = [
@@ -508,7 +458,7 @@ class Journey:
             self.runtime_root / "app" / "frontends" / "desktop_bridge.py",
             self.runtime_root / "app" / "frontends" / "desktop" / "static" / "index.html",
         ]
-        python = self.runtime_root / "python" / ("python.exe" if self.args.platform == "windows" else "bin/python3")
+        python = self.runtime_root / "python" / "bin/python3"
         required.append(python)
         missing = [str(path) for path in required if not path.exists()]
         if missing:
@@ -516,12 +466,6 @@ class Journey:
         source_package_json = self.runtime_root / "app" / "frontends" / "desktop" / "package.json"
         if source_package_json.exists():
             raise JourneyFailure(f"runtime contains excluded Desktop source metadata: {source_package_json}")
-        if self.args.platform == "macos" and not (self.runtime_root / ".prepared").is_file():
-            raise JourneyFailure("macOS package has no build-time .prepared marker")
-        if self.args.platform == "macos":
-            short_version, bundle_version = read_macos_bundle_versions(self.package_root)
-            self.report["checks"]["packagedVersion"] = short_version
-            self.report["checks"]["packagedBundleVersion"] = bundle_version
         self.report["checks"]["packageShape"] = True
 
     def prepare_external_root(self) -> None:
@@ -949,8 +893,6 @@ class Journey:
         self.check_package_shape()
         self.fake.start()
         self.prepare_external_root()
-        if self.args.platform == "macos":
-            self.app_snapshot = tree_snapshot(self.package_root)
 
         self.start_application("first-launch")
         self.wait_ready("first-launch", self.external_root)
@@ -969,22 +911,11 @@ class Journey:
         self.relocate_package()
         self.stale_override_fallback()
 
-        if self.args.platform == "macos" and self.app_snapshot is not None:
-            after_snapshot = tree_snapshot(self.package_root)
-            if after_snapshot != self.app_snapshot:
-                changed = sorted(set(after_snapshot) ^ set(self.app_snapshot))
-                changed += sorted(
-                    key
-                    for key in set(after_snapshot) & set(self.app_snapshot)
-                    if after_snapshot[key] != self.app_snapshot[key]
-                )
-                raise JourneyFailure(f"first launch modified the signed .app: {changed[:20]}")
-            self.report["checks"]["macAppImmutable"] = True
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--platform", choices=("windows", "linux", "macos"), required=True)
+    parser.add_argument("--platform", choices=("linux",), required=True)
     parser.add_argument("--artifact", default="")
     parser.add_argument("--expected-commit", required=True)
     parser.add_argument("--package-root", required=True)

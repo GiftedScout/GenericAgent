@@ -2,6 +2,8 @@
 
 这是 **GenericAgent** 的详细安装指南。
 
+> 本 Ubuntu 定制版请用 `git clone --branch cleanup/win-adb-redundancy https://github.com/GiftedScout/GenericAgent.git`。下文官方安装器与下载链接指向上游，不会自动安装本分支。Python 3.11/3.12 是桌面运行环境的保守建议；本次后端/CLI 回归也在系统 Python 3.14 跑通，不代表 pywebview 已验证兼容。
+
 两类读者：
 
 - **[面向用户（For Humans）](#面向用户-for-humans)** —— 你自己安装 GA。
@@ -17,7 +19,7 @@
 
 | 要求 | 说明 |
 |---|---|
-| **操作系统** | Windows 10/11、macOS 12+，或任意现代 Linux。 |
+| **操作系统** | 仅 Ubuntu / Linux（个人定制分支）。 |
 | **Python** | 推荐 **Python 3.11 或 3.12**。**不要使用 Python 3.14**，它与 `pywebview` 及部分 GA 依赖不兼容。方法一的一键脚本会准备隔离运行环境，通常不需要手动装 Python。 |
 | **Git** | 推荐安装，方便升级和自我进化。 |
 | **LLM API Key** | GA 原生支持两类协议：**OpenAI 兼容接口** 和 **Anthropic Claude 原生接口**。GPT 系列、Claude、Kimi、MiniMax、DeepSeek、GLM、Qwen、通过 OAI 兼容网关接入的 Gemini 等，都可以在 `mykey.py` 中配置。 |
@@ -26,22 +28,16 @@
 
 这是最省心的路径。脚本会准备隔离环境、下载 GenericAgent、安装核心依赖，并得到一个可以直接运行的本地项目目录。
 
-**Windows PowerShell**
-
-```powershell
-powershell -ExecutionPolicy Bypass -c "irm http://fudankw.cn:9000/files/ga_install.ps1 | iex"
-```
-
-**Linux / macOS**
+**Ubuntu / Linux**
 
 ```bash
 curl -fsSL http://fudankw.cn:9000/files/ga_install.sh | bash
 ```
 
-安装完成后，Windows 用户可双击：
+安装完成后，在项目目录执行：
 
 ```text
-frontends/GenericAgent.exe
+python3 launch.pyw
 ```
 
 也可以进入项目目录运行：
@@ -56,10 +52,6 @@ python launch.pyw
 
 ```bash
 INSTALL_DIR="$HOME/work/GenericAgent" bash -c "$(curl -fsSL http://fudankw.cn:9000/files/ga_install.sh)"
-```
-
-```powershell
-$env:INSTALL_DIR="C:\dev\GenericAgent"; powershell -ExecutionPolicy Bypass -c "irm http://fudankw.cn:9000/files/ga_install.ps1 | iex"
 ```
 
 #### 强制重新安装
@@ -107,10 +99,10 @@ python assets/configure_mykey.py
 
 #### 桌面端
 
-一键安装自带桌面端，双击：
+在项目目录执行：
 
 ```text
-frontends/GenericAgent.exe
+python3 launch.pyw
 ```
 
 #### 终端 UI
@@ -159,21 +151,6 @@ type ga
 ```
 
 如果解析到意料之外的位置，就不要依赖这个快捷命令。请进入安装目录运行 `python launch.pyw` 或 `python frontends/tuiapp_v2.py`。
-
-#### Windows Defender 拦截本机回环网络
-
-桌面端会通过 `127.0.0.1` / `localhost` 连接本机 bridge 服务。部分 Windows 机器上，Windows Defender 防火墙可能会拦截这个本机回环连接，导致桌面端看起来无法启动，或一直连不上服务。
-
-如果遇到这种情况，请在 Windows Defender 防火墙中允许 `GenericAgent.exe` 和随包的 `python.exe` 通过，然后重启桌面端。
-
-#### Windows 上 TUI 显示异常
-
-TUI 在 Windows 上依赖终端、字体和 `textual` 版本。
-
-1. 先升级 Textual：`pip install -U textual`。
-2. PowerShell / cmd 对 Unicode 和键位支持较弱，**Windows 上推荐用 Git Bash**。
-3. 仍然异常时，可以让 GA 自己修一遍。参考 Prompt：
-   > *"我在 Windows 的 PowerShell / cmd / Git Bash 中使用 `frontends/tuiapp_v2.py` 体验非常差，出现了一堆不兼容问题。请参考 Claude Code 在 Windows 终端的最佳配置，把所有字体和显示不兼容的问题修一遍。"*
 
 #### Linux 上 `pywebview` 安装失败
 
@@ -229,13 +206,7 @@ uv pip install -e ".[ui]"
 
 除非用户已经有源码目录，否则默认走一键安装。
 
-**Windows PowerShell**
-
-```powershell
-powershell -ExecutionPolicy Bypass -c "irm http://fudankw.cn:9000/files/ga_install.ps1 | iex"
-```
-
-**Linux / macOS**
+**Ubuntu / Linux**
 
 ```bash
 curl -fsSL http://fudankw.cn:9000/files/ga_install.sh | bash
@@ -291,7 +262,7 @@ python frontends/tuiapp_v2.py
 
 #### 对用户说 “Congratulations! 🎉”
 
-对用户说：Congratulations! 🎉 你已经成功安装 GenericAgent！Windows 下可双击 `frontends/GenericAgent.exe`，或在终端运行 `python frontends/tuiapp_v2.py` 开始使用。
+对用户说：Congratulations! 🎉 你已经成功安装 GenericAgent！在项目目录执行 `python3 launch.pyw`，或在终端运行 `python frontends/tuiapp_v2.py` 开始使用。
 
 #### 回报具体结果
 
@@ -314,7 +285,7 @@ python frontends/tuiapp_v2.py
 ### 绝对不要做
 
 - 不要运行 `pip install genericagent`；GA 不是 PyPI 包。
-- 未经明确授权，不要删除 `~/GenericAgent` 或 `%USERPROFILE%\GenericAgent` 做“干净安装”。
+- 未经明确授权，不要删除 `~/GenericAgent` 做“干净安装”。
 - 不要伪造 API Key，也不要把示例 Key 当真。
 - 不要假设 `ga` 命令一定可用；先检查。
 - 不要依赖 `ga update`；按上面的 `git fetch`、`git pull` 和重装依赖流程做。

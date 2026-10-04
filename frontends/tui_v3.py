@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio, atexit, json, locale, logging, os, queue, random, re, select, shutil, signal, subprocess
 import sys, tempfile, threading, time
 
-_IS_WINDOWS = os.name == 'nt'
 
 
 # Make `frontends/` parent (project root) importable so `from agentmain import …`
@@ -798,28 +797,6 @@ class _Clip:
 clip = _Clip()
 
 
-def _enable_windows_vt_mode() -> None:
-    """Enable UTF-8 + ANSI escape processing on Windows consoles when possible."""
-    if not _IS_WINDOWS:
-        return
-    try:
-        import ctypes
-        kernel32 = ctypes.windll.kernel32
-        # Make classic conhost/cmd decode UTF-8 bytes written by _w().  This is
-        # harmless in mintty/Git Bash where these calls usually fail because the
-        # std handles are pipes/ptys rather than Win32 console handles.
-        kernel32.SetConsoleOutputCP(65001)
-        kernel32.SetConsoleCP(65001)
-        enable_vt = 0x0004
-        for handle_id in (-11, -12):  # STD_OUTPUT_HANDLE, STD_ERROR_HANDLE
-            handle = kernel32.GetStdHandle(handle_id)
-            mode = ctypes.c_uint32()
-            if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
-                kernel32.SetConsoleMode(handle, mode.value | enable_vt)
-    except Exception:
-        # Safe fallback: modern terminals usually already support ANSI/UTF-8;
-        # older conhost may render escape codes, but the TUI should not crash.
-        pass
 
 
 def _enter_utf8_charset() -> None:
@@ -864,12 +841,7 @@ def _ptk_keypress_to_bytes(kp) -> bytes:
         return any(n in a for a in aliases for n in needles)
 
     # Enter submits; Ctrl+J / Shift+Enter insert newline when PTK can distinguish.
-    # Windows terminals send \r for both Enter/Shift+Enter — detect Shift physically.
     if has('controlm', 'c-m') or key_s in ('\r', '\n'):
-        if _IS_WINDOWS:
-            import ctypes
-            if ctypes.windll.user32.GetAsyncKeyState(0x10) & 0x8000:
-                return b'\n'
         return b'\r'
     if has('controlj', 'c-j', 's-enter', 'shift-enter'):
         return b'\n'
@@ -1037,10 +1009,6 @@ def _run(cmd: list[str], input: bytes | None = None, timeout: float = 3.0) -> by
 
 def copy(text: str) -> bool:
     data = text.encode('utf-8')
-    if _platform == 'darwin':
-        return _run(['pbcopy'], input=data) is not None
-    if _platform == 'win32':
-        return _run(['clip.exe'], input=data) is not None
     if _HAS_WAYLAND and shutil.which('wl-copy'):
         return _run(['wl-copy'], input=data) is not None
     if shutil.which('xclip'):
@@ -1053,11 +1021,7 @@ def copy(text: str) -> bool:
 
 def paste() -> str | None:
     out: bytes | None = None
-    if _platform == 'darwin':
-        out = _run(['pbpaste'])
-    elif _platform == 'win32':
-        out = _run(['powershell', '-NoProfile', '-Command', 'Get-Clipboard'])
-    elif _HAS_WAYLAND and shutil.which('wl-paste'):
+    if _HAS_WAYLAND and shutil.which('wl-paste'):
         out = _run(['wl-paste', '--no-newline'])
     elif shutil.which('xclip'):
         out = _run(['xclip', '-selection', 'clipboard', '-o'])
@@ -1074,16 +1038,7 @@ def paste_image() -> str | None:
     import time
     path = os.path.join(_TEMP_DIR, f'clip_{int(time.time()*1000)}.png')
     ok = False
-    if _platform == 'darwin':
-        script = (
-            'use framework "AppKit"\n'
-            'set pb to current application\'s NSPasteboard\'s generalPasteboard()\n'
-            'set imgData to pb\'s dataForType:"public.png"\n'
-            'if imgData is missing value then error "no image"\n'
-            'imgData\'s writeToFile:"' + path + '" atomically:true\n'
-        )
-        ok = _run(['osascript', '-e', script], timeout=5.0) is not None
-    elif _HAS_WAYLAND and shutil.which('wl-paste'):
+    if _HAS_WAYLAND and shutil.which('wl-paste'):
         data = _run(['wl-paste', '-t', 'image/png'])
         if data:
             with open(path, 'wb') as f:
@@ -1604,22 +1559,10 @@ _MD_THEME = Theme({
 
 PROMPT = '❯ '
 CONT = '  '
-# macOS Terminal.app quantises ALL truecolor escapes to their nearest 256-color
-# slot, and the slot it picks for #5e6ad2 (iTerm lavender) is 62/#5f5fd7 — that's
-# the "blue" border the user sees. It also renders \x1b[2m as a heavy 30%-opacity
-# multiply instead of the gentle blend iTerm does — that's the "heavy shadow".
-# Branching on TERM_PROGRAM lets iTerm keep its truecolor + dim look, while
-# Apple_Terminal uses pinned 256-color slots that match iTerm's RENDERED result.
-_IS_APPLE_TERMINAL = os.environ.get('TERM_PROGRAM') == 'Apple_Terminal'
 _RST = '\x1b[0m'
-if _IS_APPLE_TERMINAL:
-    _DIM = '\x1b[38;5;244m'              # mid-gray — no \x1b[2m, no "shadow"
-    _ACCENT = '\x1b[38;5;105m'           # 256-slot light purple, closest to iTerm rendered look
-    _BORDER = '\x1b[38;5;146m'           # light lavender
-else:
-    _DIM = '\x1b[2m'
-    _ACCENT = '\x1b[38;2;94;106;210m'    # Linear lavender #5e6ad2
-    _BORDER = '\x1b[38;5;146m'
+_DIM = '\x1b[2m'
+_ACCENT = '\x1b[38;2;94;106;210m'
+_BORDER = '\x1b[38;5;146m'
 _INK_U = '\x1b[38;5;234m'                # user ink — kept for legacy callers
 # User-prompt panel.  Charcoal block (RGB 55,55,55) with soft-white ink —
 # full-row tile via _tile() means the band keeps its right edge on every
@@ -2464,11 +2407,10 @@ class SB:
         # a byte to this pipe; the main select() polls both stdin and the
         # pipe, so a resize always wakes the loop within select's timeout.
         sr, sw = os.pipe()
-        if not _IS_WINDOWS:
-            import fcntl as _fcntl
-            for fd in (sr, sw):
-                fl = _fcntl.fcntl(fd, _fcntl.F_GETFL)
-                _fcntl.fcntl(fd, _fcntl.F_SETFL, fl | os.O_NONBLOCK)
+        import fcntl as _fcntl
+        for fd in (sr, sw):
+            fl = _fcntl.fcntl(fd, _fcntl.F_GETFL)
+            _fcntl.fcntl(fd, _fcntl.F_SETFL, fl | os.O_NONBLOCK)
         self._sig_r, self._sig_w = sr, sw
         self._last_render = 0.0
         self._asking: AskUserEvent | None = None
@@ -6057,7 +5999,6 @@ class SB:
             app = self._ptk_app
             assert app is not None
             app.create_background_task(_maintenance_loop())
-            _enable_windows_vt_mode()
             _enter_utf8_charset()
             _w('\x1b[?1007l')   # disable alt-scroll so wheel scrolls scrollback
             _w('\x1b[?2004h')   # enable bracketed paste

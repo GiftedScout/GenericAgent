@@ -1,3 +1,4 @@
+from pathlib import Path
 # -*- coding: utf-8 -*-
 """Regression: settlement (background memory-maintenance) text must not reach
 the display channel.
@@ -21,7 +22,7 @@ Asserts:
   5. marker with no prior visible answer -> minimal shown, no crash
 """
 import sys, os, json
-sys.path.insert(0, '/home/pushuai/GenericAgent')
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import agentmain
 import agent_loop
 

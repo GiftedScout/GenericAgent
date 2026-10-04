@@ -58,10 +58,10 @@ def safe_print(*args, **kwargs):
 def code_run(code, code_type="python", timeout=60, cwd=None, code_cwd=None, stop_signal=None, maxlen=10000, myprint=safe_print):
     """代码执行器
     python: 运行复杂的 .py 脚本（文件模式）
-    powershell/bash: 运行单行指令（命令模式）
-    优先使用python，仅在必要系统操作时使用powershell"""
+    bash: 运行系统命令或 shell 脚本（命令模式）
+    Ubuntu 定制，仅支持 Python 与 Bash"""
     preview = (code[:60].replace('\n', ' ') + '...') if len(code) > 60 else code.strip()
-    yield f"[Action] Running {code_type} in {os.path.basename(cwd)}: {preview}\n"
+    yield f"[Action] Running {code_type} in {os.path.basename(cwd or script_dir)}: {preview}\n"
     cwd = cwd or os.path.join(script_dir, 'temp'); tmp_path = None
     if code_type in ["python", "py"]:
         tmp_file = tempfile.NamedTemporaryFile(suffix=".ai.py", delete=False, mode='w', encoding='utf-8', dir=code_cwd)
@@ -73,20 +73,11 @@ def code_run(code, code_type="python", timeout=60, cwd=None, code_cwd=None, stop
         tmp_path = tmp_file.name
         tmp_file.close()
         cmd = [sys.executable, "-X", "utf8", "-u", tmp_path]   
-    elif code_type in ["powershell", "bash", "sh", "shell", "ps1", "pwsh"]:
-        if os.name == 'nt':
-            _ps = "pwsh" if shutil.which("pwsh") else "powershell"
-            utf8_prefix = "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
-            cmd = [_ps, "-NoProfile", "-NonInteractive", "-Command", utf8_prefix + code]
-        else: cmd = ["bash", "-c", code]
+    elif code_type in ["bash", "sh", "shell"]:
+        cmd = ["bash", "-c", code]
     else:
         return {"status": "error", "msg": f"不支持的类型: {code_type}"}
     myprint("code run output:")
-    startupinfo = None
-    if os.name == 'nt':
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        startupinfo.wShowWindow = 0 # SW_HIDE
     full_stdout = []
 
     def stream_reader(proc, logs):
@@ -104,8 +95,7 @@ def code_run(code, code_type="python", timeout=60, cwd=None, code_cwd=None, stop
         process = subprocess.Popen(
             cmd, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            bufsize=0, cwd=cwd, startupinfo=startupinfo, env=child_env,
-            creationflags=0x08000000 if os.name == 'nt' else 0
+            bufsize=0, cwd=cwd, env=child_env
         )
         start_t = time.time()
         t = threading.Thread(target=stream_reader, args=(process, full_stdout), daemon=True)
@@ -462,7 +452,7 @@ class GenericAgentHandler(BaseHandler):
         return os.path.abspath(os.path.join(self.cwd, path))   
 
     def _extract_code_block(self, response, code_type):
-        code_type = {'python':'python|py', 'powershell':'powershell|ps1|pwsh', 'bash':'bash|sh|shell'}.get(code_type, re.escape(code_type))
+        code_type = {'python':'python|py', 'bash':'bash|sh|shell'}.get(code_type, re.escape(code_type))
         matches = re.findall(rf"```(?:{code_type})\n(.*?)\n```", response.content, re.DOTALL)
         return matches[-1].strip() if matches else None
 

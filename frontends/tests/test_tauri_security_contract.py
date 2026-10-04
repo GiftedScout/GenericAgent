@@ -76,7 +76,6 @@ def test_main_and_setup_capabilities_are_window_scoped_without_remote_ipc_access
         "core:window:allow-start-dragging",
         "opener:allow-open-url",
         "opener:allow-default-urls",
-        "allow-get-macos-titlebar-metrics",
     } <= main_permissions
 
     assert {
@@ -95,8 +94,7 @@ def test_main_and_setup_capabilities_are_window_scoped_without_remote_ipc_access
             "allow-reveal-in-file-manager",
             "allow-set-ga-source",
             "allow-clear-ga-source",
-            "allow-get-macos-titlebar-metrics",
-            "opener:allow-open-url",
+                "opener:allow-open-url",
         }
     )
 
@@ -127,14 +125,14 @@ def test_e2e_config_only_adds_test_driver_and_dynamic_loopback_connectivity():
     assert not any(source.startswith("https://") for source in connect_sources)
 
 
-def test_native_titlebar_metrics_command_is_main_window_only():
+def test_removed_native_titlebar_metrics_has_no_permissions():
     main = _json(TAURI_ROOT / "capabilities" / "default.json")
     setup = _json(TAURI_ROOT / "capabilities" / "setup.json")
     permissions = (TAURI_ROOT / "permissions" / "bridge-commands.toml").read_text(
         encoding="utf-8"
     )
 
-    assert "allow-get-macos-titlebar-metrics" in main["permissions"]
+    assert "allow-get-macos-titlebar-metrics" not in main["permissions"]
     assert "allow-get-macos-titlebar-metrics" not in setup["permissions"]
-    assert 'identifier = "allow-get-macos-titlebar-metrics"' in permissions
-    assert 'commands.allow = ["get_macos_titlebar_metrics"]' in permissions
+    assert 'identifier = "allow-get-macos-titlebar-metrics"' not in permissions
+    assert 'commands.allow = ["get_macos_titlebar_metrics"]' not in permissions

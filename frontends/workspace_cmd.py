@@ -1,24 +1,4 @@
-"""Workspace 命令的共享逻辑(tuiapp_v2 / tui_v3 复用)。
-
-设计要点(详见对话设计稿):
-  * **兼容旧入口** `plugins/project_mode.py` 与 `memory/project_mode_sop.md` 的 pid 锚。
-    前端在
-    `<repo>/temp/projects/<name>` 建一个指向用户真实绝对路径的目录联接(junction),
-    并可按需写激活锚 `<repo>/temp/.active_project.<pid>`。project_mode 插件
-    照常每轮注入 L1,并把 project_memory.md / 产物经 junction 写进真实仓库根
-    (与 Claude Code 在仓库根放 CLAUDE.md 同理,已接受)。
-  * **路径基准必须与插件一致**:插件的 `_TEMP` 是基于其 `__file__` 的 `<repo>/temp`
-    绝对路径(非 cwd)。本模块也从自身 `__file__` 推 `<repo>/temp`(frontends/ 的上一级
-    即 repo 根),两边独立计算但结果一致,互不 import。
-  * **pid 语义**:插件读 `os.getpid()`(GA 进程)。前端就跑在 GA 进程里,写锚同样用
-    `os.getpid()`(不是 SOP 里 code_run 子进程用的 getppid)。
-  * **命名** `name = f"{basename}-{hash8}"`,hash8 = blake2b(规范化绝对路径)[:8]。
-    同一 workspace 恒定同名(幂等复用);hash 后缀又让 junction 名不与其它 UI 人工命名的
-    普通项目目录相撞。
-  * **junction 安全**:检测用 reparse 属性(`os.path.islink` 对 junction 返回 False!);
-    删除用 `os.rmdir`,**绝不 rmtree**(会击穿删真实文件)。cleanup 只动确认是 junction
-    且悬空/未注册的条目,真实目录(其它 UI 的普通项目)一律不碰。
-"""
+"""Linux workspace symlinks shared by TUI v2/v3; never delete real targets."""
 from __future__ import annotations
 
 import hashlib
@@ -62,8 +42,7 @@ _REGISTRY_VERSION = 1
 # 命名
 # --------------------------------------------------------------------------- #
 def _norm_abspath(p: str) -> str:
-    """规范化绝对路径用于 hash:abspath + normcase(Windows 大小写不敏感 ->
-    同一目录恒定同名)。不走 realpath,避免解析 junction/symlink 带来的意外。"""
+    """规范化绝对路径用于 hash:abspath + normcase；不走 realpath，避免解析 symlink 带来的意外。"""
     return os.path.normcase(os.path.abspath(p))
 
 
@@ -81,34 +60,10 @@ def _link_path(name: str) -> str:
 # junction / symlink 跨平台封装(reparse 安全)
 # --------------------------------------------------------------------------- #
 def make_dir_link(target_abs: str, link_path: str) -> bool:
-    """建目录联接。Windows 用 `mklink /J`(免管理员);POSIX 用 symlink。
-    成功返回 True;失败打印到 stderr 并返回 False。"""
-    target_abs = os.path.abspath(target_abs)
-    parent = os.path.dirname(link_path)
+    """Create a Linux directory symlink without touching the target."""
     try:
-        os.makedirs(parent, exist_ok=True)
-    except OSError as e:
-        sys.stderr.write(f"[workspace] mkdir {parent} failed: {e}\n")
-        return False
-    if os.name == "nt":
-        # mklink 是 cmd 内建,必须经 cmd 调用。列表传参由 subprocess 负责加引号,
-        # 兼容含空格/中文的路径。
-        try:
-            r = subprocess.run(
-                ["cmd", "/c", "mklink", "/J", link_path, target_abs],
-                capture_output=True, text=True,
-            )
-        except OSError as e:
-            sys.stderr.write(f"[workspace] mklink invoke failed: {e}\n")
-            return False
-        if r.returncode != 0 or not os.path.exists(link_path):
-            sys.stderr.write(f"[workspace] mklink /J failed: "
-                             f"{(r.stderr or r.stdout or '').strip()}\n")
-            return False
-        return True
-    # POSIX
-    try:
-        os.symlink(target_abs, link_path, target_is_directory=True)
+        os.makedirs(os.path.dirname(link_path), exist_ok=True)
+        os.symlink(os.path.abspath(target_abs), link_path, target_is_directory=True)
         return True
     except OSError as e:
         sys.stderr.write(f"[workspace] symlink failed: {e}\n")
@@ -116,53 +71,22 @@ def make_dir_link(target_abs: str, link_path: str) -> bool:
 
 
 def is_dir_link(path: str) -> bool:
-    """是否目录联接/符号链接。**不能只用 os.path.islink**——它对 Windows junction
-    返回 False。改看 reparse point 属性 + reparse tag。"""
-    try:
-        if os.path.islink(path):  # POSIX symlink、Windows 符号链接
-            return True
-    except OSError:
-        return False
-    if os.name != "nt":
-        return False
-    try:
-        st = os.lstat(path)
-    except OSError:
-        return False
-    attrs = getattr(st, "st_file_attributes", 0)
-    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
-    if not (attrs & reparse):
-        return False
-    # 进一步认 tag:挂载点(junction)或符号链接
-    tag = getattr(st, "st_reparse_tag", 0)
-    mount = getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003)
-    syml = getattr(stat, "IO_REPARSE_TAG_SYMLINK", 0xA000000C)
-    if tag:
-        return tag in (mount, syml)
-    return True  # 有 reparse 属性但拿不到 tag,保守视作链接(我们只在此目录建链)
+    return os.path.islink(path)
 
 
 def link_target(path: str) -> Optional[str]:
-    """读链接目标;清洗 Windows 的 \\??\\ / \\\\?\\ 前缀。失败返回 None。"""
     try:
-        t = os.readlink(path)
+        return os.readlink(path)
     except OSError:
         return None
-    for pre in ("\\??\\", "\\\\?\\"):
-        if t.startswith(pre):
-            t = t[len(pre):]
-            break
-    return t
 
 
 def remove_dir_link(path: str) -> bool:
-    """只摘掉链接本身,绝不递归删目标。Windows junction / 符号链接目录用 os.rmdir,
-    POSIX symlink 用 os.unlink。**调用前务必 is_dir_link 确认。**"""
+    """Unlink only symlinks; never remove a real directory or its contents."""
+    if not is_dir_link(path):
+        return False
     try:
-        if os.name == "nt":
-            os.rmdir(path)
-        else:
-            os.unlink(path)
+        os.unlink(path)
         return True
     except OSError as e:
         sys.stderr.write(f"[workspace] remove link {path} failed: {e}\n")
@@ -306,8 +230,6 @@ def validate_path(abs_path: str) -> tuple[bool, str]:
     p = abs_path.strip().strip('"').strip("'")
     if not os.path.isabs(p):
         return False, "需要绝对路径"
-    if os.name == "nt" and p.startswith("\\\\"):
-        return False, "不支持网络路径(UNC):junction 无法指向网络位置"
     if not os.path.exists(p):
         return False, f"路径不存在: {p}"
     if not os.path.isdir(p):

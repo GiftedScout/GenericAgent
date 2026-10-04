@@ -1,3 +1,4 @@
+from pathlib import Path
 # -*- coding: utf-8 -*-
 """End-to-end regression: pasting an image in the real TUI must hand the
 image *path* to the agent's task queue (which is what makes the multimodal
@@ -13,7 +14,7 @@ import os
 import sys
 import tempfile
 
-ROOT = "/home/pushuai/GenericAgent"
+ROOT = str(Path(__file__).resolve().parents[1])
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "frontends"))
 

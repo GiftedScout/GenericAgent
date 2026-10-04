@@ -107,12 +107,11 @@ def write_settings_atomically(settings_path: Path, document: dict) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, settings_path)
-        if os.name != "nt":
-            directory = os.open(settings_path.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
+        directory = os.open(settings_path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     except OSError as error:
         raise DesktopSettingsError(f"cannot write Desktop settings: {error}") from error
     finally:

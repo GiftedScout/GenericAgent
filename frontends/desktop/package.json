@@ -3,8 +3,7 @@
   "version": "0.2.1",
   "scripts": {
     "tauri": "tauri",
-    "test:dist": "node scripts/verify-compiled-dist.mjs",
-    "build:dmg": "tauri build --bundles dmg && bash scripts/post-dmg.sh src-tauri/target/release/bundle/dmg/*.dmg"
+    "test:dist": "node scripts/verify-compiled-dist.mjs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.11.4"

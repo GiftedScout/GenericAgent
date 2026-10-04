@@ -49,8 +49,6 @@ class ServiceManager:
         env['PYTHONUNBUFFERED'] = '1'
         kw = dict(cwd=BASE_DIR, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                   text=True, bufsize=1, env=env)
-        if sys.platform == 'win32':
-            kw['creationflags'] = subprocess.CREATE_NO_WINDOW
         proc = subprocess.Popen(cmd, **kw)
         self.procs[name] = proc
         threading.Thread(target=self._reader, args=(name, proc), daemon=True).start()

@@ -1,5 +1,7 @@
 import json, tempfile
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from agent_loop import agent_runner_loop
 from ga import GenericAgentHandler
 from agentmain import iter_display_events

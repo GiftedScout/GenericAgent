@@ -5,8 +5,7 @@ L2: 现空
 L3: memory_cleanup_sop(记忆整理) | ui_detect.py | ocr_utils.py | subagent
 L4: L4_raw_sessions/ 历史会话
 
-键鼠/截图: ljqCtrl_sop (Linux/Wayland见平台说明)
-UI操作/视觉: ljqCtrl_sop(先看平台说明) | vision_sop | 优先局部截图
+computer_use: 未完成，禁止主动调用原子工具
 定时:scheduled_task_sop | 自主:autonomous_operation_sop | watchdog/反射:agentmain --reflect
 
 [RULES]
@@ -15,5 +14,5 @@ UI操作/视觉: ljqCtrl_sop(先看平台说明) | vision_sop | 优先局部截�
 3. 编码安全: 禁PS cat/type用file_read; 改前必读; memory模块直接import(已在PATH,禁加虚假前缀)
 4. 闭环: 物理模拟后确认; 3次失败请求干预
 5. 进程: 禁无条件杀python(杀自己), 精确PID, 禁os.kill判活
-6. 窗口: GUI状态先枚举当前平台窗口/进程标题，必要时用对应平台工具验证
+6. 窗口: Ubuntu原生窗口用AT-SPI，xdotool仅覆盖X11/Xwayland；computer-use未完成勿主动调用
 7. SOP: 读SOP禁凭印象,有utils必用

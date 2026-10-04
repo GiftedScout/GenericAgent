@@ -177,16 +177,14 @@ async function verifyReleaseContract() {
     path.join(repoRoot, '.github', 'workflows', 'desktop-release-package.yml'),
     'utf8',
   );
-  const buildJobs = ['build-windows', 'build-linux', 'build-macos'];
+  const buildJobs = ['build-linux'];
   const tauriCommands = {
-    'build-windows': 'npm run tauri build -- --bundles nsis',
     'build-linux': 'npm run tauri build -- --bundles appimage',
-    'build-macos': 'npm run tauri build -- --bundles app',
   };
   const jobNames = [...workflow.slice(workflow.search(/^jobs:\s*$/m)).matchAll(/^  ([a-zA-Z0-9_-]+):\s*$/gm)]
     .map((match) => match[1]);
   if (JSON.stringify(jobNames) !== JSON.stringify([...buildJobs, 'publish-release'])) {
-    fail('release workflow must contain exactly three builders and one publisher');
+    fail('release workflow must contain exactly one Linux builder and one publisher');
   }
   if (!/^permissions:\n  contents: read\s*$/m.test(workflow)) {
     fail('release workflow must default to contents: read');
@@ -194,8 +192,8 @@ async function verifyReleaseContract() {
   if ((workflow.match(/^      contents: write\s*$/gm) ?? []).length !== 1) {
     fail('release workflow must grant contents: write exactly once');
   }
-  if ((workflow.match(/^        run: npm run test:dist$/gm) ?? []).length !== 3) {
-    fail('all three builders must run the compiled renderer byte contract');
+  if ((workflow.match(/^        run: npm run test:dist$/gm) ?? []).length !== 1) {
+    fail('the Linux builder must run the compiled renderer byte contract');
   }
   if (/\bnpm ci\b|\bnpm run build\b|\b(?:npx|npm exec)\s+vite\b/.test(workflow)) {
     fail('compiled-only release workflow must not require the React source toolchain');
@@ -243,22 +241,6 @@ async function verifyReleaseContract() {
     }
   }
 
-  const windows = workflowJob(workflow, 'build-windows');
-  if (!windows.includes('cygpath -u "$RUNNER_TEMP"')
-      || !windows.includes('PBS_ARCHIVE="${RUNNER_TEMP_POSIX}/pbs-windows-x86_64.tar.gz"')) {
-    fail('Windows packaging must convert RUNNER_TEMP with cygpath before POSIX tools use it');
-  }
-  const macos = workflowJob(workflow, 'build-macos');
-  if (!macos.includes('runs-on: macos-26')
-      || !macos.includes('DEVELOPER_DIR: /Applications/Xcode_26.5.app/Contents/Developer')
-      || !macos.includes('test "$(uname -m)" = arm64')
-      || !macos.includes('test "$(xcodebuild -version | sed -n \'1p\')" = "Xcode 26.5"')
-      || !macos.includes('test "$(xcodebuild -version | sed -n \'2p\')" = "Build version 17F42"')
-      || !macos.includes('test "$(xcrun --sdk macosx --show-sdk-version)" = "26.5"')
-      || !workflow.includes('MACOS_PACKAGING_PYTHON_VERSION: "3.12.10"')
-      || !workflow.includes('PBS_PYTHON_VERSION: "3.12.14"')) {
-    fail('macOS packaging must pin macos-26, Xcode 26.5 build 17F42, SDK 26.5, arm64, and separate Python inputs');
-  }
   const linux = workflowJob(workflow, 'build-linux');
   if (!linux.includes('runs-on: ubuntu-22.04')
       || !linux.includes('prefix-key: "v1-rust-release-ubuntu-22.04-glibc-2.35"')
@@ -269,11 +251,11 @@ async function verifyReleaseContract() {
   }
 
   const publisher = workflowJob(workflow, 'publish-release');
-  if (!publisher.includes('needs: [build-windows, build-linux, build-macos]')
+  if (!publisher.includes('needs: [build-linux]')
       || !publisher.includes("github.event_name == 'push'")
       || !publisher.includes('refs/tags/desktop-portable-')
       || !/^    permissions:\n      contents: write\s*$/m.test(publisher)) {
-    fail('publisher must be the sole tag-only writer after all three builders');
+    fail('publisher must be the sole tag-only writer after the Linux builder');
   }
   const publisherRun = publisher.slice(publisher.indexOf('        run: |'));
   if (!publisher.includes('TAG_NAME: ${{ github.ref_name }}')
@@ -281,20 +263,16 @@ async function verifyReleaseContract() {
       || !publisherRun.includes('^desktop-portable-[A-Za-z0-9._-]+$')) {
     fail('publisher must pass the tag through env and validate it before shell use');
   }
-  if ((publisher.match(/actions\/download-artifact@/g) ?? []).length !== 3
+  if ((publisher.match(/actions\/download-artifact@/g) ?? []).length !== 1
       || (publisher.match(/\bgh release create\b/g) ?? []).length !== 1
       || publisher.includes('gh release upload')
       || !publisher.includes('--draft')
       || !publisher.includes('gh release edit "$TAG_NAME" --draft=false --prerelease')) {
-    fail('publisher must aggregate three artifacts as a verified draft, then expose one prerelease');
+    fail('publisher must aggregate the Linux artifact as a verified draft, then expose one prerelease');
   }
   for (const file of [
-    'GenericAgent-Desktop-Windows-Portable.zip',
-    'SHA256SUMS-windows.txt',
     'GenericAgent-Desktop-Linux-Portable.tar.gz',
     'SHA256SUMS-linux.txt',
-    'GenericAgent-Desktop-macOS-aarch64.dmg',
-    'GenericAgent-Desktop-macOS-aarch64.dmg.sha256',
   ]) {
     if (!publisher.includes(file)) fail(`publisher does not require release asset: ${file}`);
   }

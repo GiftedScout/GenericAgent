@@ -1,3 +1,4 @@
+from pathlib import Path
 # -*- coding: utf-8 -*-
 """Verify thinking-envelope fix (Option A):
 1. chat_completions SSE: reasoning wrapped in <thinking>…</thinking> in display stream, blocks stay clean
@@ -19,7 +20,7 @@ def check(name, cond, detail=""):
 
 # ---------- 1. syntax ----------
 import py_compile
-for f in ('/home/pushuai/GenericAgent/llmcore.py', '/home/pushuai/GenericAgent/agentmain.py'):
+for f in (str(Path(__file__).resolve().parents[1] / 'llmcore.py'), str(Path(__file__).resolve().parents[1] / 'agentmain.py')):
     py_compile.compile(f, doraise=True)
 print("✅ syntax OK (llmcore.py, agentmain.py)")
 

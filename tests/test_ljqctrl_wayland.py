@@ -9,6 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@unittest.skip("computer-use 未完成：按用户要求暂停验收，保留旧测试供恢复开发")
 class WaylandPointerSafetyTests(unittest.TestCase):
     def test_uncalibrated_pointer_and_native_window_are_rejected(self):
         script = """

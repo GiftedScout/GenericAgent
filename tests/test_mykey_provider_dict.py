@@ -1,3 +1,4 @@
+from pathlib import Path
 # -*- coding: utf-8 -*-
 """Regression: mykey provider edits must stay inside the single `native_config`
 dict and always leave a loadable file.
@@ -15,7 +16,7 @@ import shutil
 import sys
 import tempfile
 
-ROOT = '/home/pushuai/GenericAgent'
+ROOT = str(Path(__file__).resolve().parents[1])
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, 'frontends'))
 

@@ -110,7 +110,7 @@ def serve():
     subprocess.Popen([exe if os.path.exists(exe) else sys.executable, os.path.abspath(__file__)],
                      cwd=os.path.dirname(os.path.abspath(__file__)), close_fds=True,
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                     creationflags=0x08000008 if os.name == 'nt' else 0)   # DETACHED | NO_WINDOW
+                     start_new_session=True)
 
 def connect(agent, name=None, put_task=None, get_outputs=None, abort=None, fold=None, llm=None, inject=None):
     """One line to wire a GA host: `hub.connect(agent, 'stapp')`; any hook can still be overridden.

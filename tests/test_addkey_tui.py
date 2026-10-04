@@ -1,3 +1,4 @@
+from pathlib import Path
 # -*- coding: utf-8 -*-
 """Regression: TUI `/addkey` adds a provider without leaking the key.
 
@@ -9,7 +10,7 @@ the session log), and the key must not survive in the input history.
 """
 import asyncio, os, shutil, sys, tempfile
 
-ROOT = "/home/pushuai/GenericAgent"
+ROOT = str(Path(__file__).resolve().parents[1])
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "frontends"))
 

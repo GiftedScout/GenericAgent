@@ -1,46 +1,32 @@
-"""Cross-platform keyboard-shortcut display formatter.
-
-One job: turn a Textual binding string like ``"ctrl+b"`` into a human-facing
-label such as ``"Ctrl+B"`` on Win/Linux or ``"⌃B"`` on macOS.
-
-Binding strings (the *physical* keys Textual captures) are NOT touched —
-this module only formats labels for tips / footers / help panels.
-
-Override with env ``GA_KEYSYM_STYLE=auto|mac|ascii`` (default ``auto``).
-"""
+"""Linux keyboard-shortcut labels; formatting only, bindings stay unchanged."""
 from __future__ import annotations
 
-import os
-import sys
-
-_STYLE = os.environ.get("GA_KEYSYM_STYLE", "auto").lower()
-IS_MAC = _STYLE == "mac" or (_STYLE != "ascii" and sys.platform == "darwin")
 
 # Modifier display per style. mac uses Apple HIG glyphs; others use words.
 _MOD = {
-    "ctrl":  "⌃" if IS_MAC else "Ctrl",
-    "shift": "⇧" if IS_MAC else "Shift",
-    "alt":   "⌥" if IS_MAC else "Alt",
-    "meta":  "⌘" if IS_MAC else "Alt",
-    "super": "⌘" if IS_MAC else "Win",
-    "cmd":   "⌘" if IS_MAC else "Win",
+    "ctrl":  "Ctrl",
+    "shift": "Shift",
+    "alt":   "Alt",
+    "meta":  "Alt",
+    "super": "Super",
+    "cmd":   "Super",
 }
 
 # Bare-key display. Arrows / slash are universal; rest mac-glyphs vs words.
 _KEY = {
-    "enter":     "⏎" if IS_MAC else "Enter",
-    "tab":       "⇥" if IS_MAC else "Tab",
-    "escape":    "⎋" if IS_MAC else "Esc",
-    "esc":       "⎋" if IS_MAC else "Esc",
-    "backspace": "⌫" if IS_MAC else "Backspace",
-    "delete":    "⌦" if IS_MAC else "Del",
-    "space":     "␣" if IS_MAC else "Space",
+    "enter":     "Enter",
+    "tab":       "Tab",
+    "escape":    "Esc",
+    "esc":       "Esc",
+    "backspace": "Backspace",
+    "delete":    "Del",
+    "space":     "Space",
     "up": "↑", "down": "↓", "left": "←", "right": "→",
     "slash": "/", "underscore": "_",
 }
 
 # Joiner between modifier and key. mac concatenates (⌃B); others use '+'.
-_JOIN = "" if IS_MAC else "+"
+_JOIN = "+"
 
 
 def fmt_key(combo: str) -> str:

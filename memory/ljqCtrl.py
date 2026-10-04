@@ -1,7 +1,6 @@
 """
-ljqCtrl — 跨平台 GUI 键鼠/窗口/截图控制
-  Windows: 委托 ljqCtrl_win.py (win32api + WGC 后台截图)
-  Linux:   X11 = xdotool+mss; GNOME Wayland = Screenshot portal + uinput pointer
+ljqCtrl — Ubuntu GUI 键鼠/窗口/截图控制（未完成，暂停验收，禁止主动调用）
+  X11 = xdotool+mss; GNOME Wayland = window ScreenCast + uinput pointer
 CRITICAL: 严禁在此工具链中 import pyautogui。
 ljqCtrl Quick Reference:
 - dpi_scale: float (Logical = Physical * dpi_scale; Ubuntu X11 通常为 1.0)
@@ -17,10 +16,7 @@ ljqCtrl Quick Reference:
 """
 import sys
 
-if sys.platform == 'win32':
-    from ljqCtrl_win import *  # noqa: F401,F403
-    from ljqCtrl_win import ListWindows  # noqa: F401
-else:
+if sys.platform.startswith('linux'):
     import os, time, re, subprocess
     import numpy as np
     from PIL import Image

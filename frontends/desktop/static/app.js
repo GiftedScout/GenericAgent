@@ -9,8 +9,8 @@
    *_ORIGIN 不带尾巴 path,调用方自己拼 "/sessions" "/ws" 等。 */
 const BRIDGE_PORT = 14168;
 const CONDUCTOR_PORT = 8900;
-const BRIDGE_ORIGIN = `${location.protocol}//${location.hostname}:${BRIDGE_PORT}`;
-const BRIDGE_WS_ORIGIN = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.hostname}:${BRIDGE_PORT}`;
+const BRIDGE_ORIGIN = window.__TAURI__ ? `http://127.0.0.1:${BRIDGE_PORT}` : location.origin;
+const BRIDGE_WS_ORIGIN = BRIDGE_ORIGIN.replace(/^http/, 'ws');
 const CONDUCTOR_ORIGIN = `${location.protocol}//${location.hostname}:${CONDUCTOR_PORT}`;
 const CONDUCTOR_WS_ORIGIN = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.hostname}:${CONDUCTOR_PORT}`;
 
@@ -267,7 +267,7 @@ let bridgeUiOffline = false;
   }
 
   window.ga = {
-    platform: navigator.platform.toLowerCase().includes('mac') ? 'darwin' : 'win32',
+    platform: 'linux',
     startBridge: async () => { connectWs(); return http('/status'); },
     spawnBridge,
     stopBridge: async () => ({ ok: true }),
@@ -5250,7 +5250,7 @@ function showChanToast(title, detail, kind) {
     bindFieldInlineLimit(document.getElementById('cp-title'));
     bindFieldInlineLimit(document.getElementById('cp-prompt'));
 
-    // First-run desktop-shortcut prompt (Windows portable bundle only). Driven from the web UI
+    // First-run Linux desktop-shortcut prompt. Driven from the web UI
     // so the dialog always renders on top — a native dialog from the Rust startup thread had no
     // parent window and got buried behind the main window on first launch.
     maybeAskDesktopShortcut();

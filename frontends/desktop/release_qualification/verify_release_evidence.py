@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Combine three package reports and enforce the automated release evidence gate."""
+"""Validate the Linux package report and enforce the automated release evidence gate."""
 
 from __future__ import annotations
 
@@ -114,8 +114,6 @@ def assert_report(name: str, report: dict[str, Any], expected_commit: str) -> li
                 or pids.get("conductor") != expected_conductor_pid
             ):
                 failures.append(f"{name}: invalid owned process stop evidence for {scenario}")
-    if name == "macos" and checks.get("macAppImmutable") is not True:
-        failures.append("macos: signed .app immutability did not pass")
     required_bootstrap = SUCCESSFUL_APPLICATION_SCENARIOS | {"foreign-port"}
     missing_bootstrap = sorted(required_bootstrap - set(report.get("bootstrap", {})))
     if missing_bootstrap:
@@ -126,29 +124,17 @@ def assert_report(name: str, report: dict[str, Any], expected_commit: str) -> li
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--expected-commit", required=True)
-    parser.add_argument("--windows", required=True)
     parser.add_argument("--linux", required=True)
-    parser.add_argument("--macos", required=True)
-    parser.add_argument("--windows-native-report", required=True)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
 
     reports = {
-        "windows": load(args.windows),
         "linux": load(args.linux),
-        "macos": load(args.macos),
     }
     failures: list[str] = []
     for name, report in reports.items():
         failures.extend(assert_report(name, report, args.expected_commit))
 
-    windows_native = load(args.windows_native_report)
-    if windows_native.get("success") is not True:
-        failures.append("windows native wrapper did not pass")
-    if windows_native.get("checks", {}).get("portConflictRecovery") is not True:
-        failures.append("windows native retry path did not pass")
-    if windows_native.get("checks", {}).get("settingsRestored") is not True:
-        failures.append("windows native wrapper did not restore the original settings file")
     manifest = {
         "schemaVersion": 1,
         "candidateCommit": args.expected_commit,
@@ -162,7 +148,6 @@ def main() -> int:
             }
             for name, report in reports.items()
         },
-        "windowsNativeReport": windows_native["_path"],
         "gate": "pass" if not failures else "fail",
         "failures": failures,
     }

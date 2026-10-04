@@ -52,7 +52,7 @@ def _ping_yolo_daemon():
 def _yolo(image_path, conf=0.25):
     """YOLO检测 → list of [x1,y1,x2,y2,conf]；默认模型走跨进程daemon cache，失败回退本地"""
     if not _ping_yolo_daemon():
-        kw = {'creationflags': getattr(subprocess, 'CREATE_NO_WINDOW', 0)} if sys.platform == 'win32' else {}
+        kw = {'start_new_session': True}
         subprocess.Popen([sys.executable, __file__, '--yolo-daemon'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kw)
         for _ in range(15):
             if _ping_yolo_daemon(): break
