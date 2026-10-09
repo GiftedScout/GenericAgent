@@ -51,7 +51,7 @@
           },
           "script": {
             "type": "string",
-            "description": "Remote script, not local code."
+            "description": "Remote script for action=run only; otherwise omit. If absent for run, use the reply code block."
           },
           "type": {
             "type": "string",
@@ -136,8 +136,7 @@
           }
         },
         "required": [
-          "host",
-          "script"
+          "host"
         ]
       }
     }

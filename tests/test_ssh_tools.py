@@ -24,6 +24,8 @@ class SSHLocalTests(unittest.TestCase):
         self.assertEqual(len(names), len(set(names)))
         handler = GenericAgentHandler(SimpleNamespace(), cwd=tempfile.gettempdir())
         self.assertEqual([n for n in names if n.startswith('ssh_')], ['ssh_run'])
+        params = next(x['function']['parameters'] for x in schema if x['function']['name'] == 'ssh_run')
+        self.assertEqual(params['required'], ['host'])  # queries/transfers need no script
         self.assertTrue(hasattr(handler, 'do_ssh_run'))
         for name in ('ssh_task', 'ssh_transfer'):
             self.assertFalse(hasattr(handler, 'do_' + name))

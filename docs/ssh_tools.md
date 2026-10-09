@@ -97,3 +97,7 @@ python3 -m unittest discover -s tests -p 'test_ssh_tools.py' -v
 本地证据：`temp/ssh_test_env/single_tool_final_regression.log`、`single_tool_independent.json`、`single_tool_acceptance.log`、`baseline.log`（相对于主仓库；不包含密钥内容，不随功能提交）。
 
 单入口 SSH 功能与本次全库回归：`VERDICT: PASS`（上述两项可选检查未验收）。
+
+### 当前模型真实新会话验收
+
+代码链路验收之后另完成当前模型新会话实测：17 次 `ssh_run`，约 12 秒后台提交 elapsed=0.051 秒，独立核对原始返回、远端状态与下载文件哈希；包含首测失败、schema 问题与修复边界，见 [模型验收报告](ssh_model_acceptance.md)。随用随发的非基本工具入口与约束见 `memory/subagent.md`。
