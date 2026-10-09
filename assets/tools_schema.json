@@ -40,6 +40,110 @@
   {
     "type": "function",
     "function": {
+      "name": "ssh_run",
+      "description": "Remote code_run over reusable OpenSSH. One SSH tool: default action=run executes arbitrary Bash/Python in a fresh shell; background=true detaches and returns task_id. Optional action=status/logs/wait/stop manages that ID; upload/download transfers files. Never blindly resubmit after connection failure. Existing approval rules still apply.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "host": {
+            "type": "string",
+            "description": "SSH config Host alias or user@host; uses native SSH config/agent. No passwords/private-key contents."
+          },
+          "script": {
+            "type": "string",
+            "description": "Remote script for action=run only; otherwise omit. If absent for run, use the reply code block."
+          },
+          "type": {
+            "type": "string",
+            "description": "Script type.",
+            "enum": [
+              "python",
+              "bash"
+            ],
+            "default": "python"
+          },
+          "cwd": {
+            "type": "string",
+            "description": "Remote working directory; ~/ supported."
+          },
+          "timeout": {
+            "type": "number",
+            "description": "Wait seconds; 0 means unlimited. Submission/wait timeout does not limit background runtime. Task actions default to 20 seconds; run/transfers to 60.",
+            "default": 60
+          },
+          "background": {
+            "type": "boolean",
+            "description": "Detach job, persist log and exit code, return task_id.",
+            "default": false
+          },
+          "interpreter": {
+            "type": "string",
+            "description": "Remote executable path, e.g. conda env Python."
+          },
+          "env": {
+            "type": "object",
+            "description": "Remote environment variables.",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "ssh_options": {
+            "type": "array",
+            "description": "Extra OpenSSH argv; prefer -o Port=... for compatibility with scp.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "task_id": {
+            "type": "string",
+            "description": "Optional stable ID for background submission; required for status/logs/wait/stop."
+          },
+          "task_root": {
+            "type": "string",
+            "description": "Remote task directory root; use the same value for subsequent queries.",
+            "default": "~/.cache/ga-ssh/tasks"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "run",
+              "status",
+              "logs",
+              "wait",
+              "stop",
+              "upload",
+              "download"
+            ],
+            "default": "run",
+            "description": "Optional operation. Default run executes remote code; task actions need task_id; upload/download need local_path and remote_path. Only pass parameters for the selected action."
+          },
+          "tail": {
+            "type": "integer",
+            "description": "Last N log lines.",
+            "default": 100
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Optional byte offset for incremental logs; next_offset returned."
+          },
+          "local_path": {
+            "type": "string",
+            "description": "Local file path relative to agent cwd."
+          },
+          "remote_path": {
+            "type": "string",
+            "description": "Remote file path."
+          }
+        },
+        "required": [
+          "host"
+        ]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
       "name": "file_read",
       "description": "Read file. Read before modify for latest context and line numbers",
       "parameters": {
