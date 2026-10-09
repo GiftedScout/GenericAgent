@@ -291,7 +291,7 @@
         "properties": {
           "key_info": {
             "type": "string",
-            "description": "Replaces current notepad (<200 tokens). Incremental update: review existing, keep valid, add/remove/modify. Store: pitfalls, user requirements, key params/findings, file paths, progress, next steps. Don't store: ephemeral info, obvious context, old task info when user switched tasks. Prefer over-updating over losing key info"
+            "description": "Replaces current execution notepad (<200 tokens), NOT the task anchor. Review existing notes; keep still-valid progress, constraints, findings, paths, and next steps. In plain text, you may state which user requirement you are currently executing, including mid-task additions; preserve pending original deliverables unless the user cancels them. The framework-injected task_anchor is the sole authoritative anchor and is read-only to the model: never create, copy, rewrite, or nest task_anchor tags in key_info. Remove such tags from old notes when updating, retaining only valid progress facts. Don't store ephemeral info, obvious context, or obsolete progress from a different task."
           }
         }
       }
