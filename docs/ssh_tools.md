@@ -4,10 +4,12 @@
 
 轻量封装原生 OpenSSH，不安装远端常驻服务，不设置命令白名单，不替代现有授权规则。
 
-- `ssh_run`：远程 Bash/Python，支持 `cwd`、`env`、指定解释器、原生 SSH 参数；前台返回退出码、输出预览及本地完整输出文件。
+仅注册一个工具 **`ssh_run`**，额外封装都是它的可选项，不另设工具入口。
+
+- `ssh_run`（省略 `action` 或 `action="run"`）：远程 Bash/Python，支持 `cwd`、`env`、指定解释器、原生 SSH 参数；前台返回退出码、输出预览及本地完整输出文件。
 - `ssh_run(background=true)`：使用 `nohup + setsid` 提交，立即返回 `task_id`；后台运行时间不受提交 timeout 限制。
-- `ssh_task`：`status` / `logs` / `wait` / `stop`；日志支持 byte offset 和 `next_offset`；stop 验证 PID 启动时间与进程组后发送 TERM。
-- `ssh_transfer`：通过现代 OpenSSH scp/SFTP 上传下载，复用相同连接。
+- `ssh_run(action="status"/"logs"/"wait"/"stop", task_id=...)`：查询/管理后台任务；日志支持 byte offset 和 `next_offset`；stop 验证 PID 启动时间与进程组后发送 TERM。
+- `ssh_run(action="upload"/"download", local_path=..., remote_path=...)`：通过现代 OpenSSH scp/SFTP 上传下载，复用相同连接。
 
 连接归属单个 agent，以 host 与 SSH 参数为键复用 ControlMaster。默认空闲 1800 秒自动关闭；agent 正常结束、异常或用户中断时主动关闭，远端后台任务不随连接关闭。复用的是传输连接，各调用仍是独立 shell。
 
@@ -17,7 +19,7 @@
 {"host":"my-server","type":"bash","script":"python3 train.py > train.log 2>&1","cwd":"~/project","background":true,"task_id":"train-20261009"}
 ```
 
-随后使用返回的 ID：
+以下均调用同一个 `ssh_run`，随后使用返回的 ID（查询无需 script）：
 
 ```json
 {"host":"my-server","task_id":"train-20261009","action":"status"}
@@ -28,6 +30,14 @@
 ```
 
 增量日志下一次使用 `next_offset`。若指定了 `task_root`，后续查询必须使用相同路径。
+
+上传示例（下载将 `action` 改为 `download`）：
+
+```json
+{"host":"my-server","action":"upload","local_path":"data.bin","remote_path":"/tmp/data.bin"}
+```
+
+`action` 默认为 `run`，只需提供对应操作的参数；上传下载的本地相对路径以 agent 工作目录解析。
 
 ## 边界与依赖
 
@@ -71,8 +81,19 @@ python3 -m unittest discover -s tests -p 'test_ssh_tools.py' -v
 
 额外独立实测通过：无限等待与环境变量字面量、缺失 cwd、后台解释器缺失返回 127、缺失日志返回 error、close 后重新连接。
 
-全库 discovery 在未修改 main 基线已有 `1 failure / 13 errors`，其中包含顶层 `SystemExit` 导致 loader 错误、原生 replay retry/trim 测试失败；新分支相同错误集合，不能称全库全绿。另观察到旧代码读取 Schema 时的 ResourceWarning，不属于本次新增 SSH 逻辑。
+### 全库回归修复
 
-本地证据：`temp/ssh_test_env/acceptance.log`、`independent.json`、`baseline.log`、`regression_final.log`（相对于主仓库；不包含密钥内容，不随功能提交）。
+原基线的 `1 failure / 13 errors` 已在本分支处理，不删除有效测试、不新增 skip：
 
-新增 SSH 功能验收：`VERDICT: PASS`。全库回归门禁尚有基线遗留问题，未在本分支顺带修复。
+- 旧脚本顶层 `sys.exit()` 导致 discovery 导入失败，并有模块级 HTTP mock 污染后续测试：脚本主体改为仅直接执行时运行，discovery 通过子进程 TestCase 执行原断言。
+- Responses 测试的模拟响应补齐上下文管理协议，与实际 HTTP 客户端一致。
+- spinner 测试用 `builtins` 模块识别内建名，修复导入时将合法 `int` 误报为未定义的问题。
+- Schema 文件使用上下文管理关闭，修复观察到的 ResourceWarning。
+
+最终启用真实 SSH fixture 运行全库：**115 项，113 通过、2 个原有可选测试跳过，0 failure、0 error**。两项跳过分别是按既有要求暂停的 computer-use 检查，以及需要 `GA_RESTORE_TEST_LOG` 指定真实历史日志的回归；SSH 九项均运行通过。
+
+单入口另外通过五项独立真实 dispatch 探测：`timeout=0` 与环境变量字面量、缺失任务返回 `task_state=missing`、非法 action、缺失 cwd 不执行脚本、错误后连接仍可执行。
+
+本地证据：`temp/ssh_test_env/single_tool_final_regression.log`、`single_tool_independent.json`、`single_tool_acceptance.log`、`baseline.log`（相对于主仓库；不包含密钥内容，不随功能提交）。
+
+单入口 SSH 功能与本次全库回归：`VERDICT: PASS`（上述两项可选检查未验收）。

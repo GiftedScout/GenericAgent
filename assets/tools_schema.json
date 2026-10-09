@@ -41,7 +41,7 @@
     "type": "function",
     "function": {
       "name": "ssh_run",
-      "description": "Remote code_run over reusable OpenSSH. Arbitrary Bash/Python; each call has a fresh shell. Prefer for SSH operations. background=true submits a detached server job and returns promptly; query its task_id with ssh_task. Never blindly resubmit after connection failure. Existing approval rules still apply.",
+      "description": "Remote code_run over reusable OpenSSH. One SSH tool: default action=run executes arbitrary Bash/Python in a fresh shell; background=true detaches and returns task_id. Optional action=status/logs/wait/stop manages that ID; upload/download transfers files. Never blindly resubmit after connection failure. Existing approval rules still apply.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -68,7 +68,7 @@
           },
           "timeout": {
             "type": "number",
-            "description": "Foreground or submission wait seconds. 0 means unlimited; background runtime is NOT limited.",
+            "description": "Wait seconds; 0 means unlimited. Submission/wait timeout does not limit background runtime. Task actions default to 20 seconds; run/transfers to 60.",
             "default": 60
           },
           "background": {
@@ -96,52 +96,26 @@
           },
           "task_id": {
             "type": "string",
-            "description": "Optional stable ID for idempotent submission; otherwise generated."
+            "description": "Optional stable ID for background submission; required for status/logs/wait/stop."
           },
           "task_root": {
             "type": "string",
             "description": "Remote task directory root; use the same value for subsequent queries.",
             "default": "~/.cache/ga-ssh/tasks"
-          }
-        },
-        "required": [
-          "host",
-          "script"
-        ]
-      }
-    }
-  },
-  {
-    "type": "function",
-    "function": {
-      "name": "ssh_task",
-      "description": "Query/manage ssh_run background jobs. status/logs/wait/stop; wait timeout does NOT stop the job. Missing or lost state is not success. Jobs survive agent exit and SSH disconnect.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "host": {
-            "type": "string",
-            "description": "SSH config Host alias or user@host; uses native SSH config/agent. No passwords/private-key contents."
-          },
-          "task_id": {
-            "type": "string",
-            "description": "ID returned by ssh_run."
           },
           "action": {
             "type": "string",
-            "description": "Operation.",
             "enum": [
+              "run",
               "status",
               "logs",
               "wait",
-              "stop"
+              "stop",
+              "upload",
+              "download"
             ],
-            "default": "status"
-          },
-          "timeout": {
-            "type": "number",
-            "description": "Communication/wait limit seconds; 0 means unlimited.",
-            "default": 20
+            "default": "run",
+            "description": "Optional operation. Default run executes remote code; task actions need task_id; upload/download need local_path and remote_path. Only pass parameters for the selected action."
           },
           "tail": {
             "type": "integer",
@@ -152,46 +126,6 @@
             "type": "integer",
             "description": "Optional byte offset for incremental logs; next_offset returned."
           },
-          "ssh_options": {
-            "type": "array",
-            "description": "Extra OpenSSH argv; prefer -o Port=... for compatibility with scp.",
-            "items": {
-              "type": "string"
-            }
-          },
-          "task_root": {
-            "type": "string",
-            "description": "Remote task directory root; use the same value for subsequent queries.",
-            "default": "~/.cache/ga-ssh/tasks"
-          }
-        },
-        "required": [
-          "host",
-          "task_id"
-        ]
-      }
-    }
-  },
-  {
-    "type": "function",
-    "function": {
-      "name": "ssh_transfer",
-      "description": "Upload/download via native scp using the same reusable SSH connection. No credential contents. Transfer failure may leave a partial destination.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "host": {
-            "type": "string",
-            "description": "SSH config Host alias or user@host; uses native SSH config/agent. No passwords/private-key contents."
-          },
-          "direction": {
-            "type": "string",
-            "description": "Direction.",
-            "enum": [
-              "upload",
-              "download"
-            ]
-          },
           "local_path": {
             "type": "string",
             "description": "Local file path relative to agent cwd."
@@ -199,25 +133,11 @@
           "remote_path": {
             "type": "string",
             "description": "Remote file path."
-          },
-          "timeout": {
-            "type": "number",
-            "description": "Wait seconds; 0 means unlimited.",
-            "default": 60
-          },
-          "ssh_options": {
-            "type": "array",
-            "description": "Extra OpenSSH argv; prefer -o Port=... for compatibility with scp.",
-            "items": {
-              "type": "string"
-            }
           }
         },
         "required": [
           "host",
-          "direction",
-          "local_path",
-          "remote_path"
+          "script"
         ]
       }
     }

@@ -22,7 +22,8 @@ def _close_think_envelope(s):
     return s + "\n</thinking>\n" if s.count("<thinking>") > s.count("</thinking>") else s
 def load_tool_schema(suffix=''):
     global TOOLS_SCHEMA
-    TS = open(os.path.join(script_dir, f'assets/tools_schema{suffix}.json'), 'r', encoding='utf-8').read()
+    with open(os.path.join(script_dir, f'assets/tools_schema{suffix}.json'), 'r', encoding='utf-8') as source:
+        TS = source.read()
     TOOLS_SCHEMA = json.loads(TS)
     TOOLS_SCHEMA = [t for t in TOOLS_SCHEMA if t.get('function', {}).get('name') not in BANNED_TOOLS]
 load_tool_schema()

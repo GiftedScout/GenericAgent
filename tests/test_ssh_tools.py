@@ -23,9 +23,14 @@ class SSHLocalTests(unittest.TestCase):
         names = [x['function']['name'] for x in schema]
         self.assertEqual(len(names), len(set(names)))
         handler = GenericAgentHandler(SimpleNamespace(), cwd=tempfile.gettempdir())
-        for name in ('ssh_run', 'ssh_task', 'ssh_transfer'):
-            self.assertIn(name, names)
-            self.assertTrue(hasattr(handler, 'do_' + name))
+        self.assertEqual([n for n in names if n.startswith('ssh_')], ['ssh_run'])
+        self.assertTrue(hasattr(handler, 'do_ssh_run'))
+        for name in ('ssh_task', 'ssh_transfer'):
+            self.assertFalse(hasattr(handler, 'do_' + name))
+        for action in ('invalid', 'status', 'logs', 'wait', 'stop', 'upload', 'download'):
+            result = exhaust(handler.dispatch('ssh_run', {'host': 'unused', 'action': action},
+                                             SimpleNamespace(content='')))
+            self.assertEqual(result.data['status'], 'error', (action, result.data))
         result = exhaust(handler.dispatch('ssh_run', {'host': 'unused'}, SimpleNamespace(content='')))
         self.assertEqual(result.data['status'], 'error')
 
@@ -49,13 +54,18 @@ class SSHIntegrationTests(unittest.TestCase):
         self.client = SSHClient(output_dir=self.tmp.name)
         self.addCleanup(self.client.close)
         self.root = '~/.cache/ga-ssh/test-' + uuid.uuid4().hex
+        self.parent = SimpleNamespace(_ssh_client=self.client, get_ctx_multiplier=lambda: 1)
+        self.handler = GenericAgentHandler(self.parent, cwd=self.tmp.name)
+
+    def dispatch(self, **kwargs):
+        return exhaust(self.handler.dispatch('ssh_run', dict(host=self.host,
+            ssh_options=self.options, **kwargs), SimpleNamespace(content=''))).data
 
     def run_remote(self, script, **kwargs):
-        return self.client.run(self.host, script, ssh_options=self.options, **kwargs)
+        return self.dispatch(script=script, **kwargs)
 
     def task(self, task_id, action='status', **kwargs):
-        return self.client.task(self.host, task_id, action, ssh_options=self.options,
-                                task_root=self.root, **kwargs)
+        return self.dispatch(task_id=task_id, action=action, task_root=self.root, **kwargs)
 
     def submit(self, script, **kwargs):
         result = self.run_remote(script, type='bash', background=True, task_root=self.root, **kwargs)
@@ -91,7 +101,11 @@ class SSHIntegrationTests(unittest.TestCase):
         result = self.run_remote('sleep 1; echo late', type='bash', timeout=.15)
         self.assertEqual(result['status'], 'timeout')
         self.assertEqual(result['remote_state'], 'unknown')
-        stopped = self.run_remote('sleep 1', type='bash', stop_signal=lambda: True)
+        self.handler.code_stop_signal.append(True)
+        try:
+            stopped = self.run_remote('sleep 1', type='bash')
+        finally:
+            self.handler.code_stop_signal.clear()
         self.assertEqual(stopped['status'], 'stopped')
 
     def test_background_disconnect_idempotency_and_wait(self):
@@ -193,10 +207,10 @@ class SSHIntegrationTests(unittest.TestCase):
         src = Path(self.tmp.name, 'source space.bin')
         src.write_bytes(bytes(range(256)))
         remote = '/tmp/ga-transfer-' + uuid.uuid4().hex + ' space.bin'
-        up = self.client.transfer(self.host, 'upload', str(src), remote, ssh_options=self.options)
+        up = self.dispatch(action='upload', local_path=src.name, remote_path=remote)
         self.assertEqual(up['status'], 'success', up)
         dst = Path(self.tmp.name, 'download space.bin')
-        down = self.client.transfer(self.host, 'download', str(dst), remote, ssh_options=self.options)
+        down = self.dispatch(action='download', local_path=dst.name, remote_path=remote)
         self.assertEqual(down['status'], 'success', down)
         self.assertEqual(src.read_bytes(), dst.read_bytes())
         idle = SSHClient(output_dir=self.tmp.name, idle_seconds=3)

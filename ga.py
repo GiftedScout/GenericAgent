@@ -537,20 +537,22 @@ class GenericAgentHandler(BaseHandler):
 
     def do_ssh_run(self, args, response):
         args = dict(args)
-        if not args.get('script'):
-            args['script'] = self._extract_code_block(response, args.get('type', 'python'))
-        if not args.get('script'):
-            return StepOutcome({'status': 'error', 'msg': 'script is required'}, next_prompt='\n')
-        return self._do_ssh('run', args)
-
-    def do_ssh_task(self, args, response):
-        return self._do_ssh('task', args)
-
-    def do_ssh_transfer(self, args, response):
-        args = dict(args)
-        if args.get('local_path'):
-            args['local_path'] = self._get_abs_path(args['local_path'])
-        return self._do_ssh('transfer', args)
+        action = args.pop('action', 'run')
+        if action == 'run':
+            if not args.get('script'):
+                args['script'] = self._extract_code_block(response, args.get('type', 'python'))
+            if not args.get('script'):
+                return StepOutcome({'status': 'error', 'msg': 'script is required'}, next_prompt='\n')
+            return self._do_ssh('run', args)
+        if action in ('status', 'logs', 'wait', 'stop'):
+            args['action'] = action
+            return self._do_ssh('task', args)
+        if action in ('upload', 'download'):
+            args['direction'] = action
+            if args.get('local_path'):
+                args['local_path'] = self._get_abs_path(args['local_path'])
+            return self._do_ssh('transfer', args)
+        return StepOutcome({'status': 'error', 'msg': 'unknown SSH action: ' + str(action)}, next_prompt='\n')
 
     def do_code_run(self, args, response):
         '''执行代码片段，有长度限制，不允许代码中放大量数据，如有需要应当通过文件读取进行。'''
