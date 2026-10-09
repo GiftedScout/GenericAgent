@@ -519,6 +519,39 @@ class GenericAgentHandler(BaseHandler):
         except Exception as e:
             return StepOutcome(f"[Error] image generation failed: {type(e).__name__}: {e}", next_prompt="\n")
 
+    def _ssh_client(self):
+        # Keep transport on the parent: handlers are replaced between prompts.
+        from ssh_ops import SSHClient
+        if getattr(self.parent, '_ssh_client', None) is None:
+            self.parent._ssh_client = SSHClient(output_dir=os.path.join(self.cwd, 'ssh_outputs'))
+        return self.parent._ssh_client
+
+    def _do_ssh(self, method, args):
+        kwargs = {k: v for k, v in args.items() if not k.startswith('_')}
+        kwargs['stop_signal'] = lambda: bool(self.code_stop_signal)
+        try:
+            result = getattr(self._ssh_client(), method)(**kwargs)
+            return StepOutcome(result, next_prompt='\n')
+        except Exception as exc:
+            return StepOutcome({'status': 'error', 'msg': str(exc)}, next_prompt='\n')
+
+    def do_ssh_run(self, args, response):
+        args = dict(args)
+        if not args.get('script'):
+            args['script'] = self._extract_code_block(response, args.get('type', 'python'))
+        if not args.get('script'):
+            return StepOutcome({'status': 'error', 'msg': 'script is required'}, next_prompt='\n')
+        return self._do_ssh('run', args)
+
+    def do_ssh_task(self, args, response):
+        return self._do_ssh('task', args)
+
+    def do_ssh_transfer(self, args, response):
+        args = dict(args)
+        if args.get('local_path'):
+            args['local_path'] = self._get_abs_path(args['local_path'])
+        return self._do_ssh('transfer', args)
+
     def do_code_run(self, args, response):
         '''执行代码片段，有长度限制，不允许代码中放大量数据，如有需要应当通过文件读取进行。'''
         code_type = args.get("type", "python")

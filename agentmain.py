@@ -415,9 +415,14 @@ class GenericAgent:
                 self.task_anchor = new_anchor  # 锚点已提交给本轮；继续/回答类输入会继承它
                 self._prev_exit = getattr(handler, '_last_exit', None)  # 正常退出(含ask_user)才有
                 if self.stop_sig: print('User aborted the task.')
+                if self.handler is not None: self.handler.code_stop_signal.append(1)
+                # Connections belong to this agent, not a tool call or global pool.
+                # Detached server jobs continue after transport is released.
+                ssh_client = getattr(self, '_ssh_client', None)
+                if ssh_client is not None:
+                    ssh_client.close()
                 self.is_running = self.stop_sig = False  # keep _current_queue: its final 'done' may still be unclaimed (refreshed UI salvages it); next task overwrites it
                 self.task_queue.task_done()
-                if self.handler is not None: self.handler.code_stop_signal.append(1)
 
 GeneraticAgent = GenericAgent
 
