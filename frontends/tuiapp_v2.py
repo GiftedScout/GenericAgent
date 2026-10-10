@@ -445,7 +445,7 @@ _DIFF_MARGIN = 2
 # Group 1 = tool name, group 2 = the (newline-mangled) pretty-JSON fence body,
 # which we hash to recover the real args captured by the snapshot hook.
 _VERBOSE_WRITE_RE = re.compile(
-    r"🛠️ Tool: `(file_write|file_patch|file_read|code_run)`  📥 args:\n`{4}\w*\n(.*?)\n`{4}"
+    r"🛠️ Tool: `(file_write|file_patch|file_read|code_run|ssh_run)`  📥 args:\n`{4}\w*\n(.*?)\n`{4}"
     # Also swallow the dispatch output fence that immediately follows
     # (`[Action]…`/`{status}` lines) — its info moves into the diff header.
     r"(?:\s*`{5}\n(.*?)\n`{5})?",
@@ -942,7 +942,7 @@ def _code_parse_data(data):
     return out_text, exit_code, err_msg, is_err
 
 
-def _render_code_card(args, data, width):
+def _render_code_card(args, data, width, tool_name="code_run"):
     """CC/Codex-style gutter card for code_run — no borders, structure comes
     from dim gutters (Codex's exec cell look, adapted to our card family):
 
@@ -962,6 +962,38 @@ def _render_code_card(args, data, width):
     ctype = str(args.get("type") or "python").strip() or "python"
     code = str(args.get("script") or args.get("code") or "")
     out_text, exit_code, err_msg, is_err = _code_parse_data(data)
+    ssh = tool_name == "ssh_run"
+    action = str(args.get("action") or "run")
+    metadata = []
+    title = f"code_run({ctype})"
+    if ssh:
+        title = f"ssh_run({ctype if action == 'run' else action})"
+        metadata.append(f"host: {args.get('host') or '(未指定)'}")
+        if args.get("background"):
+            metadata.append("background: true")
+        if action in ("upload", "download"):
+            code = (f"{args.get('local_path') or ''} → {args.get('remote_path') or ''}"
+                    if action == "upload" else
+                    f"{args.get('remote_path') or ''} → {args.get('local_path') or ''}")
+        if isinstance(data, dict):
+            stderr = str(data.get("stderr") or "").replace("\r\n", "\n").replace("\r", "\n")
+            if stderr:
+                out_text = out_text.rstrip("\n") + ("\n" if out_text else "") + "stderr:\n" + stderr
+            is_err = is_err or data.get("status") in ("timeout", "stopped") or bool(data.get("timed_out"))
+            for key in ("task_id", "task_state", "task_exit_code", "wait_expired"):
+                value = data.get(key, args.get(key))
+                if value is not None:
+                    metadata.append(f"{key}: {value}")
+            if data.get("note"):
+                metadata.append(str(data["note"]))
+            if data.get("timed_out") or data.get("status") == "timeout":
+                err_msg = " · ".join(p for p in (err_msg, "超时") if p)
+            elif data.get("status") == "stopped":
+                err_msg = " · ".join(p for p in (err_msg, "已停止") if p)
+            task_exit = data.get("task_exit_code")
+            is_err = is_err or data.get("task_state") == "failed" or (isinstance(task_exit, int) and task_exit != 0)
+        elif args.get("task_id"):
+            metadata.append(f"task_id: {args['task_id']}")
 
     # Timeout / manual-stop markers live inside stdout (ga.py:72-73).
     note_extra = ("超时" if "[Timeout Error]" in out_text
@@ -986,7 +1018,10 @@ def _render_code_card(args, data, width):
     detail = " ".join(" · ".join(parts).split())
 
     cw = _CardWriter()
-    _card_status_row(cw, [(f"code_run({ctype})", col["head"])], err, detail, width)
+    _card_status_row(cw, [(title, col["head"])], err, detail, width)
+    for line in metadata:
+        for chunk in _chop_cells(line.replace("\x1b", ""), max(8, width)):
+            cw.row((chunk, col["gutter"]))
     cwd = str(args.get("cwd") or "").strip()
     if cwd and cwd not in _CODE_DEFAULT_CWD:
         for chunk in _chop_cells(f"cwd: {cwd}", max(8, width)):
@@ -4490,11 +4525,11 @@ class GenericAgentTUI(App[None]):
             def _snap(ctx):
                 try:
                     name = (ctx or {}).get("tool_name")
-                    if name not in ("file_write", "file_patch", "file_read", "code_run"):
+                    if name not in ("file_write", "file_patch", "file_read", "code_run", "ssh_run"):
                         return ctx
                     handler = (ctx or {}).get("self")
                     args = _strip_dispatch_keys((ctx or {}).get("args"))
-                    if name == "code_run":
+                    if name in ("code_run", "ssh_run"):
                         # No path; the card shows args (code) + the result
                         # stamped by _snap_after. Keyed the same way.
                         _WRITE_CAP[hash(get_pretty_json(args))] = {
@@ -4545,7 +4580,7 @@ class GenericAgentTUI(App[None]):
                 # itself (its StepOutcome.data IS the content the card shows).
                 try:
                     name = (ctx or {}).get("tool_name")
-                    if name not in ("file_write", "file_patch", "file_read", "code_run"):
+                    if name not in ("file_write", "file_patch", "file_read", "code_run", "ssh_run"):
                         return ctx
                     args = _strip_dispatch_keys((ctx or {}).get("args"))
                     data = getattr((ctx or {}).get("ret"), "data", None)
@@ -4555,7 +4590,7 @@ class GenericAgentTUI(App[None]):
                     if name == "file_read":
                         if isinstance(data, str):
                             _WRITE_CAP[h]["content"] = data
-                    elif name == "code_run":
+                    elif name in ("code_run", "ssh_run"):
                         # data is the StepOutcome.data verbatim: dict
                         # {status,stdout,exit_code} | {status:error,msg} | str.
                         _WRITE_CAP[h]["data"] = data
@@ -8297,8 +8332,19 @@ class GenericAgentTUI(App[None]):
                 if cap:
                     if cap["name"] == "file_read":
                         r = _render_read_card(cap["args"], cap.get("content"), _w)
-                    elif cap["name"] == "code_run":
-                        r = _render_code_card(cap["args"], cap.get("data"), _w)
+                    elif cap["name"] in ("code_run", "ssh_run"):
+                        data = cap.get("data")
+                        # Prefer this occurrence's result over the args-keyed
+                        # capture (identical commands may fail then succeed).
+                        for line in (m.group(3) or "").splitlines():
+                            try:
+                                outcome = json.loads(line)
+                            except (ValueError, TypeError):
+                                continue
+                            if isinstance(outcome, dict) and "status" in outcome:
+                                data = outcome
+                                break
+                        r = _render_code_card(cap["args"], data, _w, cap["name"])
                     else:
                         status, msg = cap.get("status"), cap.get("msg", "")
                         st = _fence_status(m.group(3))

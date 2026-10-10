@@ -853,7 +853,7 @@ def iter_write_captures(path):
             if not (isinstance(b, dict) and b.get('type') == 'tool_use'):
                 continue
             name = b.get('name')
-            if name not in ('file_write', 'file_patch', 'file_read', 'code_run'):
+            if name not in ('file_write', 'file_patch', 'file_read', 'code_run', 'ssh_run'):
                 continue
             args = b.get('input') or {}
             p = args.get('path')
@@ -861,7 +861,7 @@ def iter_write_captures(path):
                 out.append({'name': name, 'args': args,
                             'content': tr_raw.get(b.get('id'))})
                 continue
-            if name == 'code_run':
+            if name in ('code_run', 'ssh_run'):
                 # data = the tool_result text; a dict result is JSON, an
                 # inline_eval / code-missing result is plain text. Pass the
                 # parsed dict when possible so the card reads exit_code/stdout;
