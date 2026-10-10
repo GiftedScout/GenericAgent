@@ -38,6 +38,8 @@ git worktree add --detach ../ga-ssh-pre-merge-inspection ssh-tools-pre-merge-202
 
 ## 验收依据
 
+> **2026-10-10 范围纠正**：下列合并验收仅覆盖隔离密钥认证服务器，旧 `verified` tag 不证明 a800 密码认证可用，不移动或删除旧标记。实际密码认证失败、修复及新的检查标记见 [认证故障修复记录](ssh_auth_fix.md)。
+
 合并前已完成同当前模型/渠道/effort 的新会话实测：17 次 ssh_run；约 12 秒后台提交 elapsed=0.051 秒；原始返回逐条比对、独立远端状态与下载文件 SHA256 核对通过。main 合并树另启用真实隔离 Linux SSH fixture 执行全库回归：**119 项，117 通过、2 项原有可选检查跳过，0 failure、0 error，用时 30.096 秒**；测试进程已退出。
 
 本次本地证据：`temp/ssh_main_merge_20261009/checkpoint.json`、`regression.log`、`pre_merge.patch`；模型原始证据位于 `temp/ga_ssh_tools/temp/ssh_model_acceptance_v2/`，不提交密钥或临时产物。

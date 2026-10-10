@@ -2,6 +2,8 @@
 
 ## 结论与范围
 
+> **2026-10-10 更正**：这里的 17 次调用是隔离密钥认证服务器上的真实模型测试，不是 a800 密码认证测试。它真实通过，但不足以支持此前对用户环境的全面通过结论；漏测导致的认证等待超时由本次修复补齐，见 [认证故障修复记录](ssh_auth_fix.md)。
+
 此前 SSH 验收是代码链路测试，不等于模型会话测试。本次从主会话实际调用 `dispatch(parent, prompt)`，启动新进程、新历史，继承当前 **gpt-6.1-sol / aihub.top / reasoning_effort=high**；未用指定其他模型替代。隔离服务器为 `root@127.0.0.1:32768`，密钥只按路径引用。
 
 子会话正常结束（CURRENT_TASK_DONE，退出码 0），实际发出 **17 次 ssh_run**，覆盖 run、status、logs、wait、stop、upload、download；不是手写 SSH 替代。原始 17 份返回与 result.json 逐项精确比较一致，另独立查询远端任务和 marker 哈希确认结果。

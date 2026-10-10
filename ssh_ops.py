@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import shlex
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -58,13 +59,14 @@ class SSHClient:
         self._lock = threading.RLock()
         atexit.register(self.close)
 
-    def _connection(self, host, ssh_options=None):
+    def _connection(self, host, ssh_options=None, password_file=None):
         if not isinstance(host, str) or not host or host.startswith("-") or "\x00" in host:
             raise ValueError("host must be an SSH alias or destination, not an option")
         options = list(ssh_options or [])
         if not all(isinstance(x, str) for x in options):
             raise ValueError("ssh_options must be a list of command-line strings")
-        key = (host, tuple(options))
+        password_file = self._password_path(password_file)
+        key = (host, tuple(options), password_file)
         with self._lock:
             self.control_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
             if key not in self._connections:
@@ -75,12 +77,51 @@ class SSHClient:
         argv = ["ssh", "-S", path, "-o", "ControlMaster=auto",
                 "-o", f"ControlPersist={self.idle_seconds}",
                 "-o", "ConnectTimeout=15", "-o", "ServerAliveInterval=30",
-                "-o", "ServerAliveCountMax=3"] + options
+                "-o", "ServerAliveCountMax=3",
+                "-o", "BatchMode=no" if password_file else "BatchMode=yes",
+                "-o", "NumberOfPasswordPrompts=1"] + options
         return argv, path
 
+    @staticmethod
+    def _password_path(password_file):
+        if password_file is None:
+            return None
+        path = Path(password_file).expanduser().resolve()
+        if not path.is_file():
+            raise ValueError("password_file must reference an existing local file")
+        return str(path)
+
+    def _auth_env(self, password_file):
+        env = os.environ.copy()
+        if password_file is not None:
+            # A dedicated helper reads the file into OpenSSH's private askpass
+            # pipe, never into model/tool output, argv, or environment values.
+            helper = self.control_dir / "askpass"
+            if not helper.exists():
+                helper.write_text("#!/bin/sh\nexec " + _q(sys.executable) + " " +
+                                  _q(Path(__file__).with_name("ssh_askpass.py")) + ' "$@"\n')
+                helper.chmod(0o700)
+            env.update(SSH_ASKPASS=str(helper), SSH_ASKPASS_REQUIRE="force",
+                       GA_SSH_PASSWORD_FILE=self._password_path(password_file))
+            env.setdefault("DISPLAY", "ga-askpass")
+        return env
+
+    @staticmethod
+    def _auth_result(result, password_file):
+        stderr = result.get("stderr", "")
+        # Remote scripts can also exit 255 and print "permission denied".
+        # Only OpenSSH's authentication diagnostic proves no command started.
+        auth_denied = re.search(r"(?m)^[^\r\n]+: Permission denied \([\w, -]+\)\.[\r]?$", stderr)
+        if result.get("exit_code") == 255 and auth_denied:
+            result.update(error_kind="authentication", remote_state="not_started",
+                          note=("SSH authentication failed; check the referenced password file or SSH identity."
+                                if password_file else
+                                "SSH authentication failed. Password-only hosts require password_file (path only); interactive prompts are disabled."))
+        return result
+
     def _execute(self, host, command, payload=None, timeout=60, ssh_options=None,
-                 stop_signal=None, max_output=10000):
-        argv, path = self._connection(host, ssh_options)
+                 stop_signal=None, max_output=10000, password_file=None):
+        argv, path = self._connection(host, ssh_options, password_file)
         token = uuid.uuid4().hex
         out_path = self.output_dir / (token + ".stdout")
         err_path = self.output_dir / (token + ".stderr")
@@ -91,7 +132,8 @@ class SSHClient:
         with tempfile.TemporaryFile() as inp, out_path.open("wb") as out, err_path.open("wb") as err:
             inp.write((payload or "").encode("utf-8")); inp.seek(0)
             proc = subprocess.Popen(argv + ["-T", host, command], stdin=inp,
-                                    stdout=out, stderr=err)
+                                    stdout=out, stderr=err, env=self._auth_env(password_file),
+                                    start_new_session=True)
             while proc.poll() is None:
                 if stop_signal and (stop_signal() if callable(stop_signal) else bool(stop_signal)):
                     reason = "stopped"
@@ -118,7 +160,7 @@ class SSHClient:
         if reason or proc.returncode == 255:
             result["remote_state"] = "unknown"
             result["note"] = "SSH ended; remote termination/completion is NOT confirmed. Do not blindly retry."
-        return result
+        return self._auth_result(result, password_file)
 
     @staticmethod
     def _script(script, type="python", cwd=None, env=None, interpreter=None):
@@ -139,11 +181,11 @@ class SSHClient:
 
     def run(self, host, script, type="python", cwd=None, timeout=60, background=False,
             interpreter=None, env=None, ssh_options=None, stop_signal=None,
-            task_id=None, task_root=_TASK_ROOT, max_output=10000):
+            task_id=None, task_root=_TASK_ROOT, max_output=10000, password_file=None):
         wrapper = self._script(script, type, cwd, env, interpreter)
         if not background:
             return self._execute(host, "sh -s", wrapper, timeout, ssh_options,
-                                 stop_signal, max_output)
+                                 stop_signal, max_output, password_file)
         task_id = task_id or uuid.uuid4().hex
         self._validate_id(task_id)
         encoded = base64.b64encode(wrapper.encode()).decode()
@@ -179,10 +221,10 @@ fi
 '''
         launch += self._status_script(task_id, task_root)
         result = self._execute(host, "sh -s", launch, timeout, ssh_options,
-                               stop_signal, max_output)
+                               stop_signal, max_output, password_file)
         result.update(task_id=task_id, task_root=task_root)
         result.update(self._metadata(result["stdout"]))
-        if result["status"] in ("timeout", "stopped") or result["exit_code"] == 255:
+        if result.get("error_kind") != "authentication" and (result["status"] in ("timeout", "stopped") or result["exit_code"] == 255):
             result["note"] = "Submission uncertain; query this task_id before any retry."
         return result
 
@@ -230,7 +272,7 @@ printf '{_META}\\tlog_path\\t%s\\n' "$(printf '%s' "$d/output.log" | base64 | tr
 '''
 
     def task(self, host, task_id, action="status", timeout=20, tail=100, offset=None,
-             ssh_options=None, stop_signal=None, task_root=_TASK_ROOT):
+             ssh_options=None, stop_signal=None, task_root=_TASK_ROOT, password_file=None):
         self._validate_id(task_id)
         if action not in ("status", "logs", "wait", "stop"):
             raise ValueError("action must be status/logs/wait/stop")
@@ -244,7 +286,7 @@ printf '{_META}\\tlog_path\\t%s\\n' "$(printf '%s' "$d/output.log" | base64 | tr
                     result["wait_expired"] = True
                     return result
                 result = self.task(host, task_id, "status", min(15, left) if left else 15,
-                                   ssh_options=ssh_options, stop_signal=stop_signal, task_root=task_root)
+                                   ssh_options=ssh_options, stop_signal=stop_signal, task_root=task_root, password_file=password_file)
                 if result["status"] != "success" or result.get("task_state") not in ("running", "starting"):
                     return result
                 time.sleep(min(0.25, left) if left else 0.25)
@@ -270,7 +312,7 @@ printf '{_META}\\tlog_path\\t%s\\n' "$(printf '%s' "$d/output.log" | base64 | tr
 fi
 '''
         result = self._execute(host, "sh -s", command, timeout, ssh_options, stop_signal,
-                               16000 if action == "logs" else 10000)
+                               16000 if action == "logs" else 10000, password_file)
         header, _, encoded_logs = result["stdout"].partition("__GA_SSH_LOGS__\n")
         metadata = self._metadata(header)
         result.update(metadata)
@@ -284,27 +326,28 @@ fi
         return result
 
     def transfer(self, host, direction, local_path, remote_path, timeout=60,
-                 ssh_options=None, stop_signal=None):
+                 ssh_options=None, stop_signal=None, password_file=None):
         if direction not in ("upload", "download"):
             raise ValueError("direction must be upload/download")
-        argv, path = self._connection(host, ssh_options)
+        argv, path = self._connection(host, ssh_options, password_file)
         # Use SFTP-mode scp (modern OpenSSH); no remote-shell quoting required.
-        scp = ["scp", "-o", "ControlPath=" + path, "-o", "ControlMaster=auto",
-               "-o", f"ControlPersist={self.idle_seconds}", "-o", "ConnectTimeout=15"] + list(ssh_options or [])
+        scp = ["scp", "-o", "ControlPath=" + path] + argv[3:]
         remote = host + ":" + remote_path
         local = str(Path(local_path).expanduser().resolve())
         args = [local, remote] if direction == "upload" else [remote, local]
         # scp's -P (not ssh's -p) is needed if a port is explicitly provided;
         # prefer ssh_options=['-o','Port=...'] or an SSH config alias.
         deadline = _seconds(timeout)
-        proc = subprocess.Popen(scp + ["--"] + args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        proc = subprocess.Popen(scp + ["--"] + args, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                env=self._auth_env(password_file), start_new_session=True)
         started = time.monotonic()
         while True:
             try:
                 out, err = proc.communicate(timeout=0.1)
-                return {"status": "success" if proc.returncode == 0 else "error",
+                return self._auth_result({"status": "success" if proc.returncode == 0 else "error",
                         "exit_code": proc.returncode, "stdout": out.decode(errors="replace"),
-                        "stderr": err.decode(errors="replace"), "control_path": path}
+                        "stderr": err.decode(errors="replace"), "control_path": path}, password_file)
             except subprocess.TimeoutExpired:
                 stopped = stop_signal and (stop_signal() if callable(stop_signal) else bool(stop_signal))
                 if stopped or (deadline is not None and time.monotonic() - started >= deadline):
@@ -318,7 +361,7 @@ fi
         with self._lock:
             connections = list(self._connections.items())
             self._connections.clear()
-        for (host, options), path in connections:
+        for (host, options, password_file), path in connections:
             try:
                 subprocess.run(["ssh", "-S", path, "-O", "exit"] + list(options) + [host],
                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -330,5 +373,9 @@ fi
             if entry.is_socket():
                 try: entry.unlink()
                 except OSError: pass
+        helper = self.control_dir / "askpass"
+        if helper.exists():
+            try: helper.unlink()
+            except OSError: pass
         try: self.control_dir.rmdir()
         except OSError: pass

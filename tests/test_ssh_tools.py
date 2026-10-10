@@ -26,6 +26,7 @@ class SSHLocalTests(unittest.TestCase):
         self.assertEqual([n for n in names if n.startswith('ssh_')], ['ssh_run'])
         params = next(x['function']['parameters'] for x in schema if x['function']['name'] == 'ssh_run')
         self.assertEqual(params['required'], ['host'])  # queries/transfers need no script
+        self.assertIn('password_file', params['properties'])
         self.assertTrue(hasattr(handler, 'do_ssh_run'))
         for name in ('ssh_task', 'ssh_transfer'):
             self.assertFalse(hasattr(handler, 'do_' + name))
@@ -35,6 +36,58 @@ class SSHLocalTests(unittest.TestCase):
             self.assertEqual(result.data['status'], 'error', (action, result.data))
         result = exhaust(handler.dispatch('ssh_run', {'host': 'unused'}, SimpleNamespace(content='')))
         self.assertEqual(result.data['status'], 'error')
+
+    def test_noninteractive_defaults_and_auth_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            client = SSHClient(output_dir=tmp)
+            self.addCleanup(client.close)
+            password = Path(tmp, 'password')
+            password.write_text('fixture-only')
+            argv, path = client._connection('unused')
+            self.assertIn('BatchMode=yes', argv)
+            auth_argv, auth_path = client._connection('unused', password_file=str(password))
+            self.assertIn('BatchMode=no', auth_argv)
+            self.assertNotEqual(path, auth_path)
+            env = client._auth_env(str(password))
+            self.assertEqual(env['SSH_ASKPASS_REQUIRE'], 'force')
+            self.assertNotIn('fixture-only', repr(env))
+            self.assertEqual(Path(env['SSH_ASKPASS']).stat().st_mode & 0o777, 0o700)
+            with self.assertRaises(ValueError):
+                client._connection('unused', password_file=str(Path(tmp, 'missing')))
+
+    def test_askpass_secret_pipe_and_prompt_boundaries(self):
+        import sys
+        helper = Path(__file__).resolve().parents[1] / 'ssh_askpass.py'
+        with tempfile.TemporaryDirectory() as tmp:
+            password = Path(tmp, 'password')
+            password.write_text('fixture secret with spaces \n')
+            env = dict(os.environ, GA_SSH_PASSWORD_FILE=str(password))
+            for prompt in ("user@host's password:", 'Enter passphrase:',
+                           'Are you sure you want to continue connecting?'):
+                result = subprocess.run([sys.executable, str(helper), prompt], env=env,
+                                        capture_output=True, text=True, timeout=5)
+                if 'password' in prompt:
+                    self.assertEqual(result.returncode, 0)
+                    self.assertEqual(result.stdout, 'fixture secret with spaces \n')
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(result.stdout, '')
+                self.assertEqual(result.stderr, '')
+            password.write_text('invalid\nmultiline')
+            result = subprocess.run([sys.executable, str(helper), 'password:'], env=env,
+                                    capture_output=True, text=True, timeout=5)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout + result.stderr, '')
+
+    def test_authentication_error_not_remote_permission_error(self):
+        denied = SSHClient._auth_result(dict(exit_code=255,
+            stderr='root@host: Permission denied (publickey,password).\r\n'), None)
+        self.assertEqual(denied['error_kind'], 'authentication')
+        self.assertEqual(denied['remote_state'], 'not_started')
+        remote = SSHClient._auth_result(dict(exit_code=255,
+            stderr='Permission denied opening /tmp/x\n', remote_state='unknown'), None)
+        self.assertNotIn('error_kind', remote)
+        self.assertEqual(remote['remote_state'], 'unknown')
 
     def test_quoting_and_identity_validation(self):
         payload = SSHClient._script('print(1)', cwd='~/with spaces', env={'V': "a'; echo bad"})
@@ -227,6 +280,72 @@ class SSHIntegrationTests(unittest.TestCase):
             time.sleep(.1)
         self.assertFalse(Path(path).exists())
         self.assertEqual(idle.run(self.host, 'echo reconnect', type='bash', ssh_options=self.options)['status'], 'success')
+
+
+@unittest.skipUnless(os.environ.get('GA_SSH_PASSWORD_TEST_HOST'), 'password SSH fixture not configured')
+class SSHPasswordIntegrationTests(unittest.TestCase):
+    def setUp(self):
+        self.host = os.environ['GA_SSH_PASSWORD_TEST_HOST']
+        self.password = os.environ['GA_SSH_PASSWORD_TEST_FILE']
+        self.options = json.loads(os.environ.get('GA_SSH_PASSWORD_TEST_OPTIONS', '[]'))
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.parent = SimpleNamespace(get_ctx_multiplier=lambda: 1)
+        self.handler = GenericAgentHandler(self.parent, cwd=self.tmp.name)
+        self.addCleanup(lambda: getattr(self.parent, '_ssh_client', None) and self.parent._ssh_client.close())
+
+    def call(self, **kwargs):
+        args = dict(host=self.host, password_file=self.password, ssh_options=self.options, timeout=15)
+        args.update(kwargs)
+        return exhaust(self.handler.dispatch('ssh_run', args, SimpleNamespace(content=''))).data
+
+    def test_password_execution_reuse_and_background_reconnect(self):
+        first = self.call(script='print(5050)')
+        self.assertEqual(first['stdout'], '5050\n', first)
+        second = self.call(script='print(5051)')
+        self.assertEqual(second['stdout'], '5051\n', second)
+        self.assertEqual(first['control_path'], second['control_path'])
+        self.parent._ssh_client.close()
+        task = self.call(script='echo start; sleep 1; echo done', type='bash', background=True)
+        self.assertEqual(task['status'], 'success', task)
+        self.parent._ssh_client.close()
+        final = self.call(action='wait', task_id=task['task_id'])
+        self.assertEqual(final['task_state'], 'succeeded', final)
+        logs = self.call(action='logs', task_id=task['task_id'])
+        self.assertEqual(logs['logs'], 'start\ndone\n', logs)
+
+    def test_password_cold_transfers(self):
+        src = Path(self.tmp.name, 'source space.bin')
+        src.write_bytes(bytes(range(256)))
+        remote = '/tmp/ga-password-' + uuid.uuid4().hex + ' space.bin'
+        up = self.call(action='upload', local_path=str(src), remote_path=remote)
+        self.assertEqual(up['status'], 'success', up)
+        self.parent._ssh_client.close()
+        dst = Path(self.tmp.name, 'download.bin')
+        down = self.call(action='download', local_path=str(dst), remote_path=remote)
+        self.assertEqual(down['status'], 'success', down)
+        self.assertEqual(src.read_bytes(), dst.read_bytes())
+
+    def test_missing_and_wrong_password_fail_promptly_all_actions(self):
+        wrong = Path(self.tmp.name, 'wrong-password')
+        wrong.write_text('deliberately-wrong-fixture-password')
+        src = Path(self.tmp.name, 'file')
+        src.write_text('test')
+        for password in (None, str(wrong)):
+            for args in (dict(script='echo MUST_NOT_EXECUTE', type='bash'),
+                         dict(script='echo MUST_NOT_EXECUTE', type='bash', background=True),
+                         dict(action='status', task_id='missing'),
+                         dict(action='upload', local_path=str(src), remote_path='/tmp/must-not-upload')):
+                with self.subTest(password=bool(password), action=args.get('action', 'run')):
+                    self.parent._ssh_client.close() if getattr(self.parent, '_ssh_client', None) else None
+                    t = time.monotonic()
+                    result = self.call(password_file=password, **args)
+                    self.assertLess(time.monotonic() - t, 12, result)
+                    self.assertEqual(result['status'], 'error', result)
+                    self.assertEqual(result.get('error_kind'), 'authentication', result)
+                    self.assertEqual(result['remote_state'], 'not_started', result)
+                    self.assertNotIn('Submission uncertain', result.get('note', ''))
+                    self.assertNotIn('deliberately-wrong-fixture-password', json.dumps(result))
 
 
 if __name__ == '__main__':

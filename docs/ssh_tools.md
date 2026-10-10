@@ -2,6 +2,8 @@
 
 ## 范围
 
+> **2026-10-10 验收更正**：原报告的真实服务器和同模型会话均使用隔离密钥认证，未覆盖用户实际 a800 的密码认证。此前将这一结果概括为 SSH 全面可用不成立。密码等待导致的零输出超时已复现，修复与 a800 原始证据见 [认证故障修复记录](ssh_auth_fix.md)。下方旧测试数字保留为历史记录，而非密码认证证据。
+
 轻量封装原生 OpenSSH，不安装远端常驻服务，不设置命令白名单，不替代现有授权规则。
 
 仅注册一个工具 **`ssh_run`**，额外封装都是它的可选项，不另设工具入口。
@@ -11,7 +13,13 @@
 - `ssh_run(action="status"/"logs"/"wait"/"stop", task_id=...)`：查询/管理后台任务；日志支持 byte offset 和 `next_offset`；stop 验证 PID 启动时间与进程组后发送 TERM。
 - `ssh_run(action="upload"/"download", local_path=..., remote_path=...)`：通过现代 OpenSSH scp/SFTP 上传下载，复用相同连接。
 
-连接归属单个 agent，以 host 与 SSH 参数为键复用 ControlMaster。默认空闲 1800 秒自动关闭；agent 正常结束、异常或用户中断时主动关闭，远端后台任务不随连接关闭。复用的是传输连接，各调用仍是独立 shell。
+连接归属单个 agent，以 host、SSH 参数及凭据文件路径为键复用 ControlMaster。默认空闲 1800 秒自动关闭；agent 正常结束、异常或用户中断时主动关闭，远端后台任务不随连接关闭。复用的是传输连接，各调用仍是独立 shell。
+
+密码服务器使用同一工具的 `password_file` 参数；仅私有 askpass helper 将文件内容送入 OpenSSH 认证管道，不把密码写入参数、环境值或工具结果。未提供时强制非交互认证，认证失败明确返回 `error_kind=authentication`、`remote_state=not_started`，不再隐式等待密码直至 timeout。所有后续查询和传输继续传同一路径；不自动猜测或读取用户凭据。
+
+```json
+{"host":"a800","password_file":"~/sshpassword","script":"print(sum(range(101)))"}
+```
 
 ## 示例
 
@@ -41,7 +49,7 @@
 
 ## 边界与依赖
 
-- 本地需要 `ssh` / `scp`；身份验证使用 SSH config、agent 或密钥文件路径，工具不读取密钥内容。
+- 本地需要 `ssh` / `scp` 与 Python；身份验证使用 SSH config、agent 或密钥文件路径，工具不读取密钥内容。密码认证可显式传 `password_file` 路径，内容仅由 askpass helper 经私有认证管道使用。未知主机指纹或加密私钥 passphrase 不由密码 helper 自动确认。
 - 后台任务管理针对 Linux，依赖 `/proc`、`nohup`、`setsid`、`base64` 等常见工具；并非调度器，不提供重启恢复。
 - `timeout=0` 表示不限等待；长任务推荐后台提交，而不是无限前台等待。
 - 前台 timeout/中断只保证本地 SSH 等待结束，不保证远端进程已停止；返回 `remote_state=unknown`。需要可靠跟踪和停止的工作应后台提交。

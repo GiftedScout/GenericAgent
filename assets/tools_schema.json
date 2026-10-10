@@ -47,7 +47,11 @@
         "properties": {
           "host": {
             "type": "string",
-            "description": "SSH config Host alias or user@host; uses native SSH config/agent. No passwords/private-key contents."
+            "description": "SSH config Host alias or user@host; uses native SSH config/agent. For password-only servers provide password_file, never password contents."
+          },
+          "password_file": {
+            "type": "string",
+            "description": "Optional local password-file path (~/ supported), for any action. Only the private OpenSSH askpass helper reads it; never read or paste its contents. Without it, authentication is noninteractive and fails promptly instead of waiting for a password. Use the same path on later task/transfer calls."
           },
           "script": {
             "type": "string",
